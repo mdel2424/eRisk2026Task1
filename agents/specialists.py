@@ -1,9 +1,10 @@
 from core.state import AgentState
 
 def somatic_specialist(state: AgentState):
-    # Logic to probe 11, 15, 16,18, 20
-    return {"messages": [{"role": "assistant", "content": "I'm the Somatic Agent."}]}
+    return {"messages": [{"role": "assistant", "content": "Somatic follow-up (indirect)."}]}
 
 def cognitive_specialist(state: AgentState):
-    # Logic to probe 2, 3, 5, 7, 8, 14
-    return {"messages": [{"role": "assistant", "content": "I'm the Cognitive Agent."}]}
+    return {"messages": [{"role": "assistant", "content": "Cognitive follow-up (indirect)."}]}
+
+def risk_specialist(state: AgentState):
+    return {"messages": [{"role": "assistant", "content": "Risk-aware safety follow-up (indirect)."}]}
