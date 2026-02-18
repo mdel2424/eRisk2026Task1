@@ -1,5 +1,9 @@
 langgraph
-langchain-openai
 pydantic>=2
 streamlit
 python-dotenv
+transformers
+peft
+accelerate
+bitsandbytes
+sentencepiece

@@ -53,7 +53,6 @@ def run_interactive() -> None:
     print("--- eRisk 2026: Conversational Depression Detection MVP (Interactive) ---")
     state = build_initial_state(persona_id="interactive")
 
-    # Detector opens the conversation.
     state = graph_app.invoke(state)
     print(f"\nDetector: {state['messages'][-1]['content']}")
     print(f"Debug: {_format_debug(state)}")
@@ -68,8 +67,10 @@ def run_interactive() -> None:
 
         detector_msg = state["messages"][-1]["content"]
         print(f"\nDetector: {detector_msg}")
-
-        print(f"Turn={state['turn_index']} | PredLabel={state.get('predicted_label')} | PredBDI={state.get('predicted_bdi_score')} | Stop={state.get('should_stop')}")
+        print(
+            f"Turn={state['turn_index']} | PredLabel={state.get('predicted_label')} | "
+            f"PredBDI={state.get('predicted_bdi_score')} | Stop={state.get('should_stop')}"
+        )
         print(f"Debug: {_format_debug(state)}")
         if state.get("should_stop"):
             print(f"Key symptoms: {state.get('predicted_key_symptoms', [])}")
@@ -160,9 +161,13 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-if __name__ == "__main__":
+def main() -> None:
     args = parse_args()
     if args.mode == "interactive":
         run_interactive()
     else:
         run_eval(persona_count=args.personas, seed=args.seed)
+
+
+if __name__ == "__main__":
+    main()
