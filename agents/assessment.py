@@ -93,10 +93,10 @@ def _coerce_evidence_record(node_name: str, turn: int, item: Dict, fallback_text
 
     return EvidenceRecord(
         turn=turn,
-        node=node_name,  # type: ignore[arg-type]
+        node=node_name,
         item_id=item_id,
         symptom_name=symptom_name,
-        direction=direction,  # type: ignore[arg-type]
+        direction=direction,
         intensity=intensity,
         confidence=confidence,
         evidence_text=evidence_text,

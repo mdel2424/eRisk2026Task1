@@ -86,7 +86,7 @@ def _route_decision(
     turn = int(state.get("turn_index", 0)) + 1
     decision = RouteDecision(
         turn=turn,
-        chosen_node=chosen_node,  # type: ignore[arg-type]
+        chosen_node=chosen_node,
         policy=policy,
         reason=reason,
         target_items=target_items,

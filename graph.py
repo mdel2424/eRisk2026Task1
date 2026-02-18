@@ -37,7 +37,7 @@ def assess_stop(state: AgentState):
         turn=turn_index,
         should_stop=should_stop,
         reason=stop_reason,
-        predicted_label=predicted_label,  # type: ignore[arg-type]
+        predicted_label=predicted_label,
         predicted_bdi_score=max(0, min(63, predicted_bdi_score)),
         confidence=max(0.0, min(1.0, confidence)),
     )

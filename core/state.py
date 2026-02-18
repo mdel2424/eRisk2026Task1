@@ -152,7 +152,7 @@ def build_initial_state(persona_id: Optional[str] = None) -> AgentState:
         calibrator_mode="deterministic",
         positive_contributions=[],
         negative_contributions=[],
-    )  # type: ignore[typeddict-item]
+    )
 
 
 def symptom_name_from_item(item_id: int) -> str:
