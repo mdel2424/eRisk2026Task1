@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import operator
-from collections import Counter
-from typing import Annotated, Dict, List, Optional, TypedDict
+from typing import Annotated, Dict, List, Literal, Optional, TypedDict
+
+from pydantic import BaseModel, Field
 
 BDI_ITEM_NAMES: Dict[int, str] = {
     1: "Sadness",
@@ -26,30 +29,110 @@ BDI_ITEM_NAMES: Dict[int, str] = {
     21: "Loss of Interest in Sex",
 }
 
+SYMPTOM_NAME_TO_ITEM: Dict[str, int] = {
+    name.lower(): item_id for item_id, name in BDI_ITEM_NAMES.items()
+}
+
+SPECIALIST_ITEM_MAP: Dict[str, List[int]] = {
+    "somatic": [11, 15, 16, 18, 20],
+    "cognitive": [2, 3, 5, 7, 8, 14],
+    "risk": [9],
+}
+
+
+class EvidenceRecord(BaseModel):
+    turn: int = Field(ge=1)
+    node: Literal["somatic", "cognitive", "risk"]
+    item_id: int = Field(ge=1, le=21)
+    symptom_name: str
+    direction: Literal["increase", "decrease", "neutral"] = "increase"
+    intensity: float = Field(ge=0.0, le=3.0)
+    confidence: float = Field(ge=0.0, le=1.0)
+    evidence_text: str
+    reason: str
+    method: str = "llm_extractor"
+
+
+class ItemBelief(BaseModel):
+    item_id: int = Field(ge=1, le=21)
+    mean_score: float = Field(ge=0.0, le=3.0)
+    uncertainty: float = Field(ge=0.0, le=1.0)
+    support_count: int = Field(ge=0)
+    last_update_turn: int = Field(ge=0)
+
+
+class RouteDecision(BaseModel):
+    turn: int = Field(ge=1)
+    chosen_node: Literal["somatic", "cognitive", "risk"]
+    policy: str
+    reason: str
+    target_items: List[int] = Field(default_factory=list)
+    expected_gain: float = Field(ge=0.0)
+
+
+class StopDecision(BaseModel):
+    turn: int = Field(ge=1)
+    should_stop: bool
+    reason: str
+    predicted_label: Literal["control", "depressed"]
+    predicted_bdi_score: int = Field(ge=0, le=63)
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
 class AgentState(TypedDict):
+    # Conversation
     messages: Annotated[List[dict], operator.add]
-    symptom_hits: Annotated[List[str], operator.add]
-    next_node: str
     turn_index: int
-    depression_score: float
-    risk_flag: bool
-    route_debug: str
-    specialist_debug: str
-    stop_debug: str
+    persona_id: Optional[str]
+
+    # Routing
+    next_node: str
+    active_node: str
+    route_history: Annotated[List[RouteDecision], operator.add]
+
+    # Evidence + beliefs
+    latest_turn_evidence: List[EvidenceRecord]
+    evidence_log: Annotated[List[EvidenceRecord], operator.add]
+    item_beliefs: Dict[int, ItemBelief]
+
+    # Prediction
     predicted_label: Optional[str]
     predicted_bdi_score: Optional[int]
     predicted_key_symptoms: List[str]
+    global_confidence: float
+    risk_flag: bool
     should_stop: bool
-    persona_id: Optional[str]
+    stop_history: Annotated[List[StopDecision], operator.add]
+
+    # Explainability (UI)
+    route_debug: str
+    specialist_debug: str
+    stop_debug: str
+    latest_feature_vector: Dict[str, float]
+    calibrator_mode: str
+    positive_contributions: List[dict]
+    negative_contributions: List[dict]
+
+
+def _initial_item_beliefs() -> Dict[int, ItemBelief]:
+    beliefs: Dict[int, ItemBelief] = {}
+    for item_id in range(1, 22):
+        beliefs[item_id] = ItemBelief(
+            item_id=item_id,
+            mean_score=0.0,
+            uncertainty=1.0,
+            support_count=0,
+            last_update_turn=0,
+        )
+    return beliefs
 
 
 def build_initial_state(persona_id: Optional[str] = None) -> AgentState:
     return AgentState(
         messages=[],
-        symptom_hits=[],
         next_node="cognitive",
+        active_node="cognitive",
         turn_index=0,
-        depression_score=0.0,
         risk_flag=False,
         route_debug="",
         specialist_debug="",
@@ -59,22 +142,34 @@ def build_initial_state(persona_id: Optional[str] = None) -> AgentState:
         predicted_key_symptoms=[],
         should_stop=False,
         persona_id=persona_id,
+        evidence_log=[],
+        latest_turn_evidence=[],
+        item_beliefs=_initial_item_beliefs(),
+        route_history=[],
+        stop_history=[],
+        global_confidence=0.0,
+        latest_feature_vector={},
+        calibrator_mode="deterministic",
+        positive_contributions=[],
+        negative_contributions=[],
     )  # type: ignore[typeddict-item]
+
+
+def symptom_name_from_item(item_id: int) -> str:
+    return BDI_ITEM_NAMES.get(item_id, f"Item {item_id}")
+
+
+def top_symptoms_from_beliefs(item_beliefs: Dict[int, ItemBelief], limit: int = 4) -> List[str]:
+    ranked = sorted(
+        item_beliefs.items(),
+        key=lambda pair: pair[1].mean_score,
+        reverse=True,
+    )
+    top = [symptom_name_from_item(item_id) for item_id, belief in ranked if belief.mean_score > 0.25]
+    return top[:limit]
 
 
 def top_symptoms_from_scores(scores_by_item: Dict[int, int], limit: int = 4) -> List[str]:
     ranked = sorted(scores_by_item.items(), key=lambda pair: pair[1], reverse=True)
-    top = [BDI_ITEM_NAMES[item_id] for item_id, score in ranked if score > 0]
+    top = [symptom_name_from_item(item_id) for item_id, score in ranked if score > 0]
     return top[:limit]
-
-
-def bdi_score_from_scalar(depression_score: float) -> int:
-    bounded = max(0.0, min(1.0, depression_score))
-    return min(63, int(round(bounded * 63)))
-
-
-def top_symptoms_from_hits(symptom_hits: List[str], limit: int = 4) -> List[str]:
-    if not symptom_hits:
-        return []
-    counts = Counter(symptom_hits)
-    return [name for name, _ in counts.most_common(limit)]

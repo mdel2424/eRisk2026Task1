@@ -21,13 +21,19 @@ class PersonaProfile:
     persona_id: str
     bdi_scores: Dict[int, int]
     depressed: bool
+    source: str = "synthetic"
+    has_ground_truth: bool = True
 
     @property
     def bdi_total(self) -> int:
+        if not self.has_ground_truth:
+            return 0
         return min(sum(self.bdi_scores.values()), 63)
 
     @property
     def key_symptoms(self) -> List[str]:
+        if not self.has_ground_truth:
+            return []
         return top_symptoms_from_scores(self.bdi_scores, limit=4)
 
     @property
@@ -57,10 +63,60 @@ def generate_persona_profiles(count: int, seed: int = 42) -> List[PersonaProfile
             for item_id in active_items:
                 scores[item_id] = 1
 
-        profiles.append(PersonaProfile(persona_id=str(idx), bdi_scores=scores, depressed=depressed))
+        profiles.append(
+            PersonaProfile(
+                persona_id=str(idx),
+                bdi_scores=scores,
+                depressed=depressed,
+                source="synthetic",
+                has_ground_truth=True,
+            )
+        )
 
     return profiles
 
 
 def create_persona(profile: PersonaProfile) -> PersonaResponder:
     return LLMPersona(persona_id=profile.persona_id, bdi_scores=profile.bdi_scores, evasive=True)
+
+
+def split_synthetic_profiles(
+    profiles: List[PersonaProfile],
+    seed: int,
+    train_ratio: float = 0.6,
+    val_ratio: float = 0.2,
+) -> Dict[str, List[PersonaProfile]]:
+    synthetic = [profile for profile in profiles if profile.source == "synthetic"]
+    rng = random.Random(seed)
+    shuffled = synthetic[:]
+    rng.shuffle(shuffled)
+
+    n = len(shuffled)
+    train_end = int(n * train_ratio)
+    val_end = train_end + int(n * val_ratio)
+    if n >= 3:
+        train_end = max(1, train_end)
+        val_end = max(train_end + 1, val_end)
+        val_end = min(val_end, n - 1)
+
+    return {
+        "synthetic_train": shuffled[:train_end],
+        "synthetic_val": shuffled[train_end:val_end],
+        "synthetic_test": shuffled[val_end:],
+    }
+
+
+def build_official_tracking_profiles(persona_ids: List[str]) -> List[PersonaProfile]:
+    profiles: List[PersonaProfile] = []
+    for persona_id in persona_ids:
+        scores = {item_id: 0 for item_id in range(1, 22)}
+        profiles.append(
+            PersonaProfile(
+                persona_id=persona_id,
+                bdi_scores=scores,
+                depressed=False,
+                source="official",
+                has_ground_truth=False,
+            )
+        )
+    return profiles
