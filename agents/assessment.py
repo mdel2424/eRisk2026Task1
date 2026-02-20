@@ -98,11 +98,13 @@ LEXICAL_EVIDENCE_CUES: Dict[int, List[str]] = {
 }
 
 
-def _latest_persona_message(state: AgentState) -> str:
-    for msg in reversed(state.get("messages", [])):
+def _latest_persona_message_with_index(state: AgentState) -> Tuple[str, int]:
+    messages = list(state.get("messages", []))
+    for idx in range(len(messages) - 1, -1, -1):
+        msg = messages[idx]
         if msg.get("role") == "assistant":
-            return str(msg.get("content", ""))
-    return ""
+            return str(msg.get("content", "")), idx
+    return "", -1
 
 
 def _recent_context(state: AgentState, limit: int = 4) -> str:
@@ -251,11 +253,32 @@ def _coerce_evidence_record(node_name: str, turn: int, item: Dict, fallback_text
 
 def extract_evidence(state: AgentState) -> Dict:
     node_name = str(state.get("active_node", "cognitive"))
-    latest_message = _latest_persona_message(state)
+    latest_message, latest_persona_idx = _latest_persona_message_with_index(state)
     turn = int(state.get("turn_index", 0)) + 1
+    last_processed_idx = int(state.get("last_processed_persona_msg_idx", -1))
+    has_new_persona_input = latest_persona_idx > last_processed_idx
 
     if node_name not in {"somatic", "cognitive", "risk"}:
         node_name = "cognitive"
+
+    if not has_new_persona_input:
+        turn_trace = {
+            "extract_evidence": {
+                "turn": turn,
+                "source": "skip_no_new_persona",
+                "has_new_persona_input": False,
+                "latest_persona_idx": latest_persona_idx,
+                "last_processed_persona_msg_idx": last_processed_idx,
+                "kept_items_count": 0,
+                "empty_streak": int(state.get("empty_evidence_streak", 0)),
+            }
+        }
+        return {
+            "latest_turn_evidence": [],
+            "specialist_debug": "Evidence extraction: waiting for persona input",
+            "turn_trace": turn_trace,
+            "has_new_persona_input": False,
+        }
 
     evidence_records: List[EvidenceRecord] = []
     raw_nonempty = False
@@ -344,20 +367,24 @@ def extract_evidence(state: AgentState) -> Dict:
     else:
         empty_streak = 0
 
-    turn_trace = dict(state.get("turn_trace", {}))
-    turn_trace["extract_evidence"] = {
-        "turn": turn,
-        "source": source,
-        "raw_nonempty": raw_nonempty,
-        "json_parse_ok": json_parse_ok,
-        "raw_items_count": raw_items_count,
-        "kept_items_count": len(evidence_records),
-        "drop_unknown_item_count": dropped_unknown,
-        "drop_invalid_range_count": dropped_invalid,
-        "prefilter_count": len(lexical_prefilter),
-        "llm_on_lexical_hit": llm_on_lexical_hit,
-        "fallback_used": bool(fallback_records),
-        "empty_streak": empty_streak,
+    turn_trace = {
+        "extract_evidence": {
+            "turn": turn,
+            "source": source,
+            "raw_nonempty": raw_nonempty,
+            "json_parse_ok": json_parse_ok,
+            "raw_items_count": raw_items_count,
+            "kept_items_count": len(evidence_records),
+            "drop_unknown_item_count": dropped_unknown,
+            "drop_invalid_range_count": dropped_invalid,
+            "prefilter_count": len(lexical_prefilter),
+            "llm_on_lexical_hit": llm_on_lexical_hit,
+            "fallback_used": bool(fallback_records),
+            "empty_streak": empty_streak,
+            "has_new_persona_input": True,
+            "latest_persona_idx": latest_persona_idx,
+            "last_processed_persona_msg_idx": last_processed_idx,
+        }
     }
     summary = (
         f"{state.get('specialist_debug', '')} | evidence_count={len(evidence_records)}"
@@ -371,6 +398,7 @@ def extract_evidence(state: AgentState) -> Dict:
         "turn_trace": turn_trace,
         "failure_counters": counters,
         "empty_evidence_streak": empty_streak,
+        "has_new_persona_input": True,
     }
 
 
@@ -408,6 +436,25 @@ def _update_single_belief(belief: ItemBelief, evidence: EvidenceRecord, turn: in
 
 def update_beliefs(state: AgentState) -> Dict:
     turn = int(state.get("turn_index", 0)) + 1
+    has_new_persona_input = bool(state.get("has_new_persona_input", False))
+    if not has_new_persona_input:
+        turn_trace = dict(state.get("turn_trace", {}))
+        turn_trace["update_beliefs"] = {
+            "turn": turn,
+            "skipped_no_new_persona_input": True,
+            "active_node": str(state.get("active_node", "cognitive")),
+            "updated_item_ids": [],
+            "risk_flag": bool(state.get("risk_flag", False)),
+            "calibrator_mode": str(state.get("calibrator_mode", "deterministic_default")),
+            "global_confidence": round(float(state.get("global_confidence", 0.0)), 4),
+            "positive_features": [],
+            "negative_features": [],
+        }
+        return {
+            "turn_trace": turn_trace,
+            "specialist_debug": "Belief update: skipped (no new persona input)",
+        }
+
     latest_evidence = list(state.get("latest_turn_evidence", []))
     prior_beliefs = state.get("item_beliefs", {})
     beliefs: Dict[int, ItemBelief] = {}
@@ -458,6 +505,7 @@ def update_beliefs(state: AgentState) -> Dict:
     turn_trace = dict(state.get("turn_trace", {}))
     turn_trace["update_beliefs"] = {
         "turn": turn,
+        "skipped_no_new_persona_input": False,
         "active_node": active_node,
         "updated_item_ids": updated_item_ids,
         "risk_flag": risk_flag,

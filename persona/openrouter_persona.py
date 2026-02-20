@@ -7,7 +7,7 @@ from typing import Dict, List
 
 from core.llm import get_persona_openrouter_llm
 from core.state import BDI_ITEM_NAMES
-from persona.sim_behavior import build_deterministic_reply, normalize_response
+from persona.sim_behavior import build_deterministic_reply, normalize_response, response_style_flags
 
 
 @dataclass
@@ -24,6 +24,11 @@ class OpenRouterSimPersona:
     generator_version: str = "sim_v2"
     last_response: str = field(default="", init=False)
     recent_responses: List[str] = field(default_factory=list, init=False)
+    responses_total: int = field(default=0, init=False)
+    hedged_response_count: int = field(default=0, init=False)
+    deflect_response_count: int = field(default=0, init=False)
+    context_anchor_count: int = field(default=0, init=False)
+    response_words_total: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
         try:
@@ -71,7 +76,10 @@ class OpenRouterSimPersona:
 
         prompt = (
             "Rewrite the draft patient reply to sound natural while preserving meaning and severity. "
+            "Use a cooperative but hedged style: answer first, soften uncertainty second. "
             "Keep first-person voice, 1-2 short sentences, no bullets, no diagnosis labels. "
+            "Include one concrete life detail when available (work/family/routine/messages). "
+            "Avoid hard refusal unless directly asked for diagnostic labels. "
             "Do not add symptoms not supported by the allowed symptom set. "
             f"Allowed symptoms: {allowed}. "
             f"Context split={self.split}, family={self.family}, template_bank={self.template_bank}. "
@@ -93,6 +101,29 @@ class OpenRouterSimPersona:
             rng=self._rng,
         )
 
+    def _dedupe(self, candidate: str, history: List[dict]) -> str:
+        lowered_recent = {text.lower().strip() for text in self.recent_responses[-4:]}
+        text = normalize_response(candidate)
+        if not text:
+            text = normalize_response(self._fallback_variant(history))
+        if text.lower().strip() not in lowered_recent:
+            return text
+        for _ in range(3):
+            retry = normalize_response(self._fallback_variant(history))
+            if retry and retry.lower().strip() not in lowered_recent:
+                return retry
+        return text
+
+    def style_stats(self) -> Dict[str, float | int]:
+        avg_words = (self.response_words_total / self.responses_total) if self.responses_total else 0.0
+        return {
+            "responses_total": int(self.responses_total),
+            "hedged_response_count": int(self.hedged_response_count),
+            "deflect_response_count": int(self.deflect_response_count),
+            "context_anchor_count": int(self.context_anchor_count),
+            "avg_response_words": round(float(avg_words), 3),
+        }
+
     def reply(self, history: List[dict]) -> str:
         base = build_deterministic_reply(
             family=self.family,
@@ -113,11 +144,7 @@ class OpenRouterSimPersona:
             except Exception:
                 text = normalize_response(base)
 
-        if not text:
-            text = normalize_response(self._fallback_variant(history))
-
-        if self.last_response and text.lower() == self.last_response.lower():
-            text = normalize_response(self._fallback_variant(history))
+        text = self._dedupe(text, history)
 
         if not text:
             text = "I can describe my day-to-day if that helps more."
@@ -126,4 +153,13 @@ class OpenRouterSimPersona:
         self.recent_responses.append(text)
         if len(self.recent_responses) > 6:
             self.recent_responses = self.recent_responses[-6:]
+        flags = response_style_flags(text)
+        self.responses_total += 1
+        if flags.get("hedged"):
+            self.hedged_response_count += 1
+        if flags.get("deflect"):
+            self.deflect_response_count += 1
+        if flags.get("context_anchor"):
+            self.context_anchor_count += 1
+        self.response_words_total += len(text.split())
         return text

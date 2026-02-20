@@ -84,6 +84,63 @@ DIRECT_DIAGNOSIS_TOKENS = [
     "do you have depression",
 ]
 
+HEDGE_PHRASES: List[str] = [
+    "I guess",
+    "maybe",
+    "I don't know",
+    "I think",
+    "kind of",
+]
+
+NORMALIZATION_PHRASES: List[str] = [
+    "maybe it is just stress piling up",
+    "I might be overthinking some of this",
+    "it could just be a rough stretch",
+    "I keep telling myself it should pass",
+]
+
+CONTEXT_ANCHORS: List[str] = [
+    "work has felt heavier than usual",
+    "by the evening I feel completely spent",
+    "messages and small tasks feel hard to keep up with",
+    "family responsibilities feel harder to juggle right now",
+    "I am mostly going through routines on autopilot",
+]
+
+RISK_RESPONSE_BANK: Dict[int, List[str]] = {
+    0: [
+        "I have not had thoughts about doing anything to hurt myself",
+        "I mostly just feel worn down, not unsafe",
+    ],
+    1: [
+        "when it gets bad I mostly wish I could shut everything off and rest",
+        "I have had moments where I wish I could disappear for a while, not act on anything",
+    ],
+    2: [
+        "at my worst I wish I could escape everything and not wake up for a bit",
+        "there are moments life feels like too much effort, even though I do not want to do anything",
+    ],
+    3: [
+        "I have had scary moments where not being here crosses my mind",
+        "sometimes it feels dangerously heavy and I have to focus on staying safe",
+    ],
+}
+
+RISK_PROTECTIVE_FACTORS: List[str] = [
+    "I think about my family and that pulls me back",
+    "I usually reach out or slow things down until the wave passes",
+    "I try to keep to basic routines until it eases up",
+]
+
+ITEM_CONTEXT_HINTS: Dict[int, List[str]] = {
+    15: ["getting started at work takes more effort lately", "household tasks pile up faster than usual"],
+    16: ["nights feel restless and mornings start foggy", "sleep has made the whole day harder"],
+    18: ["meals feel more like a chore than usual", "my eating rhythm is off compared to normal"],
+    19: ["messages and short reads take more re-reading", "focus drops during meetings or short tasks"],
+    20: ["by late afternoon I am running on empty", "I crash earlier in the evening than before"],
+    12: ["I keep delaying replies and invitations", "social things feel like effort with little payoff"],
+}
+
 ITEM_SENTENCE_BANK: Dict[int, Dict[int, str]] = {
     2: {
         1: "it is harder to feel hopeful about what is coming next",
@@ -231,29 +288,85 @@ def _item_sentence(item_id: int, score: int) -> str:
     return f"{symptom} has been more noticeable lately"
 
 
+def response_style_flags(text: str) -> Dict[str, bool]:
+    lowered = _normalize(text)
+    hedged = any(phrase.lower() in lowered for phrase in HEDGE_PHRASES)
+    deflect = any(token in lowered for token in ("labels", "diagnosis", "diagnostic", "not naming", "not really labels"))
+    context = any(anchor.lower() in lowered for anchor in CONTEXT_ANCHORS)
+    context = context or any(
+        token in lowered
+        for token in ("work", "kids", "family", "messages", "meeting", "phone", "evening", "morning", "routine")
+    )
+    return {"hedged": hedged, "deflect": deflect, "context_anchor": context}
+
+
 def _intent(
     question: str,
     evasiveness: float,
     contradiction_rate: float,
+    direct_answer_rate: float,
     rng,
 ) -> str:
-    if any(token in question for token in DIRECT_DIAGNOSIS_TOKENS) and rng.random() < min(0.95, evasiveness + 0.25):
+    direct_label_prompt = any(token in question for token in DIRECT_DIAGNOSIS_TOKENS)
+    if direct_label_prompt and rng.random() < max(0.18, min(0.55, evasiveness * 0.55)):
         return "deflect"
-    if contradiction_rate > 0.0 and rng.random() < min(0.35, contradiction_rate):
+    if rng.random() > max(0.45, min(0.95, direct_answer_rate)) and rng.random() < max(0.22, min(0.5, evasiveness + 0.1)):
         return "partial"
-    if rng.random() < max(0.15, evasiveness * 0.5):
+    if contradiction_rate > 0.0 and rng.random() < min(0.2, contradiction_rate * 0.8):
         return "partial"
     return "disclose"
 
 
 def _safe_join(chunks: List[str], limit_words: int = 38) -> str:
-    text = " ".join(chunk.strip() for chunk in chunks if chunk and chunk.strip())
+    normalized_chunks: List[str] = []
+    for chunk in chunks:
+        if not chunk or not chunk.strip():
+            continue
+        piece = re.sub(r"\s+", " ", chunk.strip())
+        if piece and piece[0].isalpha():
+            piece = piece[0].upper() + piece[1:]
+        if piece and piece[-1] not in {".", "?", "!"}:
+            piece += "."
+        normalized_chunks.append(piece)
+    text = " ".join(normalized_chunks)
     words = text.split()
     if len(words) > limit_words:
-        text = " ".join(words[:limit_words]).rstrip(" ,;") + "."
+        text = " ".join(words[:limit_words]).rstrip(" ,;")
+        if text and text[-1] not in {".", "?", "!"}:
+            text += "."
     if text and text[-1] not in {".", "?", "!"}:
         text += "."
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _maybe_context_anchor(item_id: int, context_anchor_rate: float, rng) -> str:
+    if rng.random() >= context_anchor_rate:
+        return ""
+    hints = ITEM_CONTEXT_HINTS.get(item_id, CONTEXT_ANCHORS)
+    return rng.choice(hints)
+
+
+def _maybe_tail(hedge_rate: float, normalization_rate: float, rng) -> str:
+    parts: List[str] = []
+    if rng.random() < hedge_rate:
+        hedge = rng.choice(HEDGE_PHRASES)
+        if hedge.lower() == "i don't know":
+            parts.append("I don't know, that is how it has felt")
+        elif hedge.lower() == "maybe":
+            parts.append("maybe that is why everything feels heavier")
+        else:
+            parts.append(f"{hedge.lower()}, that seems to be the pattern")
+    if rng.random() < normalization_rate:
+        parts.append(rng.choice(NORMALIZATION_PHRASES))
+    return _safe_join(parts, limit_words=24) if parts else ""
+
+
+def _risk_tier_reply(risk_score: int, rng) -> str:
+    clipped = max(0, min(3, int(risk_score)))
+    line = rng.choice(RISK_RESPONSE_BANK.get(clipped, RISK_RESPONSE_BANK[0]))
+    if clipped >= 1 and rng.random() < 0.55:
+        return _safe_join([line, rng.choice(RISK_PROTECTIVE_FACTORS)], limit_words=34)
+    return _safe_join([line], limit_words=26)
 
 
 def build_deterministic_reply(
@@ -275,19 +388,40 @@ def build_deterministic_reply(
 
     evasiveness = float(behavior_params.get("evasiveness", 0.45))
     contradiction_rate = float(behavior_params.get("contradiction", 0.08))
-    intent = _intent(question, evasiveness if evasive else 0.1, contradiction_rate, rng)
+    hedge_rate = float(behavior_params.get("hedge_rate", 0.65))
+    normalization_rate = float(behavior_params.get("normalization_rate", 0.45))
+    context_anchor_rate = float(behavior_params.get("context_anchor_rate", 0.55))
+    direct_answer_rate = float(behavior_params.get("direct_answer_rate", 0.78))
+    intent = _intent(question, evasiveness if evasive else 0.1, contradiction_rate, direct_answer_rate, rng)
 
-    opener = rng.choice(bank["openers"])
+    # Alternate opener style by turn to avoid robotic cadence.
+    question_turns = sum(1 for msg in history if msg.get("role") == "user")
+    opener_pool = bank["openers"][::2] if question_turns % 2 == 0 else bank["openers"][1::2] or bank["openers"]
+    opener = rng.choice(opener_pool)
     bridge = rng.choice(bank["bridges"])
 
+    if target_item == 9:
+        return _risk_tier_reply(target_score, rng)
+
     if intent == "deflect":
-        return _safe_join([rng.choice(bank["deflectors"]), f"{bridge} {_item_sentence(target_item, target_score)}"])
+        tail = _maybe_tail(hedge_rate, normalization_rate, rng)
+        return _safe_join([rng.choice(bank["deflectors"]), tail], limit_words=32)
 
     if intent == "partial":
         softened = max(0, target_score - 1)
-        return _safe_join([f"{opener} it is a bit hard to describe directly", f"{bridge} {_item_sentence(target_item, softened)}"])
+        direct = _item_sentence(target_item, softened)
+        context = _maybe_context_anchor(target_item, context_anchor_rate, rng)
+        tail = _maybe_tail(hedge_rate, normalization_rate, rng)
+        lead = f"{opener} it is a bit hard to pin down, but {direct}"
+        return _safe_join([lead, context, tail], limit_words=36)
 
-    return _safe_join([f"{opener} {_item_sentence(target_item, target_score)}", f"{bridge} it has affected my routine more than usual"])
+    direct = _item_sentence(target_item, target_score)
+    context = _maybe_context_anchor(target_item, context_anchor_rate, rng)
+    tail = _maybe_tail(hedge_rate, normalization_rate, rng)
+    answer = _safe_join([f"{opener} {direct}", f"{bridge} {context}" if context else "", tail], limit_words=38)
+    if rng.random() < min(0.2, hedge_rate * 0.35):
+        return _safe_join(["I don't know, but", answer], limit_words=38)
+    return answer
 
 
 def normalize_response(text: str) -> str:

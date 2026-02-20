@@ -141,27 +141,53 @@ def _to_turns(messages: List[dict]) -> List[Turn]:
 
 
 def _snapshot_turn(state: Dict) -> Dict:
+    def _compact_evidence(rows: Any) -> List[Dict[str, Any]]:
+        if not isinstance(rows, list):
+            return []
+        compact: List[Dict[str, Any]] = []
+        for row in rows[:4]:
+            data = _serialize(row)
+            if not isinstance(data, dict):
+                continue
+            compact.append(
+                {
+                    "item_id": data.get("item_id"),
+                    "symptom_name": data.get("symptom_name"),
+                    "intensity": data.get("intensity"),
+                    "confidence": data.get("confidence"),
+                    "method": data.get("method"),
+                }
+            )
+        return compact
+
     route_history = state.get("route_history", [])
     stop_history = state.get("stop_history", [])
+    latest_route = _serialize(route_history[-1]) if route_history else None
+    latest_stop = _serialize(stop_history[-1]) if stop_history else None
+    turn_trace = _serialize(state.get("turn_trace", {}))
+    if isinstance(turn_trace, dict):
+        turn_trace = {
+            key: turn_trace.get(key)
+            for key in ("supervisor", "specialist", "extract_evidence", "update_beliefs", "stop")
+            if key in turn_trace
+        }
     return {
         "turn": int(state.get("turn_index", 0)),
-        "route_decision": _serialize(route_history[-1]) if route_history else None,
-        "latest_evidence": _serialize(state.get("latest_turn_evidence", [])),
-        "item_beliefs": _serialize(state.get("item_beliefs", {})),
-        "positive_contributions": _serialize(state.get("positive_contributions", [])),
-        "negative_contributions": _serialize(state.get("negative_contributions", [])),
-        "stop_decision": _serialize(stop_history[-1]) if stop_history else None,
-        "predicted_label": state.get("predicted_label"),
-        "predicted_bdi_score": state.get("predicted_bdi_score"),
+        "route_decision": latest_route,
+        "latest_evidence": _compact_evidence(state.get("latest_turn_evidence", [])),
+        "stop_decision": latest_stop,
+        "predicted": {
+            "label": state.get("predicted_label"),
+            "bdi_score": state.get("predicted_bdi_score"),
+            "confidence": state.get("global_confidence", 0.0),
+            "risk_flag": bool(state.get("risk_flag", False)),
+        },
         "raw_predicted_label": state.get("raw_predicted_label"),
         "raw_predicted_bdi_score": state.get("raw_predicted_bdi_score"),
-        "final_item_scores": _serialize(state.get("final_item_scores", {})),
-        "module_imputation": _serialize(state.get("module_imputation", {})),
-        "global_confidence": state.get("global_confidence", 0.0),
         "route_debug": state.get("route_debug", ""),
         "specialist_debug": state.get("specialist_debug", ""),
         "stop_debug": state.get("stop_debug", ""),
-        "turn_trace": _serialize(state.get("turn_trace", {})),
+        "turn_trace": turn_trace,
         "failure_counters": _serialize(state.get("failure_counters", {})),
         "empty_evidence_streak": int(state.get("empty_evidence_streak", 0)),
     }
@@ -194,26 +220,50 @@ def _run_detector_until_stop(
     persona,
     graph_app,
     verbose: bool = False,
+    progress_prefix: str = "",
+    live_status: bool = False,
 ) -> Tuple[Dict, List[Dict]]:
     timeline: List[Dict] = []
+    cycle = 0
     while True:
+        cycle += 1
+        if live_status:
+            print(
+                f"\r{progress_prefix} cycle={cycle} turn={state.get('turn_index', 0)} "
+                f"stage=detector_graph {_usage_snippet()}",
+                end="",
+                flush=True,
+            )
         try:
             state = graph_app.invoke(state)
         except LLMBudgetExceeded as exc:
             state = _mark_budget_exceeded(state, "detector_graph", exc)
             timeline.append(_snapshot_turn(state))
+            if live_status:
+                print()
             return state, timeline
 
         timeline.append(_snapshot_turn(state))
         if state.get("should_stop"):
+            if live_status:
+                print()
             return state, timeline
 
         detector_message = state["messages"][-1]["content"]
+        if live_status:
+            print(
+                f"\r{progress_prefix} cycle={cycle} turn={state.get('turn_index', 0)} "
+                f"stage=persona_reply {_usage_snippet()}",
+                end="",
+                flush=True,
+            )
         try:
             persona_reply = persona.reply(state["messages"])
         except LLMBudgetExceeded as exc:
             state = _mark_budget_exceeded(state, "persona_reply", exc)
             timeline.append(_snapshot_turn(state))
+            if live_status:
+                print()
             return state, timeline
 
         state["messages"].append({"role": "assistant", "content": persona_reply})
@@ -246,19 +296,22 @@ def run_interactive() -> None:
             break
 
         if user_input:
-            state["messages"].append({"role": "assistant", "content": user_input})
+            persona_text = user_input
         else:
-            state["messages"].append({"role": "assistant", "content": persona.reply(state["messages"])})
+            persona_text = persona.reply(state["messages"])
+        state["messages"].append({"role": "assistant", "content": persona_text})
+        print(f"Persona: {persona_text}")
 
         state = graph_app.invoke(state)
 
-        detector_msg = state["messages"][-1]["content"]
-        print(f"\nDetector: {detector_msg}")
+        print(f"Debug: {_format_debug(state)}")
+        detector_msg = state["messages"][-1]["content"] if state.get("messages") else ""
+        if not state.get("should_stop") and state.get("messages", []) and state["messages"][-1].get("role") == "user":
+            print(f"\nDetector: {detector_msg}")
         print(
             f"Turn={state['turn_index']} | PredLabel={state.get('predicted_label')} | "
             f"PredBDI={state.get('predicted_bdi_score')} | Stop={state.get('should_stop')}"
         )
-        print(f"Debug: {_format_debug(state)}")
         if state.get("should_stop"):
             print(f"Key symptoms: {state.get('predicted_key_symptoms', [])}")
             break
@@ -352,10 +405,32 @@ def _usage_snippet() -> str:
     return f"calls={calls_total}/{int(max_calls)}"
 
 
-def _run_profile(profile: PersonaProfile, graph_app, verbose: bool = False) -> Tuple[Dict, List[Dict]]:
+def _run_profile(
+    profile: PersonaProfile,
+    graph_app,
+    verbose: bool = False,
+    progress_prefix: str = "",
+    live_status: bool = False,
+) -> Tuple[Dict, List[Dict], Dict[str, Any]]:
     persona = create_persona(profile)
     state = build_initial_state(persona_id=profile.persona_id)
-    return _run_detector_until_stop(state, persona, graph_app, verbose=verbose)
+    final_state, timeline = _run_detector_until_stop(
+        state,
+        persona,
+        graph_app,
+        verbose=verbose,
+        progress_prefix=progress_prefix,
+        live_status=live_status,
+    )
+    style_stats: Dict[str, Any] = {}
+    if hasattr(persona, "style_stats"):
+        try:
+            stats = persona.style_stats()
+            if isinstance(stats, dict):
+                style_stats = stats
+        except Exception:
+            style_stats = {}
+    return final_state, timeline, style_stats
 
 
 def _strict_split_lock_enabled() -> bool:
@@ -501,6 +576,11 @@ def run_eval(
 ) -> None:
     from graph import app as graph_app
 
+    verbose_console = _parse_bool(os.getenv("CLI_VERBOSE", "0"))
+    live_status = _parse_bool(os.getenv("CLI_LIVE_STATUS", "1"))
+    ci_mode = _parse_bool(os.getenv("CI", "0"))
+    if ci_mode:
+        live_status = False
     os.environ["PROMPT_VERSION"] = prompt_version
     os.environ.pop("CALIBRATOR_PATH", None)
     clear_calibrator_cache()
@@ -515,15 +595,23 @@ def run_eval(
 
     requested_eval_mode, effective_eval_mode = _resolve_effective_eval_mode(eval_mode)
 
-    print(f"--- Eval Mode: {requested_eval_mode} | personas={persona_count} | seed={seed} | prompts={prompt_version} ---")
-    _print_backend_info(max_api_calls=max_api_calls if max_api_calls > 0 else None, trace_level=trace_level)
-    print(
-        "Calibrator policy: "
-        f"requested={fit_calibrator_policy} | enabled={fit_calibrator_enabled} | min_train_records={min_train_records}"
-    )
-    print(
-        f"Synthetic generator: version={generator_version} | strict_split_lock={'on' if strict_split_lock else 'off'}"
-    )
+    if verbose_console:
+        print(
+            f"--- Eval Mode: {requested_eval_mode} | personas={persona_count} | seed={seed} | prompts={prompt_version} ---"
+        )
+        _print_backend_info(max_api_calls=max_api_calls if max_api_calls > 0 else None, trace_level=trace_level)
+        print(
+            "Calibrator policy: "
+            f"requested={fit_calibrator_policy} | enabled={fit_calibrator_enabled} | min_train_records={min_train_records}"
+        )
+        print(
+            f"Synthetic generator: version={generator_version} | strict_split_lock={'on' if strict_split_lock else 'off'}"
+        )
+    elif live_status:
+        print(
+            f"Running eval: mode={requested_eval_mode}, personas={persona_count}, "
+            f"prompt={prompt_version}, live_status=on"
+        )
 
     splits = build_split_profiles(count=persona_count, seed=seed)
     train_profiles = splits["synthetic_train"]
@@ -592,15 +680,23 @@ def run_eval(
             calibrator_status["reason"] = "small_train_split"
             calibrator_status["mode"] = "skipped_small_train"
             run_failure_counters["calibrator_fallback_small_train"] += 1
-            print(
-                f"Skipping calibrator fit: train split too small "
-                f"({len(train_profiles)} < {min_train_records})."
-            )
+            if verbose_console:
+                print(
+                    f"Skipping calibrator fit: train split too small "
+                    f"({len(train_profiles)} < {min_train_records})."
+                )
         else:
-            print(f"Fitting calibrator from synthetic train split ({len(train_profiles)} personas)...")
+            if verbose_console:
+                print(f"Fitting calibrator from synthetic train split ({len(train_profiles)} personas)...")
             train_total = len(train_profiles)
             for idx, profile in enumerate(train_profiles, start=1):
-                final_state, _ = _run_profile(profile, graph_app, verbose=False)
+                final_state, _, _ = _run_profile(
+                    profile,
+                    graph_app,
+                    verbose=False,
+                    progress_prefix=f"[fit {idx}/{train_total}]",
+                    live_status=live_status and verbose_console,
+                )
                 calibrator_train_ids.append(profile.persona_id)
                 feature_vector = dict(final_state.get("latest_feature_vector", {}))
                 calibrator_train_records.append(
@@ -610,7 +706,8 @@ def run_eval(
                         "y_true": profile.depressed,
                     }
                 )
-                _print_progress(f"Calibrator fit {_usage_snippet()}", idx, train_total)
+                if verbose_console:
+                    _print_progress(f"Calibrator fit {_usage_snippet()}", idx, train_total)
 
             calibrator_status["train_records"] = len(calibrator_train_records)
             if calibrator_train_records:
@@ -622,11 +719,13 @@ def run_eval(
                     save_calibrator_bundle(calibrator_path, bundle)
                     os.environ["CALIBRATOR_PATH"] = str(calibrator_path)
                     calibrator_status["saved_path"] = str(calibrator_path)
-                    print(f"Calibrator saved: {calibrator_path}")
+                    if verbose_console:
+                        print(f"Calibrator saved: {calibrator_path}")
                 else:
                     if fit_reason == "small_train_split":
                         run_failure_counters["calibrator_fallback_small_train"] += 1
-                    print(f"Calibrator fallback mode: {bundle.mode} ({fit_reason or 'n/a'})")
+                    if verbose_console:
+                        print(f"Calibrator fallback mode: {bundle.mode} ({fit_reason or 'n/a'})")
                 clear_calibrator_cache()
     elif not fit_calibrator_enabled:
         calibrator_status["reason"] = "disabled_by_policy"
@@ -650,8 +749,15 @@ def run_eval(
     eval_ids: List[str] = []
 
     for idx, profile in enumerate(eval_profiles, start=1):
-        print(f"\n=== Persona {profile.persona_id} ({profile.source}/{profile.split}/{profile.family}) ===")
-        final_state, timeline = _run_profile(profile, graph_app, verbose=False)
+        if verbose_console:
+            print(f"\n=== Persona {profile.persona_id} ({profile.source}/{profile.split}/{profile.family}) ===")
+        final_state, timeline, style_stats = _run_profile(
+            profile,
+            graph_app,
+            verbose=False,
+            progress_prefix=f"[eval {idx}/{eval_total} persona={profile.persona_id}]",
+            live_status=live_status,
+        )
         processed_profiles += 1
         eval_ids.append(profile.persona_id)
 
@@ -687,16 +793,32 @@ def run_eval(
                         "raw_predicted_label": final_state.get("raw_predicted_label"),
                         "raw_predicted_bdi_score": final_state.get("raw_predicted_bdi_score"),
                         "predicted_key_symptoms": final_state.get("predicted_key_symptoms", []),
-                        "final_item_scores": final_state.get("final_item_scores", {}),
-                        "module_imputation": final_state.get("module_imputation", {}),
+                        "risk_flag": bool(final_state.get("risk_flag", False)),
                         "global_confidence": final_state.get("global_confidence", 0.0),
-                        "route_history": final_state.get("route_history", []),
-                        "evidence_log": final_state.get("evidence_log", []),
-                        "item_beliefs": final_state.get("item_beliefs", {}),
-                        "stop_history": final_state.get("stop_history", []),
-                        "trace_log": final_state.get("trace_log", []) if trace_level == "compact" else [],
+                        "evidence_log_count": len(final_state.get("evidence_log", [])),
+                        "last_route_decision": (
+                            _serialize(final_state.get("route_history", [])[-1])
+                            if final_state.get("route_history")
+                            else None
+                        ),
+                        "last_stop_decision": (
+                            _serialize(final_state.get("stop_history", [])[-1])
+                            if final_state.get("stop_history")
+                            else None
+                        ),
+                        "final_item_scores_non_zero": {
+                            str(k): int(v)
+                            for k, v in dict(final_state.get("final_item_scores", {})).items()
+                            if int(v) > 0
+                        },
+                        "imputed_item_count": (
+                            int(final_state.get("module_imputation", {}).get("imputed_item_count", 0))
+                            if isinstance(final_state.get("module_imputation", {}), dict)
+                            else 0
+                        ),
                         "failure_counters": final_state.get("failure_counters", {}),
                         "calibrator_mode": final_state.get("calibrator_mode", ""),
+                        "sim_style_stats": style_stats,
                     }
                 ),
             }
@@ -730,11 +852,13 @@ def run_eval(
             except (TypeError, ValueError):
                 continue
 
-        _print_progress(f"Evaluation {_usage_snippet()}", idx, eval_total)
+        if verbose_console:
+            _print_progress(f"Evaluation {_usage_snippet()}", idx, eval_total)
         usage_now = get_llm_usage()
         max_calls_now = usage_now.get("max_calls")
         if max_calls_now is not None and int(usage_now.get("calls_total", 0)) >= int(max_calls_now):
-            print("\nStopping eval early: API call budget reached.")
+            if verbose_console:
+                print("\nStopping eval early: API call budget reached.")
             break
 
     train_eval_overlap = _split_overlap_count(calibrator_train_ids, eval_ids)
@@ -861,6 +985,10 @@ def run_eval(
             "SIM_PARAPHRASE_ENABLED": os.getenv("SIM_PARAPHRASE_ENABLED", "1"),
             "SIM_PARAPHRASE_RATE": os.getenv("SIM_PARAPHRASE_RATE", "0.5"),
             "SIM_TEMPLATE_DISJOINT_ENFORCE": os.getenv("SIM_TEMPLATE_DISJOINT_ENFORCE", "1"),
+            "SIM_HEDGE_RATE": os.getenv("SIM_HEDGE_RATE", "0.65"),
+            "SIM_NORMALIZATION_RATE": os.getenv("SIM_NORMALIZATION_RATE", "0.45"),
+            "SIM_CONTEXT_ANCHOR_RATE": os.getenv("SIM_CONTEXT_ANCHOR_RATE", "0.55"),
+            "SIM_DIRECT_ANSWER_RATE": os.getenv("SIM_DIRECT_ANSWER_RATE", "0.78"),
         },
         "resolved_backends": {
             "auto_enabled": auto_backend_switch_enabled(),
@@ -873,27 +1001,30 @@ def run_eval(
     }
     _write_json(output_dir / "config_used.json", config_snapshot)
 
-    print("\n--- Evaluation Summary ---")
     if primary_metrics:
         print(
-            f"Primary split: {primary_split} | "
-            f"binary_f1={float(primary_metrics.get('binary_f1', 0.0)):.4f} | "
-            f"bdi_mae={float(primary_metrics.get('bdi_mae', 0.0)):.4f}"
+            f"binary_f1={float(primary_metrics.get('binary_f1', 0.0)):.4f} "
+            f"objective={float(primary_metrics.get('objective', 0.0)):.4f}"
         )
-    print(json.dumps(metrics_payload, indent=2))
-    print("\nLeakage report:")
-    print(json.dumps(leakage_report_payload, indent=2))
-    print("\nWrote:")
-    print(" - outputs/persona_manifest_run_local.json")
-    print(" - outputs/persona_manifest_hash_run_local.txt")
-    print(" - outputs/interactions_run_local.json")
-    print(" - outputs/results_run_local.json")
-    print(" - outputs/metrics_run_local.json")
-    print(" - outputs/failure_report_run_local.json")
-    print(" - outputs/leakage_report_run_local.json")
-    if save_diagnostics:
-        print(" - outputs/diagnostics_run_local.json")
-    print(" - outputs/config_used.json")
+    else:
+        print("binary_f1=0.0000 objective=0.0000")
+
+    if verbose_console:
+        print("\n--- Evaluation Summary ---")
+        print(json.dumps(metrics_payload, indent=2))
+        print("\nLeakage report:")
+        print(json.dumps(leakage_report_payload, indent=2))
+        print("\nWrote:")
+        print(" - outputs/persona_manifest_run_local.json")
+        print(" - outputs/persona_manifest_hash_run_local.txt")
+        print(" - outputs/interactions_run_local.json")
+        print(" - outputs/results_run_local.json")
+        print(" - outputs/metrics_run_local.json")
+        print(" - outputs/failure_report_run_local.json")
+        print(" - outputs/leakage_report_run_local.json")
+        if save_diagnostics:
+            print(" - outputs/diagnostics_run_local.json")
+        print(" - outputs/config_used.json")
 
 
 def parse_args() -> argparse.Namespace:

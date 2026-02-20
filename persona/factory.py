@@ -42,6 +42,10 @@ class PersonaProfile:
                 "verbosity": 0.45,
                 "contradiction": 0.08,
                 "affect_volatility": 0.2,
+                "hedge_rate": 0.65,
+                "normalization_rate": 0.45,
+                "context_anchor_rate": 0.55,
+                "direct_answer_rate": 0.78,
             }
 
     @property
@@ -141,15 +145,40 @@ def _sample_depressed_score(rng: random.Random) -> int:
     return rng.choice([2, 2, 3, 3])
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return max(0.0, min(1.0, value))
+
+
+def _style_defaults() -> Dict[str, float]:
+    return {
+        "hedge_rate": _env_float("SIM_HEDGE_RATE", 0.65),
+        "normalization_rate": _env_float("SIM_NORMALIZATION_RATE", 0.45),
+        "context_anchor_rate": _env_float("SIM_CONTEXT_ANCHOR_RATE", 0.55),
+        "direct_answer_rate": _env_float("SIM_DIRECT_ANSWER_RATE", 0.78),
+    }
+
+
 def _jitter_behavior(base: Dict[str, float], rng: random.Random) -> Dict[str, float]:
     def _clip(value: float, low: float = 0.0, high: float = 1.0) -> float:
         return max(low, min(high, value))
 
+    style = _style_defaults()
     return {
         "evasiveness": round(_clip(float(base["evasiveness"]) + rng.uniform(-0.08, 0.08)), 3),
         "verbosity": round(_clip(float(base["verbosity"]) + rng.uniform(-0.08, 0.08)), 3),
         "contradiction": round(_clip(float(base["contradiction"]) + rng.uniform(-0.04, 0.04)), 3),
         "affect_volatility": round(_clip(float(base["affect_volatility"]) + rng.uniform(-0.06, 0.06)), 3),
+        "hedge_rate": round(_clip(float(style["hedge_rate"]) + rng.uniform(-0.05, 0.05)), 3),
+        "normalization_rate": round(_clip(float(style["normalization_rate"]) + rng.uniform(-0.05, 0.05)), 3),
+        "context_anchor_rate": round(_clip(float(style["context_anchor_rate"]) + rng.uniform(-0.05, 0.05)), 3),
+        "direct_answer_rate": round(_clip(float(style["direct_answer_rate"]) + rng.uniform(-0.04, 0.04)), 3),
     }
 
 

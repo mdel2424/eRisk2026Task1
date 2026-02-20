@@ -84,6 +84,8 @@ class AgentState(TypedDict):
     messages: Annotated[List[dict], operator.add]
     turn_index: int
     persona_id: Optional[str]
+    last_processed_persona_msg_idx: int
+    has_new_persona_input: bool
 
     # Routing
     next_node: str
@@ -141,6 +143,8 @@ def build_initial_state(persona_id: Optional[str] = None) -> AgentState:
         next_node="cognitive",
         active_node="cognitive",
         turn_index=0,
+        last_processed_persona_msg_idx=-1,
+        has_new_persona_input=False,
         risk_flag=False,
         route_debug="",
         specialist_debug="",
