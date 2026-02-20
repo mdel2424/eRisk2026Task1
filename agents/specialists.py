@@ -3,9 +3,15 @@ from __future__ import annotations
 import random
 from typing import Dict, List
 
+from core.bdi_modules import (
+    MODULE_GOALS,
+    MODULE_NAMES,
+    MODULE_TO_ITEMS,
+    choose_target_module,
+)
 from core.llm import get_llm
 from core.prompts import get_fallback_questions, get_prompt
-from core.state import AgentState, SPECIALIST_ITEM_MAP
+from core.state import AgentState, BDI_ITEM_NAMES, SPECIALIST_ITEM_MAP
 
 rng = random.Random(17)
 PROBE_GOALS = ("frequency", "duration", "impact", "exemplar")
@@ -45,7 +51,56 @@ def _pick_fallback_question(node_name: str, previous_question: str) -> str:
     return rng.choice(options)
 
 
-def _build_question(node_name: str, state: AgentState, latest_message: str) -> tuple[str, bool, str]:
+def _support_count_from_belief(value) -> int:
+    if isinstance(value, dict):
+        try:
+            return int(value.get("support_count", 0))
+        except (TypeError, ValueError):
+            return 0
+    try:
+        return int(getattr(value, "support_count", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _latest_route_target_items(state: AgentState, node_name: str) -> List[int]:
+    route_history = list(state.get("route_history", []))
+    if route_history:
+        latest = route_history[-1]
+        target_items = []
+        if isinstance(latest, dict):
+            target_items = latest.get("target_items", []) or []
+        else:
+            target_items = getattr(latest, "target_items", []) or []
+        parsed: List[int] = []
+        for item in target_items:
+            try:
+                parsed.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        if parsed:
+            return parsed
+    return list(SPECIALIST_ITEM_MAP.get(node_name, []))
+
+
+def _pick_target_item(state: AgentState, target_items: List[int]) -> int:
+    beliefs = state.get("item_beliefs", {})
+    for item_id in target_items:
+        support = _support_count_from_belief(beliefs.get(item_id))
+        if support <= 0:
+            return int(item_id)
+    if target_items:
+        return int(target_items[0])
+    return 2
+
+
+def _build_question(
+    node_name: str,
+    state: AgentState,
+    latest_message: str,
+    target_item_id: int,
+    target_module_id: int,
+) -> tuple[str, bool, str]:
     previous_question = _previous_detector_question(state)
     if not latest_message.strip() and not previous_question.strip():
         opening = get_prompt("opening_question").strip()
@@ -54,6 +109,10 @@ def _build_question(node_name: str, state: AgentState, latest_message: str) -> t
 
     turn_index = int(state.get("turn_index", 0))
     probe_goal = PROBE_GOALS[turn_index % len(PROBE_GOALS)]
+    module_name = MODULE_NAMES.get(target_module_id, "General Screening")
+    module_goal = MODULE_GOALS.get(target_module_id, "Assess current depressive symptom expression.")
+    module_items = MODULE_TO_ITEMS.get(target_module_id, [])
+    target_item_name = BDI_ITEM_NAMES.get(target_item_id, f"Item {target_item_id}")
     prompt_template = get_prompt("specialist_question")
     prompt = prompt_template.format(
         node_name=node_name,
@@ -61,6 +120,12 @@ def _build_question(node_name: str, state: AgentState, latest_message: str) -> t
         previous_question=previous_question or "none",
         recent_context=_recent_context(state) or "none",
         probe_goal=probe_goal,
+        target_module_id=target_module_id,
+        target_module_name=module_name,
+        target_module_goal=module_goal,
+        target_module_items=module_items,
+        target_item_id=target_item_id,
+        target_item_name=target_item_name,
     )
     fallback = _pick_fallback_question(node_name, previous_question)
     llm = get_llm()
@@ -79,15 +144,46 @@ def _build_question(node_name: str, state: AgentState, latest_message: str) -> t
 
 def _specialist_node(state: AgentState, node_name: str) -> Dict:
     latest = _latest_persona_message(state)
-    question, used_fallback, probe_goal = _build_question(node_name, state, latest)
-    target_items = SPECIALIST_ITEM_MAP.get(node_name, [])
-    debug = f"{node_name.title()} specialist: question generated; target_items={target_items}"
+    target_items = _latest_route_target_items(state, node_name)
+    try:
+        target_item_id = _pick_target_item(state, target_items)
+        target_module_id = choose_target_module(
+            node_name=node_name,
+            target_items=target_items,
+            item_beliefs=state.get("item_beliefs", {}),
+        )
+        question, used_fallback, probe_goal = _build_question(
+            node_name=node_name,
+            state=state,
+            latest_message=latest,
+            target_item_id=target_item_id,
+            target_module_id=target_module_id,
+        )
+    except Exception:
+        target_item_id = int(target_items[0]) if target_items else 2
+        target_module_id = 1 if node_name == "cognitive" else (5 if node_name == "somatic" else 9)
+        previous_question = _previous_detector_question(state)
+        question = _pick_fallback_question(node_name, previous_question)
+        used_fallback = True
+        probe_goal = PROBE_GOALS[int(state.get("turn_index", 0)) % len(PROBE_GOALS)]
+    module_items = MODULE_TO_ITEMS.get(target_module_id, [])
+    module_name = MODULE_NAMES.get(target_module_id, "General Screening")
+    target_item_name = BDI_ITEM_NAMES.get(target_item_id, f"Item {target_item_id}")
+    debug = (
+        f"{node_name.title()} specialist: question generated; target_items={target_items}; "
+        f"target_module={target_module_id}:{module_name}; target_item={target_item_id}:{target_item_name}"
+    )
     turn = int(state.get("turn_index", 0)) + 1
     trace = dict(state.get("turn_trace", {}))
     trace["specialist"] = {
         "turn": turn,
         "node": node_name,
         "target_items": target_items,
+        "target_item_id": target_item_id,
+        "target_item_name": target_item_name,
+        "target_module_id": target_module_id,
+        "target_module_name": module_name,
+        "target_module_items": module_items,
         "probe_goal": probe_goal,
         "used_fallback": used_fallback,
         "question_preview": question[:120],

@@ -99,6 +99,10 @@ class AgentState(TypedDict):
     predicted_label: Optional[str]
     predicted_bdi_score: Optional[int]
     predicted_key_symptoms: List[str]
+    raw_predicted_label: Optional[str]
+    raw_predicted_bdi_score: Optional[int]
+    final_item_scores: Dict[int, int]
+    module_imputation: Dict[str, dict]
     global_confidence: float
     risk_flag: bool
     should_stop: bool
@@ -148,6 +152,10 @@ def build_initial_state(persona_id: Optional[str] = None) -> AgentState:
         predicted_label=None,
         predicted_bdi_score=None,
         predicted_key_symptoms=[],
+        raw_predicted_label=None,
+        raw_predicted_bdi_score=None,
+        final_item_scores={},
+        module_imputation={},
         should_stop=False,
         persona_id=persona_id,
         evidence_log=[],

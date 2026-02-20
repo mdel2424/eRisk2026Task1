@@ -2,7 +2,7 @@ import os
 
 from langgraph.graph import END, StateGraph
 
-from agents.assessment import extract_evidence, update_beliefs
+from agents.assessment import extract_evidence, finalize_with_module_imputation, update_beliefs
 from agents.specialists import cognitive_specialist, risk_specialist, somatic_specialist
 from agents.supervisor import supervisor_router
 from core.state import (
@@ -42,12 +42,28 @@ def assess_stop(state: AgentState):
             f"({evidence_total}/{min_evidence_for_conf_stop})"
         )
 
+    finalization_payload = {}
+    final_bdi_for_debug = predicted_bdi_score
+    final_label_for_debug = predicted_label
+    raw_bdi_for_debug = int(state.get("predicted_bdi_score") or 0)
+    raw_label_for_debug = str(state.get("predicted_label") or "control")
+    imputed_item_count = 0
+    if should_stop:
+        finalization_payload = finalize_with_module_imputation(state)
+        final_bdi_for_debug = int(finalization_payload.get("predicted_bdi_score") or predicted_bdi_score)
+        final_label_for_debug = str(finalization_payload.get("predicted_label") or predicted_label)
+        raw_bdi_for_debug = int(finalization_payload.get("raw_predicted_bdi_score") or raw_bdi_for_debug)
+        raw_label_for_debug = str(finalization_payload.get("raw_predicted_label") or raw_label_for_debug)
+        module_imputation = finalization_payload.get("module_imputation", {})
+        if isinstance(module_imputation, dict):
+            imputed_item_count = int(module_imputation.get("imputed_item_count", 0) or 0)
+
     stop_record = StopDecision(
         turn=turn_index,
         should_stop=should_stop,
         reason=stop_reason,
-        predicted_label=predicted_label,
-        predicted_bdi_score=max(0, min(63, predicted_bdi_score)),
+        predicted_label=final_label_for_debug if final_label_for_debug in {"control", "depressed"} else predicted_label,
+        predicted_bdi_score=max(0, min(63, final_bdi_for_debug)),
         confidence=max(0.0, min(1.0, confidence)),
     )
 
@@ -57,6 +73,12 @@ def assess_stop(state: AgentState):
         f"evidence={evidence_total}, gate={evidence_gate_met}, "
         f"stop={should_stop} ({stop_reason})"
     )
+    if should_stop:
+        debug_line += (
+            f" | raw=({raw_bdi_for_debug},{raw_label_for_debug})"
+            f" -> final=({final_bdi_for_debug},{final_label_for_debug}); "
+            f"imputed_items={imputed_item_count}"
+        )
     turn_trace = dict(state.get("turn_trace", {}))
     turn_trace["stop"] = {
         "turn": turn_index,
@@ -67,8 +89,13 @@ def assess_stop(state: AgentState):
         "evidence_gate_met": evidence_gate_met,
         "should_stop": should_stop,
         "reason": stop_reason,
-        "label": predicted_label,
+        "label": final_label_for_debug,
         "risk_flag": risk_flag,
+        "raw_bdi_score": raw_bdi_for_debug,
+        "final_bdi_score": final_bdi_for_debug,
+        "raw_label": raw_label_for_debug,
+        "final_label": final_label_for_debug,
+        "imputed_item_count": imputed_item_count,
     }
     trace_entry = {
         "turn": turn_index,
@@ -82,12 +109,13 @@ def assess_stop(state: AgentState):
 
     return {
         "turn_index": turn_index,
-        "predicted_label": predicted_label,
+        "predicted_label": final_label_for_debug,
         "should_stop": should_stop,
         "stop_debug": debug_line,
         "stop_history": [stop_record],
         "turn_trace": turn_trace,
         "trace_log": [trace_entry],
+        **finalization_payload,
     }
 
 

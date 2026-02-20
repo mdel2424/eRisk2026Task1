@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
-from collections import Counter
-from dataclasses import replace
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -23,15 +23,12 @@ from core.runtime_policy import (
     resolve_persona_backend,
 )
 from core.state import build_initial_state
-from persona import (
-    PersonaProfile,
-    build_official_tracking_profiles,
-    create_persona,
-    generate_persona_profiles,
-    split_synthetic_profiles,
-)
+from persona import PersonaProfile, build_split_profiles, create_persona, generate_persona_profiles
+from persona.sim_behavior import validate_template_disjointness
 
 load_dotenv()
+
+MANIFEST_SCHEMA_VERSION = 2
 
 
 def _parse_bool(value: str | bool) -> bool:
@@ -156,6 +153,10 @@ def _snapshot_turn(state: Dict) -> Dict:
         "stop_decision": _serialize(stop_history[-1]) if stop_history else None,
         "predicted_label": state.get("predicted_label"),
         "predicted_bdi_score": state.get("predicted_bdi_score"),
+        "raw_predicted_label": state.get("raw_predicted_label"),
+        "raw_predicted_bdi_score": state.get("raw_predicted_bdi_score"),
+        "final_item_scores": _serialize(state.get("final_item_scores", {})),
+        "module_imputation": _serialize(state.get("module_imputation", {})),
         "global_confidence": state.get("global_confidence", 0.0),
         "route_debug": state.get("route_debug", ""),
         "specialist_debug": state.get("specialist_debug", ""),
@@ -202,6 +203,7 @@ def _run_detector_until_stop(
             state = _mark_budget_exceeded(state, "detector_graph", exc)
             timeline.append(_snapshot_turn(state))
             return state, timeline
+
         timeline.append(_snapshot_turn(state))
         if state.get("should_stop"):
             return state, timeline
@@ -213,6 +215,7 @@ def _run_detector_until_stop(
             state = _mark_budget_exceeded(state, "persona_reply", exc)
             timeline.append(_snapshot_turn(state))
             return state, timeline
+
         state["messages"].append({"role": "assistant", "content": persona_reply})
         if verbose:
             print(f"\nDetector: {detector_message}")
@@ -227,17 +230,26 @@ def run_interactive() -> None:
     set_llm_call_budget(None)
     reset_llm_usage()
     _print_backend_info(max_api_calls=None, trace_level="compact")
-    state = build_initial_state(persona_id="interactive")
+
+    profiles = generate_persona_profiles(count=10, seed=42)
+    profile = profiles[0]
+    persona = create_persona(profile)
+
+    state = build_initial_state(persona_id=profile.persona_id)
     state = graph_app.invoke(state)
     print(f"\nDetector: {state['messages'][-1]['content']}")
     print(f"Debug: {_format_debug(state)}")
 
     while True:
-        user_input = input("\nPersona: ")
+        user_input = input("\nPersona (enter for auto / exit): ").strip()
         if user_input.lower() in {"exit", "quit"}:
             break
 
-        state["messages"].append({"role": "assistant", "content": user_input})
+        if user_input:
+            state["messages"].append({"role": "assistant", "content": user_input})
+        else:
+            state["messages"].append({"role": "assistant", "content": persona.reply(state["messages"])})
+
         state = graph_app.invoke(state)
 
         detector_msg = state["messages"][-1]["content"]
@@ -252,10 +264,7 @@ def run_interactive() -> None:
             break
 
 
-def _result_record(profile: PersonaProfile, state: Dict) -> Dict | None:
-    if not profile.has_ground_truth:
-        return None
-
+def _result_record(profile: PersonaProfile, state: Dict) -> Dict:
     predicted_label = state.get("predicted_label", "control")
     predicted_bdi = int(state.get("predicted_bdi_score") or 0)
     predicted_symptoms = list(state.get("predicted_key_symptoms") or [])[:4]
@@ -263,6 +272,8 @@ def _result_record(profile: PersonaProfile, state: Dict) -> Dict | None:
 
     return {
         "llm": profile.persona_id,
+        "family": profile.family,
+        "split": profile.split,
         "y_true": profile.depressed,
         "y_pred": predicted_label == "depressed",
         "bdi_true": profile.bdi_total,
@@ -321,25 +332,6 @@ def _current_git_hash() -> str:
         return "unknown"
 
 
-def _prefix_profiles(profiles: List[PersonaProfile], prefix: str) -> List[PersonaProfile]:
-    prefixed: List[PersonaProfile] = []
-    for profile in profiles:
-        prefixed.append(replace(profile, persona_id=f"{prefix}-{profile.persona_id}"))
-    return prefixed
-
-
-def _run_profile(profile: PersonaProfile, graph_app, verbose: bool = False) -> Tuple[Dict, List[Dict]]:
-    persona = create_persona(profile)
-    state = build_initial_state(persona_id=profile.persona_id)
-    return _run_detector_until_stop(state, persona, graph_app, verbose=verbose)
-
-
-def _released_official_ids() -> List[str]:
-    raw = os.getenv("OFFICIAL_RELEASED_PERSONAS", "1,2").strip()
-    parts = [part.strip() for part in raw.split(",") if part.strip()]
-    return parts if parts else ["1", "2"]
-
-
 def _resolve_fit_calibrator_policy(policy: str) -> bool:
     value = str(policy).strip().lower()
     if value == "on":
@@ -348,7 +340,6 @@ def _resolve_fit_calibrator_policy(policy: str) -> bool:
         return False
     detector_backend = resolve_detector_backend()
     persona_backend = resolve_persona_backend()
-    # Token-safe default: skip fitting when either path uses remote OpenRouter calls.
     return not (detector_backend == "openrouter" or persona_backend == "openrouter_sim")
 
 
@@ -359,6 +350,143 @@ def _usage_snippet() -> str:
     if max_calls is None:
         return f"calls={calls_total}/inf"
     return f"calls={calls_total}/{int(max_calls)}"
+
+
+def _run_profile(profile: PersonaProfile, graph_app, verbose: bool = False) -> Tuple[Dict, List[Dict]]:
+    persona = create_persona(profile)
+    state = build_initial_state(persona_id=profile.persona_id)
+    return _run_detector_until_stop(state, persona, graph_app, verbose=verbose)
+
+
+def _strict_split_lock_enabled() -> bool:
+    return _parse_bool(os.getenv("STRICT_SPLIT_LOCK", "1"))
+
+
+def _manifest_payload(
+    *,
+    persona_count: int,
+    seed: int,
+    generator_version: str,
+    train_profiles: List[PersonaProfile],
+    val_profiles: List[PersonaProfile],
+    test_profiles: List[PersonaProfile],
+) -> Dict[str, Any]:
+    def _profile_dict(profile: PersonaProfile) -> Dict[str, Any]:
+        return {
+            "persona_id": profile.persona_id,
+            "split": profile.split,
+            "family": profile.family,
+            "source": profile.source,
+            "has_ground_truth": profile.has_ground_truth,
+            "depressed": profile.depressed,
+            "bdi_scores": dict(profile.bdi_scores),
+            "bdi_total": profile.bdi_total,
+            "key_symptoms": profile.key_symptoms,
+            "risk_signal": profile.has_risk_signal,
+            "behavior_params": dict(profile.behavior_params),
+            "template_bank": profile.template_bank,
+            "generation_seed": profile.generation_seed,
+            "generator_version": profile.generator_version,
+        }
+
+    all_profiles = train_profiles + val_profiles + test_profiles
+    return {
+        "run_config": {
+            "manifest_schema_version": MANIFEST_SCHEMA_VERSION,
+            "persona_count": persona_count,
+            "seed": seed,
+            "generator_version": generator_version,
+            "split_ratios": {"train": 0.6, "val": 0.2, "test": 0.2},
+        },
+        "split_counts": {
+            "train": len(train_profiles),
+            "val": len(val_profiles),
+            "test": len(test_profiles),
+        },
+        "profiles": [_profile_dict(profile) for profile in all_profiles],
+    }
+
+
+def _manifest_hash(payload: Dict[str, Any]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _enforce_manifest_lock(manifest_path: Path, current_payload: Dict[str, Any], current_hash: str) -> None:
+    if not manifest_path.exists():
+        return
+    try:
+        previous_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+
+    prev_config = previous_payload.get("run_config", {})
+    curr_config = current_payload.get("run_config", {})
+    if prev_config != curr_config:
+        return
+
+    previous_hash = _manifest_hash(previous_payload)
+    if previous_hash != current_hash:
+        raise ValueError(
+            "STRICT_SPLIT_LOCK failed: split manifest hash mismatch for identical run_config. "
+            "Possible leakage/non-deterministic generation detected. "
+            "If this is an intentional simulator update, bump SIM_GENERATOR_VERSION "
+            "or remove outputs/persona_manifest_run_local.json."
+        )
+
+
+def _split_overlap_count(a: List[str], b: List[str]) -> int:
+    return len(set(a).intersection(set(b)))
+
+
+def _template_overlap_counts(train_profiles: List[PersonaProfile], val_profiles: List[PersonaProfile], test_profiles: List[PersonaProfile]) -> Dict[str, int]:
+    train_banks = [profile.template_bank for profile in train_profiles]
+    val_banks = [profile.template_bank for profile in val_profiles]
+    test_banks = [profile.template_bank for profile in test_profiles]
+    return {
+        "train_val": _split_overlap_count(train_banks, val_banks),
+        "train_test": _split_overlap_count(train_banks, test_banks),
+        "val_test": _split_overlap_count(val_banks, test_banks),
+    }
+
+
+def _family_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        grouped[str(row.get("family", "unknown"))].append(row)
+
+    family_count = {family: len(items) for family, items in grouped.items()}
+    binary_f1_by_family: Dict[str, float] = {}
+    bdi_mae_by_family: Dict[str, float] = {}
+    for family, items in grouped.items():
+        metrics = compute_metrics(items)
+        binary_f1_by_family[family] = float(metrics.get("binary_f1", 0.0))
+        bdi_mae_by_family[family] = float(metrics.get("bdi_mae", 0.0))
+    return {
+        "family_count": family_count,
+        "binary_f1_by_family": binary_f1_by_family,
+        "bdi_mae_by_family": bdi_mae_by_family,
+    }
+
+
+def _resolve_effective_eval_mode(eval_mode: str) -> tuple[str, str]:
+    requested = str(eval_mode).strip().lower()
+    if requested in {"mixed_holdout", "synthetic_only"}:
+        return requested, "synthetic_holdout"
+    return requested, "synthetic_holdout"
+
+
+def _profile_meta(profile: PersonaProfile) -> Dict[str, Any]:
+    return {
+        "split": profile.split,
+        "family": profile.family,
+        "generator_version": profile.generator_version,
+        "generation_seed": profile.generation_seed,
+        "template_bank": profile.template_bank,
+        "behavior_params": dict(profile.behavior_params),
+        "bdi_total": profile.bdi_total,
+        "risk_signal": profile.has_risk_signal,
+    }
 
 
 def run_eval(
@@ -382,24 +510,69 @@ def run_eval(
 
     fit_calibrator_enabled = _resolve_fit_calibrator_policy(fit_calibrator_policy)
     min_train_records = _parse_int(os.getenv("CALIBRATOR_MIN_TRAIN_RECORDS", "10"), 10)
+    strict_split_lock = _strict_split_lock_enabled()
+    generator_version = os.getenv("SIM_GENERATOR_VERSION", "sim_v2").strip() or "sim_v2"
 
-    print(f"--- Eval Mode: {eval_mode} | personas={persona_count} | seed={seed} | prompts={prompt_version} ---")
-    _print_backend_info(
-        max_api_calls=max_api_calls if max_api_calls > 0 else None,
-        trace_level=trace_level,
-    )
+    requested_eval_mode, effective_eval_mode = _resolve_effective_eval_mode(eval_mode)
+
+    print(f"--- Eval Mode: {requested_eval_mode} | personas={persona_count} | seed={seed} | prompts={prompt_version} ---")
+    _print_backend_info(max_api_calls=max_api_calls if max_api_calls > 0 else None, trace_level=trace_level)
     print(
         "Calibrator policy: "
         f"requested={fit_calibrator_policy} | enabled={fit_calibrator_enabled} | min_train_records={min_train_records}"
     )
+    print(
+        f"Synthetic generator: version={generator_version} | strict_split_lock={'on' if strict_split_lock else 'off'}"
+    )
 
-    synthetic_profiles = _prefix_profiles(generate_persona_profiles(persona_count, seed=seed), "synth")
-    splits = split_synthetic_profiles(synthetic_profiles, seed=seed)
-    official_profiles = build_official_tracking_profiles(_released_official_ids())
-
+    splits = build_split_profiles(count=persona_count, seed=seed)
     train_profiles = splits["synthetic_train"]
     val_profiles = splits["synthetic_val"]
     test_profiles = splits["synthetic_test"]
+
+    manifest_payload = _manifest_payload(
+        persona_count=persona_count,
+        seed=seed,
+        generator_version=generator_version,
+        train_profiles=train_profiles,
+        val_profiles=val_profiles,
+        test_profiles=test_profiles,
+    )
+    manifest_hash = _manifest_hash(manifest_payload)
+
+    output_dir = Path("outputs")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = output_dir / "persona_manifest_run_local.json"
+    manifest_hash_path = output_dir / "persona_manifest_hash_run_local.txt"
+
+    if strict_split_lock:
+        _enforce_manifest_lock(manifest_path, manifest_payload, manifest_hash)
+
+    _write_json(manifest_path, manifest_payload)
+    manifest_hash_path.write_text(manifest_hash + "\n", encoding="utf-8")
+
+    split_ids = {
+        "train": [profile.persona_id for profile in train_profiles],
+        "val": [profile.persona_id for profile in val_profiles],
+        "test": [profile.persona_id for profile in test_profiles],
+    }
+    id_overlap_counts = {
+        "train_val": _split_overlap_count(split_ids["train"], split_ids["val"]),
+        "train_test": _split_overlap_count(split_ids["train"], split_ids["test"]),
+        "val_test": _split_overlap_count(split_ids["val"], split_ids["test"]),
+    }
+    template_overlap_counts = _template_overlap_counts(train_profiles, val_profiles, test_profiles)
+    template_validator = validate_template_disjointness()
+
+    leakage_reasons: List[str] = []
+    if any(value > 0 for value in id_overlap_counts.values()):
+        leakage_reasons.append("persona_id_overlap_across_splits")
+    if any(value > 0 for value in template_overlap_counts.values()):
+        leakage_reasons.append("template_bank_overlap_across_splits")
+    if not bool(template_validator.get("strict_pass", False)):
+        leakage_reasons.append("template_phrase_overlap_detected")
+
+    eval_profiles = val_profiles + test_profiles
 
     run_failure_counters: Counter[str] = Counter()
     calibrator_status: Dict[str, Any] = {
@@ -412,7 +585,9 @@ def run_eval(
     }
 
     calibrator_train_records: List[Dict] = []
-    if eval_mode in {"mixed_holdout", "synthetic_only"} and train_profiles and fit_calibrator_enabled:
+    calibrator_train_ids: List[str] = []
+
+    if train_profiles and fit_calibrator_enabled:
         if len(train_profiles) < min_train_records:
             calibrator_status["reason"] = "small_train_split"
             calibrator_status["mode"] = "skipped_small_train"
@@ -426,6 +601,7 @@ def run_eval(
             train_total = len(train_profiles)
             for idx, profile in enumerate(train_profiles, start=1):
                 final_state, _ = _run_profile(profile, graph_app, verbose=False)
+                calibrator_train_ids.append(profile.persona_id)
                 feature_vector = dict(final_state.get("latest_feature_vector", {}))
                 calibrator_train_records.append(
                     {
@@ -442,7 +618,7 @@ def run_eval(
                 calibrator_status["mode"] = bundle.mode
                 calibrator_status["reason"] = fit_reason or ""
                 if bundle.mode == "sklearn_fitted":
-                    calibrator_path = Path("outputs/calibrator_bundle_local.json")
+                    calibrator_path = output_dir / "calibrator_bundle_local.json"
                     save_calibrator_bundle(calibrator_path, bundle)
                     os.environ["CALIBRATOR_PATH"] = str(calibrator_path)
                     calibrator_status["saved_path"] = str(calibrator_path)
@@ -454,17 +630,8 @@ def run_eval(
                 clear_calibrator_cache()
     elif not fit_calibrator_enabled:
         calibrator_status["reason"] = "disabled_by_policy"
-    elif eval_mode not in {"mixed_holdout", "synthetic_only"}:
-        calibrator_status["reason"] = "eval_mode_without_synthetic_train"
     else:
         calibrator_status["reason"] = "no_train_profiles"
-
-    if eval_mode == "mixed_holdout":
-        eval_profiles = val_profiles + test_profiles + official_profiles
-    elif eval_mode == "official_only":
-        eval_profiles = official_profiles
-    else:
-        eval_profiles = val_profiles + test_profiles
 
     conversations: List[PersonaConversation] = []
     results: List[PersonaResult] = []
@@ -480,10 +647,13 @@ def run_eval(
 
     eval_total = len(eval_profiles)
     processed_profiles = 0
+    eval_ids: List[str] = []
+
     for idx, profile in enumerate(eval_profiles, start=1):
-        print(f"\n=== Persona {profile.persona_id} ({profile.source}) ===")
+        print(f"\n=== Persona {profile.persona_id} ({profile.source}/{profile.split}/{profile.family}) ===")
         final_state, timeline = _run_profile(profile, graph_app, verbose=False)
         processed_profiles += 1
+        eval_ids.append(profile.persona_id)
 
         turns = _to_turns(final_state["messages"])
         conversations.append(PersonaConversation(LLM=profile.persona_id, conversation=turns))
@@ -496,25 +666,29 @@ def run_eval(
         )
 
         row = _result_record(profile, final_state)
-        if row is not None:
-            overall_rows.append(row)
-            if profile in val_profiles:
-                val_rows.append(row)
-            if profile in test_profiles:
-                test_rows.append(row)
+        overall_rows.append(row)
+        if profile in val_profiles:
+            val_rows.append(row)
+        if profile in test_profiles:
+            test_rows.append(row)
 
         diagnostics_payload.append(
             {
                 "LLM": profile.persona_id,
                 "source": profile.source,
                 "has_ground_truth": profile.has_ground_truth,
+                "persona_meta": _profile_meta(profile),
                 "timeline": _serialize(timeline if trace_level == "compact" else []),
                 "final_state": _serialize(
                     {
                         "turn_index": final_state.get("turn_index", 0),
                         "predicted_label": final_state.get("predicted_label"),
                         "predicted_bdi_score": final_state.get("predicted_bdi_score"),
+                        "raw_predicted_label": final_state.get("raw_predicted_label"),
+                        "raw_predicted_bdi_score": final_state.get("raw_predicted_bdi_score"),
                         "predicted_key_symptoms": final_state.get("predicted_key_symptoms", []),
+                        "final_item_scores": final_state.get("final_item_scores", {}),
+                        "module_imputation": final_state.get("module_imputation", {}),
                         "global_confidence": final_state.get("global_confidence", 0.0),
                         "route_history": final_state.get("route_history", []),
                         "evidence_log": final_state.get("evidence_log", []),
@@ -527,6 +701,7 @@ def run_eval(
                 ),
             }
         )
+
         for entry in timeline:
             turns_total += 1
             latest_evidence = entry.get("latest_evidence", [])
@@ -562,6 +737,10 @@ def run_eval(
             print("\nStopping eval early: API call budget reached.")
             break
 
+    train_eval_overlap = _split_overlap_count(calibrator_train_ids, eval_ids)
+    if train_eval_overlap > 0:
+        leakage_reasons.append("calibrator_train_eval_overlap")
+
     val_metrics = compute_metrics(val_rows) if val_rows else {}
     test_metrics = compute_metrics(test_rows) if test_rows else {}
     overall_metrics = compute_metrics(overall_rows) if overall_rows else {}
@@ -576,12 +755,13 @@ def run_eval(
     )
 
     metrics_payload: Dict[str, Any] = {
-        "eval_mode": eval_mode,
+        "eval_mode_requested": requested_eval_mode,
+        "eval_mode_effective": effective_eval_mode,
         "prompt_version": prompt_version,
         "synthetic_train_count": len(train_profiles),
         "synthetic_val_count": len(val_profiles),
         "synthetic_test_count": len(test_profiles),
-        "official_tracking_count": len(official_profiles),
+        "split_counts": {"train": len(train_profiles), "val": len(val_profiles), "test": len(test_profiles)},
         "synthetic_val": val_metrics_payload,
         "synthetic_test": test_metrics_payload,
         "overall_labeled": overall_metrics_payload,
@@ -593,9 +773,6 @@ def run_eval(
     if primary_metrics:
         metrics_payload.update(primary_metrics)
 
-    output_dir = Path("outputs")
-    output_dir.mkdir(parents=True, exist_ok=True)
-
     interactions_payload = [conv.model_dump() for conv in conversations]
     results_payload = [result.to_erisk_dict() for result in results]
 
@@ -605,9 +782,11 @@ def run_eval(
 
     evidence_nonempty_rate = (evidence_turns_nonempty / turns_total) if turns_total else 0.0
     avg_evidence_per_turn = (evidence_records_total / turns_total) if turns_total else 0.0
+    family_summary = _family_summary(overall_rows)
     failure_report_payload = {
         "run_summary": {
-            "eval_mode": eval_mode,
+            "eval_mode_requested": requested_eval_mode,
+            "eval_mode_effective": effective_eval_mode,
             "prompt_version": prompt_version,
             "personas_requested": persona_count,
             "profiles_evaluated": processed_profiles,
@@ -622,8 +801,23 @@ def run_eval(
         "calibrator_mode_counts": dict(calibrator_mode_counts),
         "llm_usage": get_llm_usage(),
         "calibrator_status": calibrator_status,
+        **family_summary,
     }
     _write_json(output_dir / "failure_report_run_local.json", failure_report_payload)
+
+    leakage_report_payload = {
+        "split_sizes": {"train": len(train_profiles), "val": len(val_profiles), "test": len(test_profiles)},
+        "id_overlap_counts": id_overlap_counts,
+        "template_overlap_counts": template_overlap_counts,
+        "template_phrase_overlap": template_validator,
+        "calibrator_train_ids_count": len(set(calibrator_train_ids)),
+        "eval_ids_count": len(set(eval_ids)),
+        "train_eval_overlap_count": train_eval_overlap,
+        "manifest_hash": manifest_hash,
+        "strict_pass": len(leakage_reasons) == 0,
+        "failure_reasons": leakage_reasons,
+    }
+    _write_json(output_dir / "leakage_report_run_local.json", leakage_report_payload)
 
     if save_diagnostics:
         _write_json(output_dir / "diagnostics_run_local.json", diagnostics_payload)
@@ -633,7 +827,7 @@ def run_eval(
             "mode": "eval",
             "personas": persona_count,
             "seed": seed,
-            "eval_mode": eval_mode,
+            "eval_mode": requested_eval_mode,
             "prompt_version": prompt_version,
             "save_diagnostics": save_diagnostics,
             "max_api_calls": max_api_calls,
@@ -657,13 +851,16 @@ def run_eval(
             "STOP_CONFIDENCE": os.getenv("STOP_CONFIDENCE", ""),
             "MIN_EVIDENCE_FOR_CONF_STOP": os.getenv("MIN_EVIDENCE_FOR_CONF_STOP", "2"),
             "DETERMINISTIC_BDI_LABEL_THRESHOLD": os.getenv("DETERMINISTIC_BDI_LABEL_THRESHOLD", "14"),
-            "DETERMINISTIC_CORE_ITEM_MEAN_THRESHOLD": os.getenv(
-                "DETERMINISTIC_CORE_ITEM_MEAN_THRESHOLD", "0.6"
-            ),
+            "DETERMINISTIC_CORE_ITEM_MEAN_THRESHOLD": os.getenv("DETERMINISTIC_CORE_ITEM_MEAN_THRESHOLD", "0.6"),
             "DETERMINISTIC_CORE_ITEM_MIN_HITS": os.getenv("DETERMINISTIC_CORE_ITEM_MIN_HITS", "4"),
             "EVIDENCE_LLM_ON_LEXICAL_HIT": os.getenv("EVIDENCE_LLM_ON_LEXICAL_HIT", "0"),
             "CALIBRATOR_MIN_TRAIN_RECORDS": os.getenv("CALIBRATOR_MIN_TRAIN_RECORDS", "10"),
             "CALIBRATOR_PATH": os.getenv("CALIBRATOR_PATH", ""),
+            "STRICT_SPLIT_LOCK": os.getenv("STRICT_SPLIT_LOCK", "1"),
+            "SIM_GENERATOR_VERSION": os.getenv("SIM_GENERATOR_VERSION", "sim_v2"),
+            "SIM_PARAPHRASE_ENABLED": os.getenv("SIM_PARAPHRASE_ENABLED", "1"),
+            "SIM_PARAPHRASE_RATE": os.getenv("SIM_PARAPHRASE_RATE", "0.5"),
+            "SIM_TEMPLATE_DISJOINT_ENFORCE": os.getenv("SIM_TEMPLATE_DISJOINT_ENFORCE", "1"),
         },
         "resolved_backends": {
             "auto_enabled": auto_backend_switch_enabled(),
@@ -671,6 +868,7 @@ def run_eval(
             "persona_backend": resolve_persona_backend(),
         },
         "llm_usage": get_llm_usage(),
+        "manifest_hash": manifest_hash,
         "git_commit": _current_git_hash(),
     }
     _write_json(output_dir / "config_used.json", config_snapshot)
@@ -683,11 +881,16 @@ def run_eval(
             f"bdi_mae={float(primary_metrics.get('bdi_mae', 0.0)):.4f}"
         )
     print(json.dumps(metrics_payload, indent=2))
+    print("\nLeakage report:")
+    print(json.dumps(leakage_report_payload, indent=2))
     print("\nWrote:")
+    print(" - outputs/persona_manifest_run_local.json")
+    print(" - outputs/persona_manifest_hash_run_local.txt")
     print(" - outputs/interactions_run_local.json")
     print(" - outputs/results_run_local.json")
     print(" - outputs/metrics_run_local.json")
     print(" - outputs/failure_report_run_local.json")
+    print(" - outputs/leakage_report_run_local.json")
     if save_diagnostics:
         print(" - outputs/diagnostics_run_local.json")
     print(" - outputs/config_used.json")
@@ -700,7 +903,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42, help="Seed for synthetic persona generation")
     parser.add_argument(
         "--eval_mode",
-        choices=["mixed_holdout", "official_only", "synthetic_only"],
+        choices=["mixed_holdout", "synthetic_only"],
         default="mixed_holdout",
     )
     parser.add_argument("--prompt_version", default="v1")

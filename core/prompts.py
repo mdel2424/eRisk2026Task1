@@ -12,12 +12,20 @@ Do not ask direct diagnostic questions.
 Keep it under 20 words.
 Anchor the question to one concrete detail from the persona's latest message.
 Maintain a two-week frame across the conversation, but avoid repeating the exact phrase "past two weeks" every turn.
+Use the selected BDI module to guide the focus:
+- module_id={target_module_id}
+- module_name={target_module_name}
+- module_goal={target_module_goal}
+- module_items={target_module_items}
+- target_item_id={target_item_id}
+- target_item_name={target_item_name}
 Target exactly one probe goal: {probe_goal}.
 Probe goal definitions:
 - frequency: how often this happens
 - duration: how long episodes/states last
 - impact: functional effect on work/study/home/social life
 - exemplar: one concrete recent example
+The question should stay inside the selected module goal and target item intent.
 Avoid generic reassurance statements.
 Return only the question text.
 Avoid repeating the previous detector question.

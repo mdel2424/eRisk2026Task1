@@ -162,6 +162,10 @@ def _diagnostics_payload(state: Dict) -> Dict:
         "route_debug": state.get("route_debug", ""),
         "specialist_debug": state.get("specialist_debug", ""),
         "stop_debug": state.get("stop_debug", ""),
+        "raw_predicted_label": state.get("raw_predicted_label"),
+        "raw_predicted_bdi_score": state.get("raw_predicted_bdi_score"),
+        "final_item_scores": _serialize(state.get("final_item_scores", {})),
+        "module_imputation": _serialize(state.get("module_imputation", {})),
     }
 
 
@@ -213,6 +217,42 @@ with left_col:
                     turn_trace = turn_debug.get("turn_trace", {})
                     if turn_trace:
                         st.json(turn_trace, expanded=False)
+                        stop_trace = turn_trace.get("stop", {})
+                        if isinstance(stop_trace, dict) and stop_trace.get("should_stop"):
+                            final_bdi = stop_trace.get("final_bdi_score")
+                            raw_bdi = stop_trace.get("raw_bdi_score")
+                            imputed_count = stop_trace.get("imputed_item_count", 0)
+                            st.caption(
+                                f"Final BDI={final_bdi} | Raw BDI={raw_bdi} | "
+                                f"Imputed items={imputed_count}"
+                            )
+                            module_imputation = _serialize(state.get("module_imputation", {}))
+                            item_details = {}
+                            if isinstance(module_imputation, dict):
+                                item_details = module_imputation.get("item_details", {})
+                            if isinstance(item_details, dict):
+                                imputed_rows = []
+                                for item_id, detail in item_details.items():
+                                    if not isinstance(detail, dict):
+                                        continue
+                                    if str(detail.get("source", "")) != "imputed":
+                                        continue
+                                    imputed_rows.append(
+                                        {
+                                            "item_id": int(item_id),
+                                            "imputed_float": round(float(detail.get("imputed_float", 0.0)), 3),
+                                            "final_score": int(detail.get("final_score", 0)),
+                                            "modules": detail.get("candidate_modules", []),
+                                        }
+                                    )
+                                if imputed_rows:
+                                    imputed_rows = sorted(
+                                        imputed_rows,
+                                        key=lambda row: row["imputed_float"],
+                                        reverse=True,
+                                    )[:10]
+                                    with st.expander("Top Imputed Items", expanded=False):
+                                        st.dataframe(imputed_rows, use_container_width=True)
 
                     evidence = turn_debug.get("evidence", [])
                     if evidence:
@@ -227,6 +267,14 @@ with right_col:
     st.write(f"Turn: **{state.get('turn_index', 0)}**")
     st.write(f"Predicted label: **{state.get('predicted_label', 'n/a')}**")
     st.write(f"Predicted BDI score: **{state.get('predicted_bdi_score', 'n/a')}**")
+    raw_label = state.get("raw_predicted_label")
+    raw_bdi = state.get("raw_predicted_bdi_score")
+    if raw_label is not None or raw_bdi is not None:
+        st.write(f"Raw calibrator label: **{raw_label if raw_label is not None else 'n/a'}**")
+        st.write(f"Raw calibrator BDI: **{raw_bdi if raw_bdi is not None else 'n/a'}**")
+    module_imputation = _serialize(state.get("module_imputation", {}))
+    if isinstance(module_imputation, dict) and module_imputation:
+        st.write(f"Imputed items: **{int(module_imputation.get('imputed_item_count', 0))}**")
     st.write(f"Global confidence: **{state.get('global_confidence', 0.0):.2f}**")
     st.write(f"Top symptoms: **{state.get('predicted_key_symptoms', [])}**")
     st.write(f"Stop: **{state.get('should_stop', False)}**")
