@@ -105,6 +105,10 @@ class AgentState(TypedDict):
     stop_history: Annotated[List[StopDecision], operator.add]
 
     # Explainability (UI)
+    turn_trace: Dict[str, dict]
+    trace_log: Annotated[List[dict], operator.add]
+    failure_counters: Dict[str, int]
+    empty_evidence_streak: int
     route_debug: str
     specialist_debug: str
     stop_debug: str
@@ -137,6 +141,10 @@ def build_initial_state(persona_id: Optional[str] = None) -> AgentState:
         route_debug="",
         specialist_debug="",
         stop_debug="",
+        turn_trace={},
+        trace_log=[],
+        failure_counters={},
+        empty_evidence_streak=0,
         predicted_label=None,
         predicted_bdi_score=None,
         predicted_key_symptoms=[],
@@ -149,7 +157,7 @@ def build_initial_state(persona_id: Optional[str] = None) -> AgentState:
         stop_history=[],
         global_confidence=0.0,
         latest_feature_vector={},
-        calibrator_mode="deterministic",
+        calibrator_mode="deterministic_default",
         positive_contributions=[],
         negative_contributions=[],
     )
@@ -173,3 +181,13 @@ def top_symptoms_from_scores(scores_by_item: Dict[int, int], limit: int = 4) -> 
     ranked = sorted(scores_by_item.items(), key=lambda pair: pair[1], reverse=True)
     top = [symptom_name_from_item(item_id) for item_id, score in ranked if score > 0]
     return top[:limit]
+
+
+def bump_failure_counter(
+    counters: Dict[str, int],
+    key: str,
+    amount: int = 1,
+) -> Dict[str, int]:
+    next_counters = dict(counters or {})
+    next_counters[key] = int(next_counters.get(key, 0)) + max(0, int(amount))
+    return next_counters

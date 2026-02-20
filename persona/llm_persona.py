@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import os
-import random
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Dict, List
+
 
 @lru_cache(maxsize=8)
 def _load_hf_adapter_model(base_model: str, adapter_id: str, hf_token: str, load_in_4bit: bool):
@@ -36,26 +36,7 @@ class LLMPersona:
     bdi_scores: Dict[int, int]
     evasive: bool = True
     context_window: int = 8
-    rng_seed: int = 13
     last_response: str = field(default="", init=False)
-
-    def __post_init__(self) -> None:
-        try:
-            persona_offset = int(self.persona_id)
-        except ValueError:
-            persona_offset = 0
-        self._rng = random.Random(self.rng_seed + persona_offset)
-
-    def _fallback_response(self) -> str:
-        options = [
-            "I am not sure how to label it, but lately I feel worn down most days.",
-            "I can talk about how things have been, but labels are hard for me right now.",
-            "It is difficult to put into words, though things have felt heavier than usual.",
-            "I keep going, but it has taken more effort than it used to.",
-        ]
-        if self.last_response:
-            options = [opt for opt in options if opt.lower() != self.last_response.lower()] or options
-        return self._rng.choice(options)
 
     def _resolve_adapter_id(self) -> str:
         template = os.getenv("ERISK_ADAPTER_TEMPLATE", "").strip()
@@ -80,9 +61,9 @@ class LLMPersona:
         load_in_4bit = os.getenv("ERISK_LOAD_IN_4BIT", "1").strip() != "0"
 
         if not base_model:
-            raise ValueError("ERISK_BASE_MODEL is required for hf_adapter backend")
+            raise ValueError("ERISK_BASE_MODEL is required")
         if not adapter_id:
-            raise ValueError("ERISK_ADAPTER_ID or ERISK_ADAPTER_TEMPLATE is required for hf_adapter backend")
+            raise ValueError("ERISK_ADAPTER_ID or ERISK_ADAPTER_TEMPLATE is required")
 
         tokenizer, model = _load_hf_adapter_model(base_model, adapter_id, hf_token, load_in_4bit)
 
@@ -115,21 +96,11 @@ class LLMPersona:
             eos_token_id=tokenizer.eos_token_id,
         )
         response_ids = output[0][inputs.shape[-1] :]
-        text = tokenizer.decode(response_ids, skip_special_tokens=True).strip()
-        return text
+        return tokenizer.decode(response_ids, skip_special_tokens=True).strip()
 
     def reply(self, history: List[dict]) -> str:
-        text = ""
-        try:
-            text = self._reply_hf_adapter(history)
-        except Exception:
-            text = self._fallback_response()
-
-        text = " ".join(text.split())
+        text = " ".join(self._reply_hf_adapter(history).split())
         if not text:
-            text = self._fallback_response()
-        if self.last_response and text.lower() == self.last_response.lower():
-            text = self._fallback_response()
-
+            raise RuntimeError("Persona model returned empty response")
         self.last_response = text
         return text

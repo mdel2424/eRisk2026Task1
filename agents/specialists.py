@@ -45,12 +45,12 @@ def _pick_fallback_question(node_name: str, previous_question: str) -> str:
     return rng.choice(options)
 
 
-def _build_question(node_name: str, state: AgentState, latest_message: str) -> str:
+def _build_question(node_name: str, state: AgentState, latest_message: str) -> tuple[str, bool, str]:
     previous_question = _previous_detector_question(state)
     if not latest_message.strip() and not previous_question.strip():
         opening = get_prompt("opening_question").strip()
         if opening:
-            return " ".join(opening.split())
+            return " ".join(opening.split()), False, "opening"
 
     turn_index = int(state.get("turn_index", 0))
     probe_goal = PROBE_GOALS[turn_index % len(PROBE_GOALS)]
@@ -63,34 +63,40 @@ def _build_question(node_name: str, state: AgentState, latest_message: str) -> s
         probe_goal=probe_goal,
     )
     fallback = _pick_fallback_question(node_name, previous_question)
-    try:
-        llm = get_llm()
-        text = llm.invoke([("system", prompt)]).content.strip()
-        if text.startswith('"') and text.endswith('"'):
-            text = text[1:-1].strip()
-        if not text:
-            return fallback
-        if previous_question and text.strip().lower() == previous_question.strip().lower():
-            return fallback
-        cleaned = " ".join(text.split())
-        if "past two weeks" not in cleaned.lower():
-            cleaned = f"In the past two weeks, {cleaned[0].lower() + cleaned[1:]}" if cleaned else cleaned
-        if not cleaned.endswith("?"):
-            cleaned = cleaned.rstrip(".!") + "?"
-        return cleaned
-    except Exception:
-        return fallback
+    llm = get_llm()
+    text = llm.invoke([("system", prompt)]).content.strip()
+    if text.startswith('"') and text.endswith('"'):
+        text = text[1:-1].strip()
+    if not text:
+        return fallback, True, probe_goal
+    if previous_question and text.strip().lower() == previous_question.strip().lower():
+        return fallback, True, probe_goal
+    cleaned = " ".join(text.split())
+    if not cleaned.endswith("?"):
+        cleaned = cleaned.rstrip(".!") + "?"
+    return cleaned, False, probe_goal
 
 
 def _specialist_node(state: AgentState, node_name: str) -> Dict:
     latest = _latest_persona_message(state)
-    question = _build_question(node_name, state, latest)
+    question, used_fallback, probe_goal = _build_question(node_name, state, latest)
     target_items = SPECIALIST_ITEM_MAP.get(node_name, [])
     debug = f"{node_name.title()} specialist: question generated; target_items={target_items}"
+    turn = int(state.get("turn_index", 0)) + 1
+    trace = dict(state.get("turn_trace", {}))
+    trace["specialist"] = {
+        "turn": turn,
+        "node": node_name,
+        "target_items": target_items,
+        "probe_goal": probe_goal,
+        "used_fallback": used_fallback,
+        "question_preview": question[:120],
+    }
     return {
         "messages": [{"role": "user", "content": question}],
         "specialist_debug": debug,
         "active_node": node_name,
+        "turn_trace": trace,
     }
 
 

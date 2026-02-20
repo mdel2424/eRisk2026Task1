@@ -6,7 +6,7 @@ import os
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Dict, List, Sequence, Tuple
 
 from core.state import ItemBelief
 
@@ -42,6 +42,7 @@ class CalibratorBundle:
     bdi_intercept: float
     label_weights: List[float]
     label_intercept: float
+    fallback_reason: str = ""
 
 
 def _sigmoid(x: float) -> float:
@@ -56,23 +57,24 @@ def _vectorize(features: Dict[str, float], feature_names: Sequence[str]) -> List
     return [float(features.get(name, 0.0)) for name in feature_names]
 
 
-def _default_bundle() -> CalibratorBundle:
-    bdi_weights = [1.8 if name.startswith("item_") else 0.0 for name in FEATURE_NAMES]
-    label_weights = [0.25 if name.startswith("item_") else 0.0 for name in FEATURE_NAMES]
+def _default_bundle(mode: str = "deterministic_default", fallback_reason: str = "") -> CalibratorBundle:
+    bdi_weights = [2.4 if name.startswith("item_") else 0.0 for name in FEATURE_NAMES]
+    label_weights = [0.45 if name.startswith("item_") else 0.0 for name in FEATURE_NAMES]
     for idx, name in enumerate(FEATURE_NAMES):
         if name == "risk_flag":
-            label_weights[idx] = 2.2
+            label_weights[idx] = 2.4
         if name == "evidence_conf_mean":
-            label_weights[idx] = 0.6
+            label_weights[idx] = 0.7
         if name == "evidence_count_norm":
-            label_weights[idx] = 0.4
+            label_weights[idx] = 0.5
     return CalibratorBundle(
-        mode="deterministic",
+        mode=mode,
         feature_names=list(FEATURE_NAMES),
         bdi_weights=bdi_weights,
         bdi_intercept=0.0,
         label_weights=label_weights,
-        label_intercept=-2.2,
+        label_intercept=-2.0,
+        fallback_reason=fallback_reason,
     )
 
 
@@ -100,9 +102,10 @@ def build_feature_vector(
     return features
 
 
-def fit_calibrator(records: List[Dict]) -> CalibratorBundle:
+def fit_calibrator(records: List[Dict], min_records: int = 10) -> Tuple[CalibratorBundle, str]:
     if not records:
-        return _default_bundle()
+        reason = "no_records"
+        return _default_bundle(mode="skipped_no_records", fallback_reason=reason), reason
 
     features = [record.get("features", {}) for record in records]
     y_bdi = [float(record.get("bdi_true", 0.0)) for record in records]
@@ -113,14 +116,16 @@ def fit_calibrator(records: List[Dict]) -> CalibratorBundle:
     try:
         from sklearn.linear_model import LogisticRegression, Ridge
     except Exception:
-        return _default_bundle()
+        reason = "sklearn_unavailable"
+        return _default_bundle(mode="deterministic_default", fallback_reason=reason), reason
 
-    # Need minimum 10 samples for reasonably reliable model fitting.
-    if len(records) < 10:
-        return _default_bundle()
+    if len(records) < max(1, int(min_records)):
+        reason = "small_train_split"
+        return _default_bundle(mode="skipped_small_train", fallback_reason=reason), reason
     # Need at least 2 distinct labels (e.g., control and depressed) for binary classification calibration.
     if len(set(y_label)) < 2:
-        return _default_bundle()
+        reason = "single_class_train_split"
+        return _default_bundle(mode="skipped_single_class", fallback_reason=reason), reason
 
     ridge = Ridge(alpha=1.0, random_state=42)
     ridge.fit(x, y_bdi)
@@ -128,14 +133,16 @@ def fit_calibrator(records: List[Dict]) -> CalibratorBundle:
     logreg = LogisticRegression(max_iter=500, random_state=42)
     logreg.fit(x, y_label)
 
-    return CalibratorBundle(
-        mode="sklearn",
+    bundle = CalibratorBundle(
+        mode="sklearn_fitted",
         feature_names=feature_names,
         bdi_weights=[float(w) for w in ridge.coef_],
         bdi_intercept=float(ridge.intercept_),
         label_weights=[float(w) for w in logreg.coef_[0]],
         label_intercept=float(logreg.intercept_[0]),
+        fallback_reason="",
     )
+    return bundle, ""
 
 
 def predict_with_explanations(features: Dict[str, float], bundle: CalibratorBundle) -> PredictionResult:
@@ -149,6 +156,18 @@ def predict_with_explanations(features: Dict[str, float], bundle: CalibratorBund
     )
     prob_depressed = _sigmoid(raw_label_score)
     predicted_label = "depressed" if prob_depressed >= 0.5 else "control"
+    if bundle.mode != "sklearn_fitted":
+        bdi_threshold = int(os.getenv("DETERMINISTIC_BDI_LABEL_THRESHOLD", "14"))
+        risk_signal = float(features.get("risk_flag", 0.0)) >= 0.5
+        core_item_ids = [2, 3, 4, 5, 7, 8, 14, 15, 16, 19, 20]
+        core_mean_threshold = float(os.getenv("DETERMINISTIC_CORE_ITEM_MEAN_THRESHOLD", "0.6"))
+        core_min_hits = int(os.getenv("DETERMINISTIC_CORE_ITEM_MIN_HITS", "4"))
+        core_hits = 0
+        for item_id in core_item_ids:
+            if float(features.get(f"item_{item_id}", 0.0)) >= core_mean_threshold:
+                core_hits += 1
+        if predicted_bdi_score >= bdi_threshold or risk_signal or core_hits >= max(1, core_min_hits):
+            predicted_label = "depressed"
     global_confidence = prob_depressed if predicted_label == "depressed" else (1.0 - prob_depressed)
 
     contributions = [
@@ -184,12 +203,13 @@ def save_calibrator_bundle(path: str | Path, bundle: CalibratorBundle) -> None:
 def load_calibrator_bundle(path: str | Path) -> CalibratorBundle:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     return CalibratorBundle(
-        mode=str(data.get("mode", "deterministic")),
+        mode=str(data.get("mode", "deterministic_default")),
         feature_names=[str(v) for v in data.get("feature_names", FEATURE_NAMES)],
         bdi_weights=[float(v) for v in data.get("bdi_weights", [])],
         bdi_intercept=float(data.get("bdi_intercept", 0.0)),
         label_weights=[float(v) for v in data.get("label_weights", [])],
         label_intercept=float(data.get("label_intercept", 0.0)),
+        fallback_reason=str(data.get("fallback_reason", "")),
     )
 
 
@@ -200,5 +220,9 @@ def get_calibrator_bundle() -> CalibratorBundle:
         try:
             return load_calibrator_bundle(path)
         except Exception:
-            return _default_bundle()
+            return _default_bundle(mode="deterministic_default", fallback_reason="load_failed")
     return _default_bundle()
+
+
+def clear_calibrator_cache() -> None:
+    get_calibrator_bundle.cache_clear()

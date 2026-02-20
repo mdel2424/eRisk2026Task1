@@ -11,7 +11,7 @@ Given the persona's latest message and recent context, ask exactly one short, em
 Do not ask direct diagnostic questions.
 Keep it under 20 words.
 Anchor the question to one concrete detail from the persona's latest message.
-Keep a clear "past two weeks" time window.
+Maintain a two-week frame across the conversation, but avoid repeating the exact phrase "past two weeks" every turn.
 Target exactly one probe goal: {probe_goal}.
 Probe goal definitions:
 - frequency: how often this happens
@@ -68,18 +68,18 @@ Latest persona message:
 """,
         "fallback_questions": {
             "somatic": [
-                "In the past two weeks, how has your sleep changed from usual?",
-                "In the past two weeks, how has your energy changed across the day?",
-                "In the past two weeks, have meals or appetite felt different?",
+                "How has your sleep changed from your usual pattern?",
+                "How has your energy shifted across a typical day recently?",
+                "Have meals or appetite felt different lately?",
             ],
             "cognitive": [
-                "In the past two weeks, what thought has been loudest in your mind?",
+                "What thought has been loudest in your mind recently?",
                 "When things feel heavy lately, what do you tell yourself?",
-                "In the past two weeks, what feels hardest to believe about tomorrow?",
+                "What feels hardest to believe about tomorrow right now?",
             ],
             "risk": [
-                "In the past two weeks, when things felt very heavy, what helped you stay safe?",
-                "In the past two weeks, who or what helped you through your hardest moments?",
+                "When things felt very heavy recently, what helped you stay safe?",
+                "Who or what helped you through your hardest moments lately?",
                 "When thoughts feel overwhelming lately, what do you do first?",
             ],
         },

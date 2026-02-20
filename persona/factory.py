@@ -4,8 +4,10 @@ import random
 from dataclasses import dataclass
 from typing import Dict, List, Protocol
 
+from core.runtime_policy import resolve_persona_backend
 from core.state import top_symptoms_from_scores
 from persona.llm_persona import LLMPersona
+from persona.openrouter_persona import OpenRouterSimPersona
 
 
 class PersonaResponder(Protocol):
@@ -77,6 +79,11 @@ def generate_persona_profiles(count: int, seed: int = 42) -> List[PersonaProfile
 
 
 def create_persona(profile: PersonaProfile) -> PersonaResponder:
+    backend = resolve_persona_backend()
+    if backend == "openrouter_sim":
+        return OpenRouterSimPersona(persona_id=profile.persona_id, bdi_scores=profile.bdi_scores, evasive=True)
+    if backend != "hf_adapter":
+        raise ValueError(f"Unsupported PERSONA_BACKEND: {backend}")
     return LLMPersona(persona_id=profile.persona_id, bdi_scores=profile.bdi_scores, evasive=True)
 
 

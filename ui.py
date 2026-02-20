@@ -6,6 +6,7 @@ from typing import Dict, List
 import streamlit as st
 from dotenv import load_dotenv
 
+from core.llm import get_llm_usage
 from core.state import build_initial_state
 from graph import app
 from persona import PersonaProfile, create_persona, generate_persona_profiles
@@ -46,6 +47,7 @@ def _attach_turn_debug_to_latest_detector_message(state: Dict) -> None:
             "specialist": state.get("specialist_debug", ""),
             "stop": state.get("stop_debug", ""),
         },
+        "turn_trace": _serialize(state.get("turn_trace", {})),
         "evidence": _serialize(state.get("latest_turn_evidence", [])),
         "positive_contributions": _serialize(state.get("positive_contributions", [])),
         "negative_contributions": _serialize(state.get("negative_contributions", [])),
@@ -76,6 +78,8 @@ def _session_needs_hard_reset(state: Dict) -> bool:
         "evidence_log",
         "route_history",
         "stop_history",
+        "failure_counters",
+        "trace_log",
     ]
     if any(key not in state for key in required_state_keys):
         return True
@@ -150,6 +154,8 @@ def _diagnostics_payload(state: Dict) -> Dict:
         "evidence_log": _serialize(state.get("evidence_log", [])),
         "item_beliefs": _serialize(state.get("item_beliefs", {})),
         "stop_history": _serialize(state.get("stop_history", [])),
+        "trace_log": _serialize(state.get("trace_log", [])),
+        "failure_counters": _serialize(state.get("failure_counters", {})),
         "latest_feature_vector": _serialize(state.get("latest_feature_vector", {})),
         "positive_contributions": _serialize(state.get("positive_contributions", [])),
         "negative_contributions": _serialize(state.get("negative_contributions", [])),
@@ -204,6 +210,9 @@ with left_col:
                     st.caption(f"Route: {trace.get('route', '')}")
                     st.caption(f"Specialist: {trace.get('specialist', '')}")
                     st.caption(f"Stop: {trace.get('stop', '')}")
+                    turn_trace = turn_debug.get("turn_trace", {})
+                    if turn_trace:
+                        st.json(turn_trace, expanded=False)
 
                     evidence = turn_debug.get("evidence", [])
                     if evidence:
@@ -221,6 +230,26 @@ with right_col:
     st.write(f"Global confidence: **{state.get('global_confidence', 0.0):.2f}**")
     st.write(f"Top symptoms: **{state.get('predicted_key_symptoms', [])}**")
     st.write(f"Stop: **{state.get('should_stop', False)}**")
+
+    usage = get_llm_usage()
+    max_calls = usage.get("max_calls")
+    calls_total = int(usage.get("calls_total", 0))
+    budget_label = "inf" if max_calls is None else str(int(max_calls))
+    st.caption(
+        "LLM usage: "
+        f"calls={calls_total}/{budget_label}, "
+        f"prompt_toks={int(usage.get('prompt_tokens_total', 0))}, "
+        f"completion_toks={int(usage.get('completion_tokens_total', 0))}, "
+        f"errors={int(usage.get('errors_total', 0))}"
+    )
+    failure_counters = _serialize(state.get("failure_counters", {}))
+    if failure_counters:
+        st.write("Failure Counters")
+        st.dataframe(
+            [{"counter": key, "count": int(value)} for key, value in failure_counters.items()],
+            use_container_width=True,
+            height=160,
+        )
 
     stop_history = state.get("stop_history", [])
     if stop_history:
