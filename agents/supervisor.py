@@ -210,7 +210,8 @@ def supervisor_router(state: AgentState):
         )
 
     empty_streak = int(state.get("empty_evidence_streak", 0))
-    if empty_streak >= 2:
+    escape_streak_threshold = max(1, int(os.getenv("SUPERVISOR_ESCAPE_EMPTY_STREAK", "2")))
+    if empty_streak >= escape_streak_threshold:
         active_node = str(state.get("active_node", "cognitive"))
         chosen_node = _escape_node(active_node)
         target_items = SPECIALIST_ITEM_MAP.get(chosen_node, [])[:3]
@@ -219,7 +220,7 @@ def supervisor_router(state: AgentState):
             state=state,
             chosen_node=chosen_node,
             policy="escape_streak",
-            reason=f"empty_evidence_streak={empty_streak}",
+            reason=f"empty_evidence_streak={empty_streak}>=threshold={escape_streak_threshold}",
             target_items=target_items,
             expected_gain=expected_gain,
             matched_cues=[],

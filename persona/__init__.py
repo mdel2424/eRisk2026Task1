@@ -1,14 +1,14 @@
-from .factory import (
-    PersonaProfile,
+from .factory import create_persona
+from .llm_persona import LLMPersona
+from .openrouter_persona import OpenRouterSimPersona
+from .profile_sampling import (
     assign_splits,
     build_split_profiles,
-    create_persona,
     generate_persona_pool,
     generate_persona_profiles,
     split_synthetic_profiles,
 )
-from .llm_persona import LLMPersona
-from .openrouter_persona import OpenRouterSimPersona
+from .profiles import PersonaProfile
 
 __all__ = [
     "LLMPersona",
