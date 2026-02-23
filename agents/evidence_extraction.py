@@ -4,25 +4,18 @@ import json
 import os
 from typing import Any, Dict, List, Tuple
 
+from agents.evidence_lexicon import LEXICAL_EVIDENCE_CUES
 from core.llm import LLMBudgetExceeded, get_llm
 from core.prompts import get_prompt
 from core.state import (
     AgentState,
     BDI_ITEM_NAMES,
     EvidenceRecord,
+    LikelihoodEvidence,
     SYMPTOM_NAME_TO_ITEM,
     bump_failure_counter,
 )
-from agents.evidence_lexicon import LEXICAL_EVIDENCE_CUES
 
-
-def _latest_persona_message_with_index(state: AgentState) -> Tuple[str, int]:
-    messages = list(state.get("messages", []))
-    for idx in range(len(messages) - 1, -1, -1):
-        msg = messages[idx]
-        if msg.get("role") == "assistant":
-            return str(msg.get("content", "")), idx
-    return "", -1
 
 
 def _recent_context(state: AgentState, limit: int = 4) -> str:
@@ -32,6 +25,7 @@ def _recent_context(state: AgentState, limit: int = 4) -> str:
         role = "Detector" if msg.get("role") == "user" else "Persona"
         lines.append(f"{role}: {msg.get('content', '')}")
     return "\n".join(lines)
+
 
 
 def _parse_json_payload(raw_text: str) -> Tuple[Any, bool]:
@@ -68,12 +62,14 @@ def _parse_json_payload(raw_text: str) -> Tuple[Any, bool]:
         return {}, False
 
 
-def _number_in_range(value, low: float, high: float) -> bool:
+
+def _number_in_range(value: Any, low: float, high: float) -> bool:
     try:
         numeric = float(value)
     except (TypeError, ValueError):
         return False
     return low <= numeric <= high
+
 
 
 def _sentence_for_cue(text: str, cue: str) -> str:
@@ -85,6 +81,7 @@ def _sentence_for_cue(text: str, cue: str) -> str:
     return text[:220].strip()
 
 
+
 def _fallback_evidence_from_text(node_name: str, turn: int, text: str) -> List[EvidenceRecord]:
     lowered = text.lower()
     records: List[EvidenceRecord] = []
@@ -93,7 +90,7 @@ def _fallback_evidence_from_text(node_name: str, turn: int, text: str) -> List[E
         if not hits:
             continue
         intensity = min(3.0, 1.0 + (0.35 * len(hits)))
-        confidence = min(0.85, 0.45 + (0.1 * len(hits)))
+        confidence = min(0.90, 0.45 + (0.1 * len(hits)))
         evidence_text = _sentence_for_cue(text, hits[0])
         records.append(
             EvidenceRecord(
@@ -110,10 +107,11 @@ def _fallback_evidence_from_text(node_name: str, turn: int, text: str) -> List[E
             )
         )
     records.sort(key=lambda record: (record.confidence, record.intensity), reverse=True)
-    return records[:3]
+    return records[:4]
 
 
-def _coerce_item_id(raw_item_id, raw_symptom_name: str) -> int | None:
+
+def _coerce_item_id(raw_item_id: Any, raw_symptom_name: str) -> int | None:
     try:
         item_id = int(raw_item_id)
         if 1 <= item_id <= 21:
@@ -125,6 +123,7 @@ def _coerce_item_id(raw_item_id, raw_symptom_name: str) -> int | None:
     if symptom in SYMPTOM_NAME_TO_ITEM:
         return SYMPTOM_NAME_TO_ITEM[symptom]
     return None
+
 
 
 def _coerce_evidence_record(node_name: str, turn: int, item: Dict, fallback_text: str) -> EvidenceRecord | None:
@@ -169,33 +168,56 @@ def _coerce_evidence_record(node_name: str, turn: int, item: Dict, fallback_text
     )
 
 
-def extract_evidence(state: AgentState) -> Dict:
-    node_name = str(state.get("active_node", "cognitive"))
-    latest_message, latest_persona_idx = _latest_persona_message_with_index(state)
-    turn = int(state.get("turn_index", 0)) + 1
-    last_processed_idx = int(state.get("last_processed_persona_msg_idx", -1))
-    has_new_persona_input = latest_persona_idx > last_processed_idx
 
+def _likelihood_from_record(record: EvidenceRecord) -> List[float]:
+    strength = max(0.0, min(1.0, float(record.confidence) * max(0.1, float(record.intensity) / 3.0)))
+
+    if record.direction == "increase":
+        return [
+            max(0.05, 1.0 - (0.8 * strength)),
+            max(0.10, 1.0 - (0.4 * strength)),
+            1.0 + (0.4 * strength),
+            1.0 + (0.8 * strength),
+        ]
+    if record.direction == "decrease":
+        return [
+            1.0 + (0.8 * strength),
+            1.0 + (0.4 * strength),
+            max(0.10, 1.0 - (0.4 * strength)),
+            max(0.05, 1.0 - (0.8 * strength)),
+        ]
+
+    neutral = 1.0 + (0.15 * strength)
+    return [neutral, neutral, neutral, neutral]
+
+
+
+def extract_likelihoods(state: AgentState) -> Dict:
+    has_new_persona_input = bool(state.get("has_new_persona_input", False))
+    turn_obj = state.get("turn")
+    turn = int(getattr(turn_obj, "turn_id", int(state.get("turn_index", 0)) or 1))
+    latest_message = str(getattr(turn_obj, "latest_text_raw", "") or "")
+
+    node_name = str(state.get("active_node", "cognitive"))
     if node_name not in {"somatic", "cognitive", "risk"}:
         node_name = "cognitive"
 
     if not has_new_persona_input:
-        turn_trace = {
-            "extract_evidence": {
-                "turn": turn,
-                "source": "skip_no_new_persona",
-                "has_new_persona_input": False,
-                "latest_persona_idx": latest_persona_idx,
-                "last_processed_persona_msg_idx": last_processed_idx,
-                "kept_items_count": 0,
-                "empty_streak": int(state.get("empty_evidence_streak", 0)),
-            }
+        turn_trace = dict(state.get("turn_trace", {}))
+        trace_payload = {
+            "turn": turn,
+            "source": "skip_no_new_persona",
+            "kept_items_count": 0,
+            "empty_streak": int(state.get("empty_evidence_streak", 0)),
+            "has_new_persona_input": False,
         }
+        turn_trace["extract_likelihoods"] = trace_payload
+        turn_trace["extract_evidence"] = trace_payload
         return {
+            "latest_turn_likelihoods": [],
             "latest_turn_evidence": [],
             "specialist_debug": "Evidence extraction: waiting for persona input",
             "turn_trace": turn_trace,
-            "has_new_persona_input": False,
         }
 
     evidence_records: List[EvidenceRecord] = []
@@ -238,8 +260,10 @@ def extract_evidence(state: AgentState) -> Dict:
                         items = maybe_items
                 elif isinstance(parsed, list):
                     items = parsed
+
                 if raw_nonempty and not json_parse_ok:
                     counters = bump_failure_counter(counters, "extract_json_parse_fail")
+
                 if isinstance(items, list):
                     raw_items_count = len(items)
                     for raw_item in items:
@@ -272,6 +296,7 @@ def extract_evidence(state: AgentState) -> Dict:
 
     if dropped_unknown > 0:
         counters = bump_failure_counter(counters, "extract_item_map_fail", amount=dropped_unknown)
+
     fallback_records: List[EvidenceRecord] = []
     if not evidence_records and latest_message.strip():
         fallback_records = _fallback_evidence_from_text(node_name, turn, latest_message)
@@ -285,36 +310,55 @@ def extract_evidence(state: AgentState) -> Dict:
     else:
         empty_streak = 0
 
-    turn_trace = {
-        "extract_evidence": {
-            "turn": turn,
-            "source": source,
-            "raw_nonempty": raw_nonempty,
-            "json_parse_ok": json_parse_ok,
-            "raw_items_count": raw_items_count,
-            "kept_items_count": len(evidence_records),
-            "drop_unknown_item_count": dropped_unknown,
-            "drop_invalid_range_count": dropped_invalid,
-            "prefilter_count": len(lexical_prefilter),
-            "llm_on_lexical_hit": llm_on_lexical_hit,
-            "fallback_used": bool(fallback_records),
-            "empty_streak": empty_streak,
-            "has_new_persona_input": True,
-            "latest_persona_idx": latest_persona_idx,
-            "last_processed_persona_msg_idx": last_processed_idx,
-        }
+    likelihood_rows: List[LikelihoodEvidence] = []
+    for record in evidence_records:
+        likelihood_rows.append(
+            LikelihoodEvidence(
+                item_id=int(record.item_id),
+                likelihood=_likelihood_from_record(record),
+                spans=[record.evidence_text],
+                extract_confidence=float(record.confidence),
+                evidence_type=str(record.method),
+                symptom_name=str(record.symptom_name),
+            )
+        )
+
+    trace_payload = {
+        "turn": turn,
+        "source": source,
+        "raw_nonempty": raw_nonempty,
+        "json_parse_ok": json_parse_ok,
+        "raw_items_count": raw_items_count,
+        "kept_items_count": len(evidence_records),
+        "drop_unknown_item_count": dropped_unknown,
+        "drop_invalid_range_count": dropped_invalid,
+        "prefilter_count": len(lexical_prefilter),
+        "llm_on_lexical_hit": llm_on_lexical_hit,
+        "fallback_used": bool(fallback_records),
+        "empty_streak": empty_streak,
+        "has_new_persona_input": True,
     }
+    turn_trace = dict(state.get("turn_trace", {}))
+    turn_trace["extract_likelihoods"] = trace_payload
+    turn_trace["extract_evidence"] = trace_payload
+
     summary = (
         f"{state.get('specialist_debug', '')} | evidence_count={len(evidence_records)}"
         if state.get("specialist_debug")
         else f"Evidence extraction: count={len(evidence_records)}"
     )
+
     return {
+        "latest_turn_likelihoods": likelihood_rows,
         "latest_turn_evidence": evidence_records,
         "evidence_log": evidence_records,
         "specialist_debug": summary,
         "turn_trace": turn_trace,
         "failure_counters": counters,
         "empty_evidence_streak": empty_streak,
-        "has_new_persona_input": True,
     }
+
+
+# Backward compatibility for old imports.
+def extract_evidence(state: AgentState) -> Dict:
+    return extract_likelihoods(state)

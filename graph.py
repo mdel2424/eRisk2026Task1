@@ -1,185 +1,273 @@
-import os
+from __future__ import annotations
 
-from langgraph.graph import END, StateGraph
+import os
+from typing import Any, Callable, Dict
+
+try:
+    from langgraph.graph import END, StateGraph  # type: ignore
+except Exception:  # pragma: no cover - fallback for minimal test/runtime environments
+    END = "__END__"
+
+    class StateGraph:  # type: ignore[override]
+        def __init__(self, _state_type) -> None:
+            self._nodes: Dict[str, Callable] = {}
+            self._entry_point: str | None = None
+            self._edges: Dict[str, str] = {}
+            self._conditional_edges: Dict[str, tuple[Callable, Dict[str, str]]] = {}
+
+        def add_node(self, name: str, fn: Callable) -> None:
+            self._nodes[name] = fn
+
+        def set_entry_point(self, name: str) -> None:
+            self._entry_point = name
+
+        def add_edge(self, source: str, target: str) -> None:
+            self._edges[source] = target
+
+        def add_conditional_edges(
+            self,
+            source: str,
+            condition: Callable,
+            mapping: Dict[str, str],
+        ) -> None:
+            self._conditional_edges[source] = (condition, mapping)
+
+        def compile(self):
+            if not self._entry_point:
+                raise ValueError("Entry point is required before compile().")
+
+            nodes = dict(self._nodes)
+            edges = dict(self._edges)
+            conditional_edges = dict(self._conditional_edges)
+            entry = str(self._entry_point)
+
+            class _CompiledGraph:
+                def __init__(self) -> None:
+                    self._nodes = nodes
+                    self._edges = edges
+                    self._conditional_edges = conditional_edges
+                    self._entry = entry
+
+                @staticmethod
+                def _merge_state(state: Dict[str, Any], delta: Dict[str, Any]) -> Dict[str, Any]:
+                    merged = dict(state)
+                    for key, value in delta.items():
+                        if key in {"messages", "evidence_log", "route_history", "stop_history", "trace_log"}:
+                            prev = merged.get(key, [])
+                            if isinstance(prev, list) and isinstance(value, list):
+                                merged[key] = prev + value
+                                continue
+                        merged[key] = value
+                    return merged
+
+                def invoke(self, state: Dict[str, Any]) -> Dict[str, Any]:
+                    current = self._entry
+                    working = dict(state)
+                    while current != END:
+                        if current not in self._nodes:
+                            raise KeyError(f"Node '{current}' is not registered")
+                        delta = self._nodes[current](working)
+                        if not isinstance(delta, dict):
+                            raise TypeError(f"Node '{current}' returned non-dict delta: {type(delta)}")
+                        working = self._merge_state(working, delta)
+                        if current in self._conditional_edges:
+                            condition, mapping = self._conditional_edges[current]
+                            branch = condition(working)
+                            if branch not in mapping:
+                                raise KeyError(
+                                    f"Conditional branch '{branch}' is not mapped from node '{current}'"
+                                )
+                            current = mapping[branch]
+                        elif current in self._edges:
+                            current = self._edges[current]
+                        else:
+                            raise KeyError(f"No outgoing edge from node '{current}'")
+                    return working
+
+            return _CompiledGraph()
 
 from agents.belief_update import update_beliefs
-from agents.evidence_extraction import extract_evidence
-from agents.finalization import finalize_with_module_imputation
-from agents.specialists import cognitive_specialist, risk_specialist, somatic_specialist
-from agents.supervisor import supervisor_router
-from core.state import (
-    AgentState,
-    StopDecision,
-)
+from agents.evidence_extraction import extract_likelihoods
+from agents.finalize_outputs import finalize_outputs
+from agents.ingest_turn import ingest_turn
+from agents.policy_metrics import policy_metrics
+from agents.question_generator import question_generator
+from agents.risk_sentinel import risk_sentinel
+from agents.stop_decider import stop_decider
+from agents.target_selector import target_selector
+from core.state import AgentState
+
+NodeFn = Callable[[AgentState], Dict[str, Any]]
 
 
-def _latest_persona_message_index(state: AgentState) -> int:
-    messages = list(state.get("messages", []))
-    for idx in range(len(messages) - 1, -1, -1):
-        if messages[idx].get("role") == "assistant":
-            return idx
-    return -1
+SINGLE_WRITER_KEYS: Dict[str, set[str]] = {
+    "risk": {"risk_sentinel"},
+    "risk_flag": {"risk_sentinel"},
+    "risk_prob": {"risk_sentinel"},
+    "control": {"stop_decider", "finalize_outputs"},
+    "should_stop": {"stop_decider", "finalize_outputs"},
+    "stop_history": {"stop_decider"},
+    "next_action": {"target_selector"},
+    "next_node": {"target_selector"},
+    "active_node": {"target_selector"},
+    "route_history": {"target_selector"},
+    "route_debug": {"target_selector"},
+    "outgoing": {"question_generator"},
+    "messages": {"question_generator"},
+}
+
+NODE_FORBIDDEN_KEYS: Dict[str, set[str]] = {
+    "extract_likelihoods": {
+        "beliefs",
+        "item_beliefs",
+        "control",
+        "should_stop",
+        "next_action",
+        "next_node",
+        "active_node",
+        "route_history",
+        "route_debug",
+        "outgoing",
+    },
+    "belief_update": {
+        "control",
+        "should_stop",
+        "next_action",
+        "next_node",
+        "active_node",
+        "route_history",
+        "route_debug",
+        "outgoing",
+        "messages",
+    },
+    "policy_metrics": {
+        "control",
+        "should_stop",
+        "next_action",
+        "next_node",
+        "active_node",
+        "route_history",
+        "route_debug",
+        "outgoing",
+        "messages",
+    },
+    "question_generator": {
+        "predicted_label",
+        "predicted_bdi_score",
+        "raw_predicted_label",
+        "raw_predicted_bdi_score",
+        "final_item_scores",
+        "module_imputation",
+    },
+}
 
 
-def assess_stop(state: AgentState):
-    min_turns = int(os.getenv("MIN_TURNS", "4"))
-    max_turns = int(os.getenv("MAX_TURNS", "10"))
-    stop_confidence = float(os.getenv("STOP_CONFIDENCE", "0.75"))
-    min_evidence_for_conf_stop = int(os.getenv("MIN_EVIDENCE_FOR_CONF_STOP", "2"))
-    has_new_persona_input = bool(state.get("has_new_persona_input", False))
-    latest_persona_idx = _latest_persona_message_index(state)
 
-    prior_turn_index = int(state.get("turn_index", 0))
-    turn_index = prior_turn_index + 1 if has_new_persona_input else prior_turn_index
-    risk_flag = bool(state.get("risk_flag", False))
-    predicted_bdi_score = int(state.get("predicted_bdi_score") or 0)
-    predicted_label = str(state.get("predicted_label") or "control")
-    if predicted_label not in {"control", "depressed"}:
-        predicted_label = "control"
-    confidence = float(state.get("global_confidence", 0.0))
-    evidence_total = len(state.get("evidence_log", []))
-    evidence_gate_met = evidence_total >= max(0, min_evidence_for_conf_stop)
-    confidence_gate_met = confidence >= stop_confidence and evidence_gate_met
+def _strict_invariants_enabled() -> bool:
+    raw = os.getenv("GRAPH_VALIDATE_INVARIANTS", "0").strip().lower()
+    return raw in {"1", "true", "yes", "y", "on"}
 
-    should_stop = False
-    if not has_new_persona_input:
-        stop_reason = "opening_turn" if turn_index == 0 else "awaiting_persona_input"
-    else:
-        stop_reason = "continue"
-        if turn_index >= max_turns:
-            should_stop = True
-            stop_reason = "max_turns reached"
-        elif turn_index >= min_turns and (confidence_gate_met or risk_flag):
-            should_stop = True
-            stop_reason = "calibrated confidence/risk threshold reached"
-        elif turn_index >= min_turns and confidence >= stop_confidence and not evidence_gate_met:
-            stop_reason = (
-                "confidence threshold met but evidence gate blocked "
-                f"({evidence_total}/{min_evidence_for_conf_stop})"
+
+
+def _assert_invariants(node_name: str, delta: Dict[str, Any]) -> None:
+    keys = set(delta.keys())
+
+    for key, writers in SINGLE_WRITER_KEYS.items():
+        if key in keys and node_name not in writers:
+            raise AssertionError(
+                f"Invariant violation: key '{key}' can only be written by {sorted(writers)}, got {node_name}"
             )
 
-    finalization_payload = {}
-    final_bdi_for_debug = predicted_bdi_score
-    final_label_for_debug = predicted_label
-    raw_bdi_for_debug = int(state.get("predicted_bdi_score") or 0)
-    raw_label_for_debug = str(state.get("predicted_label") or "control")
-    imputed_item_count = 0
-    if should_stop:
-        finalization_payload = finalize_with_module_imputation(state)
-        final_bdi_for_debug = int(finalization_payload.get("predicted_bdi_score") or predicted_bdi_score)
-        final_label_for_debug = str(finalization_payload.get("predicted_label") or predicted_label)
-        raw_bdi_for_debug = int(finalization_payload.get("raw_predicted_bdi_score") or raw_bdi_for_debug)
-        raw_label_for_debug = str(finalization_payload.get("raw_predicted_label") or raw_label_for_debug)
-        module_imputation = finalization_payload.get("module_imputation", {})
-        if isinstance(module_imputation, dict):
-            imputed_item_count = int(module_imputation.get("imputed_item_count", 0) or 0)
-
-    stop_history_payload = []
-    if has_new_persona_input:
-        stop_record = StopDecision(
-            turn=max(1, turn_index),
-            should_stop=should_stop,
-            reason=stop_reason,
-            predicted_label=(
-                final_label_for_debug if final_label_for_debug in {"control", "depressed"} else predicted_label
-            ),
-            predicted_bdi_score=max(0, min(63, final_bdi_for_debug)),
-            confidence=max(0.0, min(1.0, confidence)),
+    forbidden = NODE_FORBIDDEN_KEYS.get(node_name, set())
+    illegal = sorted(key for key in keys if key in forbidden)
+    if illegal:
+        raise AssertionError(
+            f"Invariant violation: node '{node_name}' wrote forbidden keys: {illegal}"
         )
-        stop_history_payload = [stop_record]
 
-    debug_line = (
-        f"Assess stop: turn={turn_index}, bdi={predicted_bdi_score}, "
-        f"conf={confidence:.2f}, risk={risk_flag}, label={predicted_label}, "
-        f"evidence={evidence_total}, gate={evidence_gate_met}, "
-        f"new_input={has_new_persona_input}, stop={should_stop} ({stop_reason})"
+
+
+def _wrap_node(name: str, node_fn: NodeFn) -> NodeFn:
+    def _wrapped(state: AgentState) -> Dict[str, Any]:
+        delta = node_fn(state)
+        if not isinstance(delta, dict):
+            raise TypeError(f"Node '{name}' must return dict, got {type(delta)}")
+        if _strict_invariants_enabled():
+            _assert_invariants(name, delta)
+        return delta
+
+    return _wrapped
+
+
+
+def _risk_branch(state: AgentState) -> str:
+    risk = state.get("risk")
+    short_circuit = bool(getattr(risk, "short_circuit", False))
+    risk_flag = bool(state.get("risk_flag", False))
+    if short_circuit and risk_flag:
+        return "short_circuit"
+    return "continue"
+
+
+
+def _stop_branch(state: AgentState) -> str:
+    return "stop" if bool(state.get("should_stop", False)) else "continue"
+
+
+
+def build_app(node_overrides: dict[str, NodeFn] | None = None):
+    node_overrides = dict(node_overrides or {})
+
+    node_map: Dict[str, NodeFn] = {
+        "ingest_turn": ingest_turn,
+        "risk_sentinel": risk_sentinel,
+        "extract_likelihoods": extract_likelihoods,
+        "belief_update": update_beliefs,
+        "policy_metrics": policy_metrics,
+        "stop_decider": stop_decider,
+        "target_selector": target_selector,
+        "question_generator": question_generator,
+        "finalize_outputs": finalize_outputs,
+    }
+
+    workflow = StateGraph(AgentState)
+
+    for node_name, default_fn in node_map.items():
+        impl = node_overrides.get(node_name, default_fn)
+        workflow.add_node(node_name, _wrap_node(node_name, impl))
+
+    workflow.set_entry_point("ingest_turn")
+
+    workflow.add_edge("ingest_turn", "risk_sentinel")
+
+    workflow.add_conditional_edges(
+        "risk_sentinel",
+        _risk_branch,
+        {
+            "short_circuit": "finalize_outputs",
+            "continue": "extract_likelihoods",
+        },
     )
-    if should_stop:
-        debug_line += (
-            f" | raw=({raw_bdi_for_debug},{raw_label_for_debug})"
-            f" -> final=({final_bdi_for_debug},{final_label_for_debug}); "
-            f"imputed_items={imputed_item_count}"
-        )
-    turn_trace = dict(state.get("turn_trace", {}))
-    turn_trace["stop"] = {
-        "turn": turn_index,
-        "confidence": round(confidence, 4),
-        "stop_confidence": stop_confidence,
-        "evidence_total": evidence_total,
-        "min_evidence_for_conf_stop": min_evidence_for_conf_stop,
-        "evidence_gate_met": evidence_gate_met,
-        "should_stop": should_stop,
-        "reason": stop_reason,
-        "label": final_label_for_debug,
-        "risk_flag": risk_flag,
-        "raw_bdi_score": raw_bdi_for_debug,
-        "final_bdi_score": final_bdi_for_debug,
-        "raw_label": raw_label_for_debug,
-        "final_label": final_label_for_debug,
-        "imputed_item_count": imputed_item_count,
-    }
-    trace_entry = {
-        "turn": turn_index,
-        "turn_trace": turn_trace,
-        "route_debug": state.get("route_debug", ""),
-        "specialist_debug": state.get("specialist_debug", ""),
-        "stop_debug": debug_line,
-        "failure_counters": dict(state.get("failure_counters", {})),
-        "empty_evidence_streak": int(state.get("empty_evidence_streak", 0)),
-    }
-    last_processed_persona_msg_idx = int(state.get("last_processed_persona_msg_idx", -1))
-    if has_new_persona_input and latest_persona_idx > last_processed_persona_msg_idx:
-        last_processed_persona_msg_idx = latest_persona_idx
 
-    return {
-        "turn_index": turn_index,
-        "predicted_label": final_label_for_debug,
-        "should_stop": should_stop,
-        "last_processed_persona_msg_idx": last_processed_persona_msg_idx,
-        "stop_debug": debug_line,
-        "stop_history": stop_history_payload,
-        "turn_trace": turn_trace,
-        "trace_log": [trace_entry],
-        **finalization_payload,
-    }
+    workflow.add_edge("extract_likelihoods", "belief_update")
+    workflow.add_edge("belief_update", "policy_metrics")
+    workflow.add_edge("policy_metrics", "stop_decider")
+
+    workflow.add_conditional_edges(
+        "stop_decider",
+        _stop_branch,
+        {
+            "stop": "finalize_outputs",
+            "continue": "target_selector",
+        },
+    )
+
+    workflow.add_edge("target_selector", "question_generator")
+    workflow.add_edge("question_generator", "finalize_outputs")
+
+    workflow.add_edge("finalize_outputs", END)
+
+    return workflow.compile()
 
 
-workflow = StateGraph(AgentState)
-
-workflow.add_node("extract_evidence", extract_evidence)
-workflow.add_node("update_beliefs", update_beliefs)
-workflow.add_node("assess_stop", assess_stop)
-workflow.add_node("supervisor", supervisor_router)
-workflow.add_node("somatic", somatic_specialist)
-workflow.add_node("cognitive", cognitive_specialist)
-workflow.add_node("risk", risk_specialist)
-
-workflow.set_entry_point("extract_evidence")
-
-workflow.add_edge("extract_evidence", "update_beliefs")
-workflow.add_edge("update_beliefs", "assess_stop")
-
-workflow.add_conditional_edges(
-    "assess_stop",
-    lambda state: "end" if state.get("should_stop") else "continue",
-    {
-        "end": END,
-        "continue": "supervisor",
-    },
-)
-
-workflow.add_conditional_edges(
-    "supervisor",
-    lambda state: state["next_node"],
-    {
-        "somatic": "somatic",
-        "cognitive": "cognitive",
-        "risk": "risk",
-    },
-)
-
-workflow.add_edge("somatic", END)
-workflow.add_edge("cognitive", END)
-workflow.add_edge("risk", END)
-
-app = workflow.compile()
+app = build_app()

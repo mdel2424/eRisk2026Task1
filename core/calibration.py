@@ -78,6 +78,32 @@ def _default_bundle(mode: str = "deterministic_default", fallback_reason: str = 
     )
 
 
+def _belief_score(value) -> float:
+    if isinstance(value, ItemBelief):
+        return float(value.expected_score)
+    if isinstance(value, dict):
+        if "expected_score" in value:
+            try:
+                return float(value.get("expected_score", 0.0))
+            except (TypeError, ValueError):
+                return 0.0
+        if "mean_score" in value:
+            try:
+                return float(value.get("mean_score", 0.0))
+            except (TypeError, ValueError):
+                return 0.0
+        posterior = value.get("posterior")
+        if isinstance(posterior, list) and len(posterior) >= 4:
+            try:
+                return float(sum(idx * float(prob) for idx, prob in enumerate(posterior[:4])))
+            except (TypeError, ValueError):
+                return 0.0
+    try:
+        return float(getattr(value, "expected_score", getattr(value, "mean_score", 0.0)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def build_feature_vector(
     item_beliefs: Dict[int, ItemBelief],
     evidence_confidences: List[float],
@@ -86,7 +112,7 @@ def build_feature_vector(
     features: Dict[str, float] = {}
     for item_id in range(1, 22):
         belief = item_beliefs[item_id]
-        features[f"item_{item_id}"] = float(belief.mean_score)
+        features[f"item_{item_id}"] = _belief_score(belief)
 
     if evidence_confidences:
         conf_mean = sum(evidence_confidences) / len(evidence_confidences)

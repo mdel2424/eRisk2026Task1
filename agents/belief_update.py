@@ -1,147 +1,94 @@
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, List
 
-from core.calibration import build_feature_vector, get_calibrator_bundle, predict_with_explanations
-from core.state import (
-    AgentState,
-    ItemBelief,
-    SPECIALIST_ITEM_MAP,
-    bump_failure_counter,
-    top_symptoms_from_beliefs,
-)
+from core.state import AgentState, BeliefState, ItemBelief, coerce_item_belief
+
+
+
+def _normalize(values: List[float]) -> List[float]:
+    clipped = [max(1e-8, float(v)) for v in values]
+    total = sum(clipped)
+    if total <= 0:
+        return [0.25, 0.25, 0.25, 0.25]
+    return [value / total for value in clipped]
+
+
+
+def _posterior_stats(posterior: List[float]) -> tuple[float, float]:
+    import math
+
+    expected = sum(idx * prob for idx, prob in enumerate(posterior))
+    entropy = 0.0
+    for prob in posterior:
+        p = max(1e-12, min(1.0, float(prob)))
+        entropy -= p * math.log2(p)
+    return max(0.0, min(3.0, expected)), max(0.0, min(2.0, entropy))
+
 
 
 def _coerce_belief(item_id: int, value) -> ItemBelief:
-    if isinstance(value, ItemBelief):
-        return value
-    if isinstance(value, dict):
-        try:
-            return ItemBelief(**value)
-        except Exception:
-            pass
-    return ItemBelief(
-        item_id=item_id,
-        mean_score=0.0,
-        uncertainty=1.0,
-        support_count=0,
-        last_update_turn=0,
-    )
+    return coerce_item_belief(item_id, value)
 
-
-def _update_single_belief(belief: ItemBelief, evidence, turn: int) -> ItemBelief:
-    prior_n = belief.support_count
-    new_n = prior_n + 1
-    weighted_observation = evidence.intensity * evidence.confidence
-    new_mean = ((belief.mean_score * prior_n) + weighted_observation) / new_n
-    new_uncertainty = max(0.05, 1.0 / (new_n + 1.0))
-    return ItemBelief(
-        item_id=belief.item_id,
-        mean_score=max(0.0, min(3.0, new_mean)),
-        uncertainty=max(0.0, min(1.0, new_uncertainty)),
-        support_count=new_n,
-        last_update_turn=turn,
-    )
 
 
 def update_beliefs(state: AgentState) -> Dict:
-    turn = int(state.get("turn_index", 0)) + 1
-    has_new_persona_input = bool(state.get("has_new_persona_input", False))
-    if not has_new_persona_input:
-        turn_trace = dict(state.get("turn_trace", {}))
-        turn_trace["update_beliefs"] = {
-            "turn": turn,
-            "skipped_no_new_persona_input": True,
-            "active_node": str(state.get("active_node", "cognitive")),
-            "updated_item_ids": [],
-            "risk_flag": bool(state.get("risk_flag", False)),
-            "calibrator_mode": str(state.get("calibrator_mode", "deterministic_default")),
-            "global_confidence": round(float(state.get("global_confidence", 0.0)), 4),
-            "positive_features": [],
-            "negative_features": [],
-        }
-        return {
-            "turn_trace": turn_trace,
-            "specialist_debug": "Belief update: skipped (no new persona input)",
-        }
-
-    latest_evidence = list(state.get("latest_turn_evidence", []))
+    turn = int(state.get("turn_index", 0))
+    latest_likelihoods = list(state.get("latest_turn_likelihoods", []))
     prior_beliefs = state.get("item_beliefs", {})
+
     beliefs: Dict[int, ItemBelief] = {}
     for item_id in range(1, 22):
         beliefs[item_id] = _coerce_belief(item_id, prior_beliefs.get(item_id))
 
-    for record in latest_evidence:
-        if 1 <= record.item_id <= 21:
-            beliefs[record.item_id] = _update_single_belief(beliefs[record.item_id], record, turn)
+    evidence_count_by_item: Dict[int, int] = {}
+    combined_likelihood_by_item: Dict[int, List[float]] = {}
+    for row in latest_likelihoods:
+        item_id = int(getattr(row, "item_id", 0) or 0)
+        if item_id < 1 or item_id > 21:
+            continue
+        values = [float(v) for v in list(getattr(row, "likelihood", [1.0, 1.0, 1.0, 1.0]))[:4]]
+        if len(values) < 4:
+            values.extend([1.0] * (4 - len(values)))
 
-    risk_flag = bool(state.get("risk_flag", False)) or any(
-        rec.item_id == 9 and rec.intensity >= 0.75 for rec in latest_evidence
-    )
+        if item_id not in combined_likelihood_by_item:
+            combined_likelihood_by_item[item_id] = [1.0, 1.0, 1.0, 1.0]
+        combined_likelihood_by_item[item_id] = [
+            combined_likelihood_by_item[item_id][idx] * max(1e-8, values[idx])
+            for idx in range(4)
+        ]
+        evidence_count_by_item[item_id] = int(evidence_count_by_item.get(item_id, 0)) + 1
 
-    evidence_confidences = [float(rec.confidence) for rec in latest_evidence]
-    feature_vector = build_feature_vector(beliefs, evidence_confidences, risk_flag)
-    bundle = get_calibrator_bundle()
-    prediction = predict_with_explanations(feature_vector, bundle)
-    counters = dict(state.get("failure_counters", {}))
-    if prediction.mode == "deterministic_default" and getattr(bundle, "fallback_reason", "") == "load_failed":
-        counters = bump_failure_counter(counters, "calibrator_fallback_cache")
+    updated_item_ids: List[int] = []
+    for item_id, combined in combined_likelihood_by_item.items():
+        prior = beliefs[item_id]
+        prior_posterior = [float(v) for v in list(prior.posterior)[:4]]
+        if len(prior_posterior) < 4:
+            prior_posterior.extend([0.25] * (4 - len(prior_posterior)))
 
-    positive = [
-        {
-            "feature": item.feature,
-            "value": item.value,
-            "weight": item.weight,
-            "impact": item.impact,
-        }
-        for item in prediction.positive_contributions
-    ]
-    negative = [
-        {
-            "feature": item.feature,
-            "value": item.value,
-            "weight": item.weight,
-            "impact": item.impact,
-        }
-        for item in prediction.negative_contributions
-    ]
+        posterior = _normalize(
+            [prior_posterior[idx] * max(1e-8, combined[idx]) for idx in range(4)]
+        )
+        expected_score, entropy = _posterior_stats(posterior)
+        beliefs[item_id] = ItemBelief(
+            item_id=item_id,
+            posterior=posterior,
+            expected_score=expected_score,
+            entropy=entropy,
+            support_count=int(prior.support_count) + int(evidence_count_by_item.get(item_id, 0)),
+            last_update_turn=max(0, turn),
+        )
+        updated_item_ids.append(item_id)
 
-    active_node = str(state.get("active_node", "cognitive"))
-    node_items = SPECIALIST_ITEM_MAP.get(active_node, [])
-    node_summary = ", ".join(str(item_id) for item_id in node_items[:3]) or "n/a"
-    updated_item_ids = sorted({int(record.item_id) for record in latest_evidence})
-    positive_names = [row["feature"] for row in positive[:3]]
-    negative_names = [row["feature"] for row in negative[:3]]
     turn_trace = dict(state.get("turn_trace", {}))
-    turn_trace["update_beliefs"] = {
+    turn_trace["belief_update"] = {
         "turn": turn,
-        "skipped_no_new_persona_input": False,
-        "active_node": active_node,
-        "updated_item_ids": updated_item_ids,
-        "risk_flag": risk_flag,
-        "calibrator_mode": prediction.mode,
-        "global_confidence": round(float(prediction.global_confidence), 4),
-        "positive_features": positive_names,
-        "negative_features": negative_names,
+        "updated_item_ids": sorted(updated_item_ids),
+        "likelihood_rows": len(latest_likelihoods),
     }
-    debug = (
-        f"{state.get('specialist_debug', '')} | "
-        f"beliefs_updated={len(latest_evidence)}; node_items={node_summary}; "
-        f"cal_mode={prediction.mode}; conf={prediction.global_confidence:.2f}"
-    )
 
     return {
+        "beliefs": BeliefState(items=beliefs),
         "item_beliefs": beliefs,
-        "risk_flag": risk_flag,
-        "latest_feature_vector": feature_vector,
-        "calibrator_mode": prediction.mode,
-        "positive_contributions": positive,
-        "negative_contributions": negative,
-        "global_confidence": prediction.global_confidence,
-        "predicted_bdi_score": prediction.predicted_bdi_score,
-        "predicted_label": prediction.predicted_label,
-        "predicted_key_symptoms": top_symptoms_from_beliefs(beliefs, limit=4),
-        "specialist_debug": debug,
         "turn_trace": turn_trace,
-        "failure_counters": counters,
     }

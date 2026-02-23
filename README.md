@@ -1,7 +1,7 @@
 # eRisk_Honours
 
 Minimal PoC for eRisk 2026 Task 1:
-- LangGraph detector (`extract_evidence -> update_beliefs -> assess_stop -> supervisor -> specialist`)
+- LangGraph detector (`ingest_turn -> risk_sentinel -> extract_likelihoods -> belief_update -> policy_metrics -> stop_decider -> target_selector -> question_generator -> finalize_outputs`)
 - BDI-SSI module-aware probing (deterministic target item/module selection)
 - Final-time module-weighted imputation for unobserved BDI items (interpretable item-sum BDI)
 - Swappable inference backends:
