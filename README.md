@@ -4,9 +4,8 @@ Minimal PoC for eRisk 2026 Task 1:
 - LangGraph detector (`ingest_turn -> risk_sentinel -> extract_likelihoods -> belief_update -> policy_metrics -> stop_decider -> target_selector -> question_generator -> finalize_outputs`)
 - BDI-SSI module-aware probing (deterministic target item/module selection)
 - Final-time module-weighted imputation for unobserved BDI items (interpretable item-sum BDI)
-- Swappable inference backends:
-  - detector: `local_hf` or `openrouter`
-  - persona runtime: `hf_adapter` or `openrouter_sim`
+- Detector backends: `local_hf` or `openrouter`
+- Persona runtime: deterministic simulator only (`openrouter_sim` path, no persona LLM calls)
 - Synthetic-only eval with leakage guards and traceability artifacts
 
 ## Setup
@@ -20,8 +19,12 @@ cp .env.example .env
 ```
 
 Default behavior is automatic:
-- if CUDA VRAM >= `MIN_CUDA_VRAM_GB`, use `local_hf` + `hf_adapter`
-- otherwise, use `openrouter` + `openrouter_sim`
+- if CUDA VRAM >= `MIN_CUDA_VRAM_GB`, use `local_hf`
+- otherwise, use `openrouter`
+`OPENROUTER_API_KEY` is required only when detector resolves to `openrouter`.
+
+Persona generation is always deterministic and consumes hidden probe intent (`target_item_id`, `route`, `style`, `mode`, `directness`, `priority`) from detector state.
+Probe intent is stored only in `turn_trace`/diagnostics; transcripts remain natural-language only.
 
 Simulator behavior defaults:
 - cooperative-but-hedged replies (answer-first, uncertainty-second)
@@ -31,10 +34,15 @@ Simulator behavior defaults:
 ## Run CLI
 
 ```bash
-python -m app.cli --mode interactive
+python -m app.cli --mode interactive --personas 10 --seed 42 --interactive_persona_index 0
 python -m app.cli --mode eval --personas 10 --seed 42 --eval_mode mixed_holdout --prompt_version v1 --save_diagnostics true --max_api_calls 380 --trace_level compact --fit_calibrator auto
 python -m app.cli --mode tune --tune_personas 30 --tune_seed 42 --tune_max_api_calls 800 --tune_trace_level off --fit_calibrator auto
 ```
+
+`interactive` is a stepper:
+- press Enter to alternate `detector -> persona -> detector -> ...`
+- each step prints compact pipeline flow (ingest, risk, extraction, belief/policy, route, stop, usage)
+- transcript stays natural-language only; probe intent is shown from hidden handoff metadata
 
 By default, eval prints only:
 - `binary_f1`

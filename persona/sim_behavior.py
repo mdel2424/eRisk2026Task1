@@ -6,12 +6,10 @@ from typing import Dict, List
 from core.state import BDI_ITEM_NAMES
 from persona.sim_templates import (
     CONTEXT_ANCHORS,
-    DIRECT_DIAGNOSIS_TOKENS,
     HEDGE_PHRASES,
     ITEM_CONTEXT_HINTS,
     ITEM_SENTENCE_BANK,
     NORMALIZATION_PHRASES,
-    QUESTION_KEYWORDS_TO_ITEMS,
     RISK_PROTECTIVE_FACTORS,
     RISK_RESPONSE_BANK,
     SIM_TEMPLATE_BANKS,
@@ -48,33 +46,45 @@ def validate_template_disjointness() -> Dict[str, object]:
     }
 
 
-def _latest_question(history: List[dict]) -> str:
-    for msg in reversed(history):
-        if msg.get("role") == "user":
-            return str(msg.get("content", "")).strip().lower()
-    return ""
+def _coerce_probe_intent(probe_intent: Dict[str, object] | None) -> Dict[str, object]:
+    if not isinstance(probe_intent, dict):
+        raise RuntimeError("Missing probe_intent for deterministic persona generation.")
 
+    target_item_id = probe_intent.get("target_item_id")
+    route = str(probe_intent.get("route", "")).strip().lower()
+    style = str(probe_intent.get("style", "")).strip()
+    mode = str(probe_intent.get("mode", "normal")).strip().lower()
+    directness = str(probe_intent.get("directness", "indirect")).strip().lower()
+    priority_raw = probe_intent.get("priority", 0.5)
 
-def pick_target_item(question: str, bdi_scores: Dict[int, int], family: str, rng) -> int:
-    for keywords, item_id in QUESTION_KEYWORDS_TO_ITEMS:
-        if any(keyword in question for keyword in keywords):
-            return item_id
+    try:
+        target_item = int(target_item_id)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Invalid probe_intent.target_item_id for deterministic persona generation.") from exc
+    if target_item < 1 or target_item > 21:
+        raise RuntimeError("Invalid probe_intent.target_item_id for deterministic persona generation.")
+    if route not in {"somatic", "cognitive", "risk"}:
+        raise RuntimeError("Invalid probe_intent.route for deterministic persona generation.")
+    if not style:
+        raise RuntimeError("Invalid probe_intent.style for deterministic persona generation.")
+    if mode not in {"normal", "wrapup"}:
+        raise RuntimeError("Invalid probe_intent.mode for deterministic persona generation.")
+    if directness not in {"indirect", "direct"}:
+        raise RuntimeError("Invalid probe_intent.directness for deterministic persona generation.")
+    try:
+        priority = float(priority_raw)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Invalid probe_intent.priority for deterministic persona generation.") from exc
+    priority = max(0.0, min(1.0, priority))
 
-    non_zero = [item_id for item_id, score in bdi_scores.items() if int(score) > 0]
-    if non_zero:
-        return int(rng.choice(non_zero))
-
-    family_defaults = {
-        "control_stressed": [16, 19, 15],
-        "control_neutral": [4, 15],
-        "somatic_evasive": [16, 20, 15],
-        "cognitive_ruminative": [2, 3, 8],
-        "mixed_moderate": [4, 15, 19],
-        "functional_masked": [4, 15, 19],
-        "risk_leaning": [9, 2, 14],
+    return {
+        "target_item_id": target_item,
+        "route": route,
+        "style": style,
+        "mode": mode,
+        "directness": directness,
+        "priority": priority,
     }
-    choices = family_defaults.get(family, [15, 4, 19])
-    return int(rng.choice(choices))
 
 
 def _item_sentence(item_id: int, score: int) -> str:
@@ -104,18 +114,28 @@ def response_style_flags(text: str) -> Dict[str, bool]:
 
 
 def _intent(
-    question: str,
+    route: str,
+    mode: str,
+    directness: str,
+    style: str,
+    priority: float,
     evasiveness: float,
     contradiction_rate: float,
     direct_answer_rate: float,
     rng,
 ) -> str:
-    direct_label_prompt = any(token in question for token in DIRECT_DIAGNOSIS_TOKENS)
-    if direct_label_prompt and rng.random() < max(0.18, min(0.55, evasiveness * 0.55)):
+    if route == "risk":
+        return "disclose"
+    direct_probe = directness == "direct"
+    if direct_probe and rng.random() < max(0.12, min(0.45, evasiveness * 0.55)):
         return "deflect"
-    if rng.random() > max(0.45, min(0.95, direct_answer_rate)) and rng.random() < max(0.22, min(0.5, evasiveness + 0.1)):
+    adjusted_direct_rate = max(0.45, min(0.98, direct_answer_rate + 0.15 * priority))
+    partial_floor = 0.18 if mode == "normal" else 0.24
+    if rng.random() > adjusted_direct_rate and rng.random() < max(partial_floor, min(0.5, evasiveness + 0.1)):
         return "partial"
     if contradiction_rate > 0.0 and rng.random() < min(0.2, contradiction_rate * 0.8):
+        return "partial"
+    if "impact" in style and rng.random() < 0.12:
         return "partial"
     return "disclose"
 
@@ -179,15 +199,22 @@ def build_deterministic_reply(
     bdi_scores: Dict[int, int],
     behavior_params: Dict[str, float | str],
     history: List[dict],
+    probe_intent: Dict[str, object],
     evasive: bool,
     rng,
 ) -> str:
     split_key = split if split in SIM_TEMPLATE_BANKS else "test"
     bank = SIM_TEMPLATE_BANKS[split_key]
 
-    question = _latest_question(history)
-    target_item = pick_target_item(question, bdi_scores, family, rng)
+    _ = family  # retained for API compatibility; behavior is now intent-driven.
+    intent_payload = _coerce_probe_intent(probe_intent)
+    target_item = int(intent_payload["target_item_id"])
     target_score = int(bdi_scores.get(target_item, 0))
+    route = str(intent_payload["route"])
+    style = str(intent_payload["style"])
+    mode = str(intent_payload["mode"])
+    directness = str(intent_payload["directness"])
+    priority = float(intent_payload["priority"])
 
     evasiveness = float(behavior_params.get("evasiveness", 0.45))
     contradiction_rate = float(behavior_params.get("contradiction", 0.08))
@@ -195,14 +222,24 @@ def build_deterministic_reply(
     normalization_rate = float(behavior_params.get("normalization_rate", 0.45))
     context_anchor_rate = float(behavior_params.get("context_anchor_rate", 0.55))
     direct_answer_rate = float(behavior_params.get("direct_answer_rate", 0.78))
-    intent = _intent(question, evasiveness if evasive else 0.1, contradiction_rate, direct_answer_rate, rng)
+    intent = _intent(
+        route,
+        mode,
+        directness,
+        style,
+        priority,
+        evasiveness if evasive else 0.1,
+        contradiction_rate,
+        direct_answer_rate,
+        rng,
+    )
 
     question_turns = sum(1 for msg in history if msg.get("role") == "user")
     opener_pool = bank["openers"][::2] if question_turns % 2 == 0 else bank["openers"][1::2] or bank["openers"]
     opener = rng.choice(opener_pool)
     bridge = rng.choice(bank["bridges"])
 
-    if target_item == 9:
+    if target_item == 9 or route == "risk":
         return _risk_tier_reply(target_score, rng)
 
     if intent == "deflect":

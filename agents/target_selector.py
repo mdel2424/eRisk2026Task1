@@ -8,6 +8,12 @@ from core.state import AgentState, NextAction, RouteDecision, SPECIALIST_ITEM_MA
 STYLE_CYCLE = ("gentle_probe", "clarify_frequency", "functional_impact")
 
 
+def _priority_from_gain(expected_gain: float) -> float:
+    gain = max(0.0, float(expected_gain))
+    # Smooth normalization so larger expected-gain targets get higher handoff priority.
+    return max(0.0, min(1.0, gain / (gain + 2.0)))
+
+
 
 def _recent_target_counts(route_history: List, window: int = 4) -> Dict[int, int]:
     counts: Dict[int, int] = {}
@@ -83,16 +89,25 @@ def _select_target_item(state: AgentState) -> tuple[int, float, str]:
 
 
 def target_selector(state: AgentState) -> Dict:
-    target_item_id, expected_gain, rationale = _select_target_item(state)
-    route = _route_for_item(target_item_id)
-
     turn_index = int(state.get("turn_index", 0))
-    style = STYLE_CYCLE[turn_index % len(STYLE_CYCLE)]
+    has_new_persona_input = bool(state.get("has_new_persona_input", False))
+
+    if turn_index == 0 and not has_new_persona_input:
+        target_item_id, expected_gain, rationale = 2, 0.0, "opening bootstrap"
+        route = "cognitive"
+        style = "opening"
+    else:
+        target_item_id, expected_gain, rationale = _select_target_item(state)
+        route = _route_for_item(target_item_id)
+        style = STYLE_CYCLE[turn_index % len(STYLE_CYCLE)]
 
     next_action = NextAction(
         target_item_id=target_item_id,
         route=route,
         style=style,
+        mode="normal",
+        directness="indirect",
+        priority=_priority_from_gain(expected_gain),
         rationale=rationale,
     )
 

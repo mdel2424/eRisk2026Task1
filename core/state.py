@@ -174,9 +174,12 @@ class ControlState(BaseModel):
 
 
 class NextAction(BaseModel):
-    target_item_id: Optional[int] = Field(default=None, ge=1, le=21)
-    route: str = "cognitive"
-    style: str = "supportive_indirect"
+    target_item_id: int = Field(default=2, ge=1, le=21)
+    route: Literal["somatic", "cognitive", "risk"] = "cognitive"
+    style: str = "gentle_probe"
+    mode: Literal["normal", "wrapup"] = "normal"
+    directness: Literal["indirect", "direct"] = "indirect"
+    priority: float = Field(default=0.5, ge=0.0, le=1.0)
     rationale: str = ""
 
 

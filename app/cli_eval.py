@@ -79,7 +79,7 @@ def run_eval(
     fit_calibrator_enabled = _resolve_fit_calibrator_policy(fit_calibrator_policy)
     min_train_records = _parse_int(os.getenv("CALIBRATOR_MIN_TRAIN_RECORDS", "10"), 10)
     strict_split_lock = _strict_split_lock_enabled()
-    generator_version = os.getenv("SIM_GENERATOR_VERSION", "sim_v2").strip() or "sim_v2"
+    generator_version = os.getenv("SIM_GENERATOR_VERSION", "sim_v3").strip() or "sim_v3"
 
     requested_eval_mode, effective_eval_mode = _resolve_effective_eval_mode(eval_mode)
 

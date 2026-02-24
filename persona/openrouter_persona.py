@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import os
 import random
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Mapping
 
-from core.llm import get_persona_openrouter_llm
-from core.state import BDI_ITEM_NAMES
 from persona.sim_behavior import build_deterministic_reply, normalize_response, response_style_flags
 
 
@@ -21,7 +18,7 @@ class OpenRouterSimPersona:
     split: str = "test"
     behavior_params: Dict[str, float | str] = field(default_factory=dict)
     template_bank: str = "test_bank_v1"
-    generator_version: str = "sim_v2"
+    generator_version: str = "sim_v3"
     last_response: str = field(default="", init=False)
     recent_responses: List[str] = field(default_factory=list, init=False)
     responses_total: int = field(default=0, init=False)
@@ -44,72 +41,27 @@ class OpenRouterSimPersona:
                 "affect_volatility": 0.2,
             }
 
-    def _active_symptom_names(self) -> List[str]:
-        active = [
-            BDI_ITEM_NAMES.get(item_id, f"Item {item_id}")
-            for item_id, score in self.bdi_scores.items()
-            if int(score) > 0
-        ]
-        return active[:10]
-
-    def _paraphrase_enabled(self) -> bool:
-        raw = os.getenv("SIM_PARAPHRASE_ENABLED", "1").strip().lower()
-        return raw in {"1", "true", "yes", "y", "on"}
-
-    def _paraphrase_rate(self) -> float:
-        try:
-            value = float(os.getenv("SIM_PARAPHRASE_RATE", "0.5"))
-        except ValueError:
-            value = 0.5
-        return max(0.0, min(1.0, value))
-
-    def _latest_detector_question(self, history: List[dict]) -> str:
-        for msg in reversed(history):
-            if msg.get("role") == "user":
-                return str(msg.get("content", "")).strip()
-        return ""
-
-    def _paraphrase(self, base_text: str, history: List[dict]) -> str:
-        llm = get_persona_openrouter_llm()
-        latest_question = self._latest_detector_question(history)
-        allowed = ", ".join(self._active_symptom_names()) or "general stress only"
-
-        prompt = (
-            "Rewrite the draft patient reply to sound natural while preserving meaning and severity. "
-            "Use a cooperative but hedged style: answer first, soften uncertainty second. "
-            "Keep first-person voice, 1-2 short sentences, no bullets, no diagnosis labels. "
-            "Include one concrete life detail when available (work/family/routine/messages). "
-            "Avoid hard refusal unless directly asked for diagnostic labels. "
-            "Do not add symptoms not supported by the allowed symptom set. "
-            f"Allowed symptoms: {allowed}. "
-            f"Context split={self.split}, family={self.family}, template_bank={self.template_bank}. "
-            f"Latest clinician question: {latest_question or 'none'}. "
-            f"Draft reply: {base_text}"
-        )
-
-        text = llm.invoke([("system", prompt)]).content
-        return normalize_response(text)
-
-    def _fallback_variant(self, history: List[dict]) -> str:
+    def _fallback_variant(self, history: List[dict], probe_intent: Mapping[str, object]) -> str:
         return build_deterministic_reply(
             family=self.family,
             split=self.split,
             bdi_scores=self.bdi_scores,
             behavior_params=self.behavior_params,
             history=history,
+            probe_intent=dict(probe_intent),
             evasive=self.evasive,
             rng=self._rng,
         )
 
-    def _dedupe(self, candidate: str, history: List[dict]) -> str:
+    def _dedupe(self, candidate: str, history: List[dict], probe_intent: Mapping[str, object]) -> str:
         lowered_recent = {text.lower().strip() for text in self.recent_responses[-4:]}
         text = normalize_response(candidate)
         if not text:
-            text = normalize_response(self._fallback_variant(history))
+            text = normalize_response(self._fallback_variant(history, probe_intent))
         if text.lower().strip() not in lowered_recent:
             return text
         for _ in range(3):
-            retry = normalize_response(self._fallback_variant(history))
+            retry = normalize_response(self._fallback_variant(history, probe_intent))
             if retry and retry.lower().strip() not in lowered_recent:
                 return retry
         return text
@@ -124,27 +76,19 @@ class OpenRouterSimPersona:
             "avg_response_words": round(float(avg_words), 3),
         }
 
-    def reply(self, history: List[dict]) -> str:
+    def reply(self, history: List[dict], probe_intent: Dict[str, object]) -> str:
         base = build_deterministic_reply(
             family=self.family,
             split=self.split,
             bdi_scores=self.bdi_scores,
             behavior_params=self.behavior_params,
             history=history,
+            probe_intent=probe_intent,
             evasive=self.evasive,
             rng=self._rng,
         )
         text = normalize_response(base)
-
-        if self._paraphrase_enabled() and self._rng.random() < self._paraphrase_rate():
-            try:
-                candidate = self._paraphrase(base, history)
-                if candidate:
-                    text = candidate
-            except Exception:
-                text = normalize_response(base)
-
-        text = self._dedupe(text, history)
+        text = self._dedupe(text, history, probe_intent)
 
         if not text:
             text = "I can describe my day-to-day if that helps more."

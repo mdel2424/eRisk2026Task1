@@ -16,16 +16,6 @@ from core.runtime_policy import (
 from app.cli_common import _serialize
 
 
-def _format_debug(state: Dict) -> str:
-    return " | ".join(
-        [
-            f"route={state.get('route_debug', '')}",
-            f"specialist={state.get('specialist_debug', '')}",
-            f"stop={state.get('stop_debug', '')}",
-        ]
-    )
-
-
 def _print_progress(label: str, current: int, total: int, width: int = 24) -> None:
     total = max(1, total)
     current = max(0, min(current, total))
@@ -49,10 +39,7 @@ def _print_backend_info(max_api_calls: int | None = None, trace_level: str = "co
     else:
         detector_target = os.getenv("DETECTOR_MODEL", "")
 
-    if persona_backend == "openrouter_sim":
-        persona_target = os.getenv("OPENROUTER_PERSONA_MODEL", "openrouter/auto")
-    else:
-        persona_target = os.getenv("ERISK_ADAPTER_ID", "")
+    persona_target = "deterministic_sim"
 
     print(
         "Backend info: "
@@ -71,11 +58,11 @@ def _print_backend_info(max_api_calls: int | None = None, trace_level: str = "co
 
 def _assert_openrouter_ready() -> None:
     detector_backend = resolve_detector_backend()
-    persona_backend = resolve_persona_backend()
-    if detector_backend == "openrouter" or persona_backend == "openrouter_sim":
+    resolve_persona_backend()
+    if detector_backend == "openrouter":
         if not os.getenv("OPENROUTER_API_KEY", "").strip():
             raise ValueError(
-                "OPENROUTER_API_KEY is required because at least one resolved backend uses OpenRouter."
+                "OPENROUTER_API_KEY is required because the resolved detector backend uses OpenRouter."
             )
 
 
@@ -116,7 +103,7 @@ def _snapshot_turn(state: Dict) -> Dict:
     if isinstance(turn_trace, dict):
         turn_trace = {
             key: turn_trace.get(key)
-            for key in ("supervisor", "specialist", "extract_evidence", "update_beliefs", "stop")
+            for key in ("supervisor", "specialist", "extract_evidence", "update_beliefs", "stop", "persona_handoff")
             if key in turn_trace
         }
     return {

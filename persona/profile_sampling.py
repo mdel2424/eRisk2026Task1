@@ -181,7 +181,7 @@ def _sample_bdi_scores_for_family(family: str, rng: random.Random) -> Dict[int, 
 def generate_persona_pool(
     count: int,
     seed: int,
-    generator_version: str = "sim_v2",
+    generator_version: str = "sim_v3",
 ) -> List[PersonaProfile]:
     rng = random.Random(seed)
     count = max(1, int(count))
@@ -267,7 +267,7 @@ def build_split_profiles(
     seed: int,
     ratios: tuple[float, float, float] = (0.6, 0.2, 0.2),
 ) -> Dict[str, List[PersonaProfile]]:
-    generator_version = os.getenv("SIM_GENERATOR_VERSION", "sim_v2").strip() or "sim_v2"
+    generator_version = os.getenv("SIM_GENERATOR_VERSION", "sim_v3").strip() or "sim_v3"
     pool = generate_persona_pool(count=count, seed=seed, generator_version=generator_version)
     split_profiles = assign_splits(pool=pool, seed=seed, ratios=ratios)
 

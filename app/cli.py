@@ -14,9 +14,20 @@ load_dotenv()
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="eRisk 2026 Conversational Depression Detection PoC")
-    parser.add_argument("--mode", choices=["interactive", "eval", "tune"], default="interactive")
+    parser.add_argument("--mode", choices=["interactive", "eval", "tune"], default="eval")
     parser.add_argument("--personas", type=int, default=10, help="Number of synthetic personas")
     parser.add_argument("--seed", type=int, default=42, help="Seed for synthetic persona generation")
+    parser.add_argument(
+        "--interactive_persona_index",
+        type=int,
+        default=0,
+        help="Persona index for --mode interactive (0-based over generated synthetic pool)",
+    )
+    parser.add_argument(
+        "--interactive_show_ground_truth",
+        default="false",
+        help="Show hidden synthetic BDI metadata at interactive startup",
+    )
     parser.add_argument(
         "--eval_mode",
         choices=["mixed_holdout", "synthetic_only"],
@@ -40,7 +51,13 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     if args.mode == "interactive":
-        run_interactive()
+        run_interactive(
+            persona_count=args.personas,
+            seed=args.seed,
+            persona_index=args.interactive_persona_index,
+            show_ground_truth=_parse_bool(args.interactive_show_ground_truth),
+            max_api_calls=args.max_api_calls,
+        )
     elif args.mode == "eval":
         run_eval(
             persona_count=args.personas,

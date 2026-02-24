@@ -1,5 +1,4 @@
 from .factory import create_persona
-from .llm_persona import LLMPersona
 from .openrouter_persona import OpenRouterSimPersona
 from .profile_sampling import (
     assign_splits,
@@ -11,7 +10,6 @@ from .profile_sampling import (
 from .profiles import PersonaProfile
 
 __all__ = [
-    "LLMPersona",
     "OpenRouterSimPersona",
     "PersonaProfile",
     "generate_persona_pool",

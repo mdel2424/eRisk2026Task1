@@ -51,11 +51,13 @@ def resolve_detector_backend() -> Literal["local_hf", "openrouter"]:
     return "local_hf"
 
 
-def resolve_persona_backend() -> Literal["hf_adapter", "openrouter_sim"]:
-    if auto_backend_switch_enabled():
-        return "hf_adapter" if has_cuda_with_min_vram() else "openrouter_sim"
+def resolve_persona_backend() -> Literal["openrouter_sim"]:
+    backend = os.getenv("PERSONA_BACKEND", "openrouter_sim").strip().lower()
+    if backend and backend not in {"openrouter_sim"}:
+        raise ValueError(
+            f"Persona backend '{backend}' disabled: deterministic simulator is the only supported persona backend in this build."
+        )
 
-    backend = os.getenv("PERSONA_BACKEND", "hf_adapter").strip().lower()
-    if backend in {"hf_adapter", "openrouter_sim"}:
-        return backend  # type: ignore[return-value]
-    return "hf_adapter"
+    if auto_backend_switch_enabled():
+        return "openrouter_sim"
+    return "openrouter_sim"

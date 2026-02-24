@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 @lru_cache(maxsize=8)
@@ -98,7 +98,8 @@ class LLMPersona:
         response_ids = output[0][inputs.shape[-1] :]
         return tokenizer.decode(response_ids, skip_special_tokens=True).strip()
 
-    def reply(self, history: List[dict]) -> str:
+    def reply(self, history: List[dict], probe_intent: Optional[Dict[str, object]] = None) -> str:
+        _ = probe_intent
         text = " ".join(self._reply_hf_adapter(history).split())
         if not text:
             raise RuntimeError("Persona model returned empty response")
