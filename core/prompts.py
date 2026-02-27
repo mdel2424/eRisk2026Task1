@@ -40,8 +40,7 @@ Persona message:
 {latest_message}
 """,
         "opening_question": """
-To ground us, what does a typical good week look like for you when things are going well?
-Then, in the past two weeks, what has felt most different from your usual self?
+To ground us, what does a typical good week look like for you when things are going well? Then, in the past two weeks, what has felt most different from your usual self?
 """,
         "evidence_extraction": """
 You extract interpretable depression evidence from one persona message.

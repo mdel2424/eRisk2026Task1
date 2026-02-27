@@ -288,9 +288,10 @@ def extract_likelihoods(state: AgentState) -> Dict:
                     source = "llm_extractor_non_list_payload"
             except LLMBudgetExceeded:
                 raise
-            except Exception:
-                source = "llm_extractor_error"
-                counters = bump_failure_counter(counters, "extract_json_parse_fail")
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Detector LLM evidence extraction failed at node '{node_name}' on turn {turn}."
+                ) from exc
     else:
         source = "skip_empty_message"
 

@@ -159,13 +159,8 @@ def _specialist_node(state: AgentState, node_name: str) -> Dict:
             target_item_id=target_item_id,
             target_module_id=target_module_id,
         )
-    except Exception:
-        target_item_id = int(target_items[0]) if target_items else 2
-        target_module_id = 1 if node_name == "cognitive" else (5 if node_name == "somatic" else 9)
-        previous_question = _previous_detector_question(state)
-        question = _pick_fallback_question(node_name, previous_question)
-        used_fallback = True
-        probe_goal = PROBE_GOALS[int(state.get("turn_index", 0)) % len(PROBE_GOALS)]
+    except Exception as exc:
+        raise RuntimeError(f"Detector specialist question generation failed for node '{node_name}'.") from exc
     module_items = MODULE_TO_ITEMS.get(target_module_id, [])
     module_name = MODULE_NAMES.get(target_module_id, "General Screening")
     target_item_name = BDI_ITEM_NAMES.get(target_item_id, f"Item {target_item_id}")

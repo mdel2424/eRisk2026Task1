@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-import os
-from typing import Dict, Optional, Protocol
+from typing import Any, Dict
 
+from core.bdi_modules import MODULE_GOALS, MODULE_NAMES, MODULE_TO_ITEMS, choose_target_module
+from core.llm import get_llm
 from core.prompts import get_prompt
 from core.state import AgentState, BDI_ITEM_NAMES, OutgoingState
-
-
-class QuestionPolisher(Protocol):
-    def invoke(self, messages): ...
-
 
 
 def _has_detector_message(messages: list[dict]) -> bool:
@@ -19,57 +15,99 @@ def _has_detector_message(messages: list[dict]) -> bool:
     return False
 
 
-
-def _template_question(route: str, style: str, target_item_id: int) -> str:
-    item_name = BDI_ITEM_NAMES.get(target_item_id, f"item {target_item_id}").lower()
-
-    if style == "clarify_frequency":
-        return f"How often has {item_name} felt noticeable for you this past week?"
-    if style == "functional_impact":
-        return f"How has {item_name} affected your routine or responsibilities lately?"
-
-    if route == "risk":
-        return "When things felt most heavy recently, what helped you stay safe in that moment?"
-    return f"Could you share one recent example of how {item_name} has shown up for you?"
+def _next_action_value(state: AgentState, key: str, default: Any) -> Any:
+    action = state.get("next_action")
+    if isinstance(action, dict):
+        return action.get(key, default)
+    return getattr(action, key, default)
 
 
+def _latest_persona_message(state: AgentState) -> str:
+    for msg in reversed(state.get("messages", [])):
+        if msg.get("role") == "assistant":
+            return str(msg.get("content", ""))
+    return ""
 
-def _polish_question(
-    question: str,
+
+def _previous_detector_question(state: AgentState) -> str:
+    for msg in reversed(state.get("messages", [])):
+        if msg.get("role") == "user":
+            return str(msg.get("content", ""))
+    return ""
+
+
+def _recent_context(state: AgentState, limit: int = 4) -> str:
+    turns = state.get("messages", [])[-limit:]
+    lines = []
+    for msg in turns:
+        role = "Detector" if msg.get("role") == "user" else "Persona"
+        lines.append(f"{role}: {msg.get('content', '')}")
+    return "\n".join(lines)
+
+
+def _probe_goal_from_style(style: str) -> str:
+    mapping = {
+        "clarify_frequency": "frequency",
+        "functional_impact": "impact",
+        "gentle_probe": "exemplar",
+        "opening": "exemplar",
+    }
+    return mapping.get(style, "exemplar")
+
+
+def _build_llm_question(
     state: AgentState,
-    node_name: str,
-    polisher: Optional[QuestionPolisher],
-) -> str:
-    if polisher is None:
-        return question
+    *,
+    route: str,
+    style: str,
+    target_item_id: int,
+) -> tuple[str, int, str]:
+    prompt_template = get_prompt("specialist_question")
+    if not prompt_template.strip():
+        raise RuntimeError("Detector question generation failed: missing 'specialist_question' prompt template.")
 
-    latest_text = ""
-    turn_state = state.get("turn")
-    if turn_state is not None:
-        latest_text = str(getattr(turn_state, "latest_text_raw", "") or "")
-
-    prompt = (
-        "Rewrite this as one short, empathetic follow-up question under 20 words. "
-        "Keep semantics and do not add diagnosis labels. Return only the question.\n\n"
-        f"Node: {node_name}\n"
-        f"Persona message: {latest_text or 'none'}\n"
-        f"Draft question: {question}"
+    previous_question = _previous_detector_question(state)
+    latest_message = _latest_persona_message(state)
+    probe_goal = _probe_goal_from_style(style)
+    module_id = choose_target_module(
+        node_name=route,
+        target_items=[target_item_id],
+        item_beliefs=state.get("item_beliefs", {}),
     )
-    try:
-        polished = str(polisher.invoke([("system", prompt)]).content or "").strip()
-    except Exception:
-        return question
+    module_name = MODULE_NAMES.get(module_id, "General Screening")
+    module_goal = MODULE_GOALS.get(module_id, "Assess current depressive symptom expression.")
+    module_items = MODULE_TO_ITEMS.get(module_id, [])
+    target_item_name = BDI_ITEM_NAMES.get(target_item_id, f"Item {target_item_id}")
 
-    cleaned = " ".join(polished.split())
+    prompt = prompt_template.format(
+        node_name=route,
+        latest_message=latest_message or "none",
+        previous_question=previous_question or "none",
+        recent_context=_recent_context(state) or "none",
+        probe_goal=probe_goal,
+        target_module_id=module_id,
+        target_module_name=module_name,
+        target_module_goal=module_goal,
+        target_module_items=module_items,
+        target_item_id=target_item_id,
+        target_item_name=target_item_name,
+    )
+
+    llm = get_llm()
+    raw = str(llm.invoke([("system", prompt)]).content or "").strip()
+    if raw.startswith('"') and raw.endswith('"'):
+        raw = raw[1:-1].strip()
+    cleaned = " ".join(raw.split())
     if not cleaned:
-        return question
+        raise RuntimeError(
+            f"Detector question generation failed for node '{route}' and item '{target_item_id}': empty model output."
+        )
     if not cleaned.endswith("?"):
         cleaned = cleaned.rstrip(".!") + "?"
-    return cleaned
+    return cleaned, module_id, probe_goal
 
 
-
-def question_generator(state: AgentState, polisher: Optional[QuestionPolisher] = None) -> Dict:
+def question_generator(state: AgentState) -> Dict:
     messages = list(state.get("messages", []))
     turn_index = int(state.get("turn_index", 0))
 
@@ -80,27 +118,19 @@ def question_generator(state: AgentState, polisher: Optional[QuestionPolisher] =
         style = "opening"
         target_item_id = 2
         rationale = "opening bootstrap"
+        target_module_id = 2
+        probe_goal = "exemplar"
     else:
-        next_action = state.get("next_action")
-        target_item_id = int(getattr(next_action, "target_item_id", 2) or 2)
-        route = str(getattr(next_action, "route", "cognitive") or "cognitive")
-        style = str(getattr(next_action, "style", "gentle_probe") or "gentle_probe")
-        rationale = str(getattr(next_action, "rationale", "targeted follow-up") or "targeted follow-up")
-        question = _template_question(route=route, style=style, target_item_id=target_item_id)
-
-    use_polisher = os.getenv("QUESTION_LLM_POLISH", "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "y",
-        "on",
-    }
-    if use_polisher:
-        if polisher is None:
-            from core.llm import get_llm
-
-            polisher = get_llm()
-        question = _polish_question(question=question, state=state, node_name=route, polisher=polisher)
+        target_item_id = int(_next_action_value(state, "target_item_id", 2) or 2)
+        route = str(_next_action_value(state, "route", "cognitive") or "cognitive")
+        style = str(_next_action_value(state, "style", "gentle_probe") or "gentle_probe")
+        rationale = str(_next_action_value(state, "rationale", "targeted follow-up") or "targeted follow-up")
+        question, target_module_id, probe_goal = _build_llm_question(
+            state,
+            route=route,
+            style=style,
+            target_item_id=target_item_id,
+        )
 
     turn_trace = dict(state.get("turn_trace", {}))
     specialist_trace = {
@@ -109,8 +139,12 @@ def question_generator(state: AgentState, polisher: Optional[QuestionPolisher] =
         "target_items": [target_item_id],
         "target_item_id": target_item_id,
         "target_item_name": BDI_ITEM_NAMES.get(target_item_id, f"Item {target_item_id}"),
+        "target_module_id": target_module_id,
+        "target_module_name": MODULE_NAMES.get(target_module_id, "General Screening"),
         "probe_goal": style,
+        "probe_goal_kind": probe_goal,
         "used_fallback": False,
+        "llm_generated": not (turn_index == 0 and not _has_detector_message(messages)),
         "question_preview": question[:120],
     }
     turn_trace["question_generator"] = specialist_trace
@@ -118,7 +152,7 @@ def question_generator(state: AgentState, polisher: Optional[QuestionPolisher] =
 
     debug = (
         f"Question generator: route={route}; target_item={target_item_id}; "
-        f"style={style}; rationale={rationale}"
+        f"style={style}; rationale={rationale}; llm_generated={specialist_trace['llm_generated']}"
     )
 
     return {
