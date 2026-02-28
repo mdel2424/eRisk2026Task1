@@ -98,6 +98,29 @@ def _env_float(name: str, default: float) -> float:
     return max(0.0, min(1.0, value))
 
 
+def _env_int(name: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        value = int(default)
+    else:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = int(default)
+    if minimum is not None:
+        value = max(int(minimum), value)
+    if maximum is not None:
+        value = min(int(maximum), value)
+    return value
+
+
+def _depressed_target_config() -> tuple[int, int, float]:
+    target = _env_int("SIM_DEPRESSED_TARGET_BDI", 30, minimum=0, maximum=63)
+    jitter = _env_int("SIM_DEPRESSED_TARGET_JITTER", 4, minimum=0, maximum=16)
+    blend = _env_float("SIM_DEPRESSED_TARGET_BLEND", 0.85)
+    return target, jitter, blend
+
+
 def _style_defaults() -> Dict[str, float]:
     return {
         "hedge_rate": _env_float("SIM_HEDGE_RATE", 0.65),
@@ -136,6 +159,64 @@ def _ensure_risk_consistency(scores: Dict[int, int], rng: random.Random) -> None
             scores[item_id] = max(scores[item_id], rng.choice([2, 3]))
 
 
+def _adjust_depressed_total(
+    scores: Dict[int, int],
+    *,
+    family: str,
+    rng: random.Random,
+    target_total: int,
+    target_jitter: int,
+    target_blend: float,
+) -> None:
+    current_total = sum(int(value) for value in scores.values())
+    sampled_target = target_total + (rng.randint(-target_jitter, target_jitter) if target_jitter > 0 else 0)
+    sampled_target = max(14, min(45, sampled_target))
+    desired_total = int(round((1.0 - target_blend) * current_total + target_blend * sampled_target))
+    desired_total = max(14, min(45, desired_total))
+
+    blueprint = FAMILY_BLUEPRINTS[family]
+    core_items = [int(item_id) for item_id in blueprint["core_items"]]
+    secondary_items = [int(item_id) for item_id in blueprint["secondary_items"]]
+    tertiary_items = [item_id for item_id in range(1, 22) if item_id not in core_items and item_id not in secondary_items]
+
+    # Preserve risk signal behavior: non-risk families should not be pushed toward severe item 9.
+    increase_candidates = [
+        *(core_items * 3),
+        *(secondary_items * 2),
+        *tertiary_items,
+    ]
+    decrease_candidates = [
+        *tertiary_items,
+        *(secondary_items * 2),
+        *(core_items * 3),
+    ]
+
+    if family != "risk_leaning":
+        increase_candidates = [item_id for item_id in increase_candidates if item_id != 9] + [9]
+
+    delta = desired_total - current_total
+    if delta > 0:
+        attempts = 0
+        while delta > 0 and attempts < 500:
+            attempts += 1
+            item_id = int(rng.choice(increase_candidates))
+            if int(scores.get(item_id, 0)) >= 3:
+                continue
+            scores[item_id] = int(scores.get(item_id, 0)) + 1
+            delta -= 1
+    elif delta < 0:
+        attempts = 0
+        while delta < 0 and attempts < 500:
+            attempts += 1
+            item_id = int(rng.choice(decrease_candidates))
+            if int(scores.get(item_id, 0)) <= 0:
+                continue
+            if item_id == 9 and family == "risk_leaning" and int(scores.get(9, 0)) >= 2:
+                continue
+            scores[item_id] = int(scores.get(item_id, 0)) - 1
+            delta += 1
+
+
 def _sample_bdi_scores_for_family(family: str, rng: random.Random) -> Dict[int, int]:
     blueprint = FAMILY_BLUEPRINTS[family]
     depressed = bool(blueprint["depressed"])
@@ -153,6 +234,15 @@ def _sample_bdi_scores_for_family(family: str, rng: random.Random) -> Dict[int, 
             scores[item_id] = max(scores[item_id], rng.choice([1, 2, 2, 3]))
         if rng.random() < risk_prob:
             scores[9] = max(scores[9], rng.choice([1, 2, 3]))
+        target_total, target_jitter, target_blend = _depressed_target_config()
+        _adjust_depressed_total(
+            scores,
+            family=family,
+            rng=rng,
+            target_total=target_total,
+            target_jitter=target_jitter,
+            target_blend=target_blend,
+        )
     else:
         for item_id in core_items:
             if rng.random() < 0.6:
@@ -240,6 +330,70 @@ def _split_counts(n: int, ratios: tuple[float, float, float]) -> tuple[int, int,
     return train_n, val_n, test_n
 
 
+def _take_with_class_targets(
+    depressed_pool: List[PersonaProfile],
+    control_pool: List[PersonaProfile],
+    target_total: int,
+    *,
+    require_both_classes: bool,
+) -> List[PersonaProfile]:
+    depressed_total = len(depressed_pool)
+    control_total = len(control_pool)
+
+    if target_total <= 0:
+        return []
+
+    if require_both_classes:
+        if depressed_total == 0 or control_total == 0:
+            raise ValueError(
+                "Stratified strict split failed: both depressed and control personas are required in the pool."
+            )
+        if target_total < 2:
+            raise ValueError(
+                "Stratified strict split failed: holdout size must be >=2 to include both classes."
+            )
+
+    depressed_target = int(round(target_total * (depressed_total / max(1, depressed_total + control_total))))
+    control_target = target_total - depressed_target
+
+    if require_both_classes:
+        depressed_target = max(1, depressed_target)
+        control_target = max(1, control_target)
+
+    depressed_target = min(depressed_target, depressed_total)
+    control_target = min(control_target, control_total)
+
+    while depressed_target + control_target < target_total:
+        can_take_depressed = depressed_target < depressed_total
+        can_take_control = control_target < control_total
+        if can_take_depressed and (not can_take_control or depressed_target <= control_target):
+            depressed_target += 1
+        elif can_take_control:
+            control_target += 1
+        else:
+            break
+
+    while depressed_target + control_target > target_total:
+        if depressed_target > control_target and depressed_target > (1 if require_both_classes else 0):
+            depressed_target -= 1
+        elif control_target > (1 if require_both_classes else 0):
+            control_target -= 1
+        else:
+            break
+
+    if require_both_classes and (depressed_target == 0 or control_target == 0):
+        raise ValueError(
+            "Stratified strict split failed: unable to satisfy both-class holdout with requested persona count."
+        )
+
+    selected = depressed_pool[:depressed_target] + control_pool[:control_target]
+    if len(selected) != target_total:
+        raise ValueError(
+            "Stratified strict split failed: insufficient personas to satisfy requested split sizes."
+        )
+    return selected
+
+
 def assign_splits(
     pool: List[PersonaProfile],
     seed: int,
@@ -248,17 +402,40 @@ def assign_splits(
     rng = random.Random(seed + 17)
     shuffled = pool[:]
     rng.shuffle(shuffled)
-    train_n, val_n, _ = _split_counts(len(shuffled), ratios)
+    train_n, val_n, test_n = _split_counts(len(shuffled), ratios)
+
+    strict = os.getenv("EVAL_STRATIFIED_STRICT", "1").strip().lower() in {"1", "true", "yes", "y", "on"}
+    holdout_n = val_n + test_n
+
+    depressed_pool = [profile for profile in shuffled if bool(profile.depressed)]
+    control_pool = [profile for profile in shuffled if not bool(profile.depressed)]
+
+    holdout = _take_with_class_targets(
+        depressed_pool,
+        control_pool,
+        holdout_n,
+        require_both_classes=strict and holdout_n > 0,
+    )
+    holdout_ids = {profile.persona_id for profile in holdout}
+    train_pool = [profile for profile in shuffled if profile.persona_id not in holdout_ids]
+
+    if len(train_pool) != train_n:
+        raise ValueError(
+            "Stratified strict split failed: train split size mismatch; increase persona count or adjust ratios."
+        )
+
+    holdout_shuffled = holdout[:]
+    rng.shuffle(holdout_shuffled)
+    val_split = holdout_shuffled[:val_n]
+    test_split = holdout_shuffled[val_n:]
+    if len(val_split) != val_n or len(test_split) != test_n:
+        raise ValueError("Stratified strict split failed: holdout allocation mismatch.")
 
     split_map: Dict[str, List[PersonaProfile]] = {
-        "train": [replace(item, split="train", template_bank="train_bank_v1") for item in shuffled[:train_n]],
-        "val": [
-            replace(item, split="val", template_bank="val_bank_v1")
-            for item in shuffled[train_n : train_n + val_n]
-        ],
-        "test": [replace(item, split="test", template_bank="test_bank_v1") for item in shuffled[train_n + val_n :]],
+        "train": [replace(item, split="train", template_bank="train_bank_v1") for item in train_pool],
+        "val": [replace(item, split="val", template_bank="val_bank_v1") for item in val_split],
+        "test": [replace(item, split="test", template_bank="test_bank_v1") for item in test_split],
     }
-
     return split_map
 
 

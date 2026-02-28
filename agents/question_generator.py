@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 from core.bdi_modules import MODULE_GOALS, MODULE_NAMES, MODULE_TO_ITEMS, choose_target_module
 from core.llm import get_llm
-from core.prompts import get_prompt
+from core.prompts import OPENING_MESSAGE_FIXED, get_prompt
 from core.state import AgentState, BDI_ITEM_NAMES, OutgoingState
 
 
@@ -36,8 +36,10 @@ def _previous_detector_question(state: AgentState) -> str:
     return ""
 
 
-def _recent_context(state: AgentState, limit: int = 4) -> str:
-    turns = state.get("messages", [])[-limit:]
+def _recent_context(state: AgentState, limit: int = 4, include_latest_persona: bool = True) -> str:
+    turns = list(state.get("messages", [])[-limit:])
+    if not include_latest_persona and turns and turns[-1].get("role") == "assistant":
+        turns = turns[:-1]
     lines = []
     for msg in turns:
         role = "Detector" if msg.get("role") == "user" else "Persona"
@@ -83,7 +85,7 @@ def _build_llm_question(
         node_name=route,
         latest_message=latest_message or "none",
         previous_question=previous_question or "none",
-        recent_context=_recent_context(state) or "none",
+        recent_context=_recent_context(state, include_latest_persona=False) or "none",
         probe_goal=probe_goal,
         target_module_id=module_id,
         target_module_name=module_name,
@@ -111,9 +113,8 @@ def question_generator(state: AgentState) -> Dict:
     messages = list(state.get("messages", []))
     turn_index = int(state.get("turn_index", 0))
 
-    opening_question = get_prompt("opening_question").strip()
-    if turn_index == 0 and not _has_detector_message(messages) and opening_question:
-        question = " ".join(opening_question.split())
+    if turn_index == 0 and not _has_detector_message(messages):
+        question = OPENING_MESSAGE_FIXED
         route = "cognitive"
         style = "opening"
         target_item_id = 2

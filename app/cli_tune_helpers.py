@@ -5,6 +5,15 @@ from contextlib import contextmanager
 from typing import Any, Dict, List
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @contextmanager
 def _temporary_env(overrides: Dict[str, Any]):
     previous: Dict[str, str | None] = {}
@@ -29,18 +38,20 @@ def _route_collapse_flag(route_distribution: Dict[str, int]) -> tuple[bool, floa
     return max_share > 0.85, round(max_share, 6)
 
 
-def _candidate_sort_key(record: Dict[str, Any]) -> tuple[float, float, float]:
+def _candidate_sort_key(record: Dict[str, Any]) -> tuple[float, float, float, float]:
     metrics = record.get("metrics", {}) or {}
-    objective = float(metrics.get("objective", 0.0))
-    binary_f1 = float(metrics.get("binary_f1", 0.0))
-    avg_turns = float(metrics.get("avg_turns_to_decision", 0.0))
+    objective = _safe_float(metrics.get("objective", 0.0))
+    headline_f1 = _safe_float(metrics.get("headline_f1", metrics.get("binary_f1", 0.0)))
+    binary_f1 = _safe_float(metrics.get("binary_f1", 0.0))
+    avg_turns = _safe_float(metrics.get("avg_turns_to_decision", 0.0))
     penalty = 0.03 if bool(record.get("route_collapse_flag", False)) else 0.0
-    return (objective - penalty, binary_f1, -avg_turns)
+    return (objective - penalty, headline_f1, binary_f1, -avg_turns)
 
 
 def _apply_guardrails(
     *,
     record: Dict[str, Any],
+    baseline_headline_f1: float,
     baseline_binary_f1: float,
     baseline_risk_recall: float,
 ) -> Dict[str, Any]:
@@ -61,9 +72,14 @@ def _apply_guardrails(
         reasons.append("api_budget_hit_before_completion")
 
     metrics = record.get("metrics", {}) or {}
-    binary_f1 = float(metrics.get("binary_f1", 0.0))
-    risk_recall = float(metrics.get("risk_recall", 0.0))
-    if binary_f1 < (baseline_binary_f1 - 0.02):
+    headline_f1 = _safe_float(metrics.get("headline_f1", metrics.get("binary_f1", 0.0)))
+    binary_f1 = _safe_float(metrics.get("binary_f1", 0.0))
+    risk_recall = _safe_float(metrics.get("risk_recall", 0.0))
+    headline_floor = max(0.50, baseline_headline_f1 - 0.03)
+    binary_floor = max(0.50, baseline_binary_f1 - 0.02)
+    if headline_f1 < headline_floor:
+        reasons.append("headline_f1_guardrail")
+    if binary_f1 < binary_floor:
         reasons.append("binary_f1_guardrail")
     if risk_recall < (baseline_risk_recall - 0.10):
         reasons.append("risk_recall_guardrail")

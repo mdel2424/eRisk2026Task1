@@ -3,7 +3,15 @@ from __future__ import annotations
 from typing import Dict, List
 
 LEXICAL_EVIDENCE_CUES: Dict[int, List[str]] = {
-    1: ["sad", "down", "low", "heavy", "empty", "dark cloud"],
+    1: [
+        "feel sad",
+        "felt sad",
+        "feeling down",
+        "low mood",
+        "tearful",
+        "dark cloud",
+        "emotionally low",
+    ],
     2: [
         "hopeless",
         "no future",
@@ -32,7 +40,7 @@ LEXICAL_EVIDENCE_CUES: Dict[int, List[str]] = {
         "disconnected",
         "not really being present",
     ],
-    5: ["guilty", "guilt", "blame myself", "regret"],
+    5: ["guilty", "guilt", "blame myself", "regret", "my fault", "ashamed"],
     7: ["hate myself", "dislike myself"],
     8: [
         "beat myself up",
@@ -43,7 +51,17 @@ LEXICAL_EVIDENCE_CUES: Dict[int, List[str]] = {
         "pretending to be okay",
         "facade",
     ],
-    9: ["better off dead", "end it", "kill myself", "self harm", "hurt myself"],
+    9: [
+        "better off dead",
+        "end it",
+        "kill myself",
+        "self harm",
+        "hurt myself",
+        "not be here",
+        "disappear",
+        "not wake up",
+        "staying safe",
+    ],
     11: ["restless", "agitated", "can't sit still"],
     12: ["withdrawing", "keeping to myself", "avoid people"],
     14: ["worthless", "burden", "useless", "not enough"],

@@ -33,6 +33,12 @@ def _result_record(profile: PersonaProfile, state: Dict) -> Dict:
     predicted_bdi = int(state.get("predicted_bdi_score") or 0)
     predicted_symptoms = list(state.get("predicted_key_symptoms") or [])[:4]
     risk_flag = bool(state.get("risk_flag", False))
+    final_scores_raw = dict(state.get("final_item_scores", {}))
+    item_scores_pred = {
+        str(item_id): int(final_scores_raw.get(item_id, final_scores_raw.get(str(item_id), 0)) or 0)
+        for item_id in range(1, 22)
+    }
+    item_scores_true = {str(item_id): int(profile.bdi_scores.get(item_id, 0) or 0) for item_id in range(1, 22)}
 
     return {
         "llm": profile.persona_id,
@@ -44,6 +50,8 @@ def _result_record(profile: PersonaProfile, state: Dict) -> Dict:
         "bdi_pred": predicted_bdi,
         "symptoms_true": profile.key_symptoms,
         "symptoms_pred": predicted_symptoms,
+        "item_scores_true": item_scores_true,
+        "item_scores_pred": item_scores_pred,
         "turns": int(state.get("turn_index", 0)),
         "risk_true": profile.has_risk_signal,
         "risk_pred": risk_flag,
@@ -193,11 +201,17 @@ def run_eval(
 
         turns = _to_turns(final_state["messages"])
         conversations.append(PersonaConversation(LLM=profile.persona_id, conversation=turns))
+        final_scores = dict(final_state.get("final_item_scores", {}))
+        item_scores_map = {
+            str(item_id): int(final_scores.get(item_id, final_scores.get(str(item_id), 0)) or 0)
+            for item_id in range(1, 22)
+        }
         results.append(
             PersonaResult(
                 LLM=profile.persona_id,
                 bdi_score=int(final_state.get("predicted_bdi_score") or 0),
                 key_symptoms=list(final_state.get("predicted_key_symptoms") or [])[:4],
+                item_scores=item_scores_map,
             )
         )
 
@@ -255,7 +269,7 @@ def run_eval(
                 print("\nStopping eval early: API call budget reached.")
             break
 
-    metrics_payload, failure_report_payload, leakage_report_payload, config_snapshot, primary_metrics = (
+    metrics_payload, failure_report_payload, leakage_report_payload, config_snapshot, primary_metrics, error_report_payload = (
         write_eval_artifacts(
             output_dir=output_dir,
             conversations=conversations,
@@ -313,6 +327,7 @@ def run_eval(
         print(f" - {output_dir / 'interactions_run_local.json'}")
         print(f" - {output_dir / 'results_run_local.json'}")
         print(f" - {output_dir / 'metrics_run_local.json'}")
+        print(f" - {output_dir / 'error_report_run_local.json'}")
         print(f" - {output_dir / 'failure_report_run_local.json'}")
         print(f" - {output_dir / 'leakage_report_run_local.json'}")
         if save_diagnostics:
@@ -322,6 +337,7 @@ def run_eval(
     return {
         "metrics": metrics_payload,
         "failure_report": failure_report_payload,
+        "error_report": error_report_payload,
         "leakage_report": leakage_report_payload,
         "config": config_snapshot,
         "output_dir": str(output_dir),

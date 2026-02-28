@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Dict, List
 
 from core.state import AgentState, NextAction, RouteDecision, SPECIALIST_ITEM_MAP
@@ -12,7 +13,6 @@ def _priority_from_gain(expected_gain: float) -> float:
     gain = max(0.0, float(expected_gain))
     # Smooth normalization so larger expected-gain targets get higher handoff priority.
     return max(0.0, min(1.0, gain / (gain + 2.0)))
-
 
 
 def _recent_target_counts(route_history: List, window: int = 4) -> Dict[int, int]:
@@ -31,7 +31,6 @@ def _recent_target_counts(route_history: List, window: int = 4) -> Dict[int, int
     return counts
 
 
-
 def _route_for_item(item_id: int) -> str:
     if item_id in SPECIALIST_ITEM_MAP["risk"]:
         return "risk"
@@ -39,6 +38,37 @@ def _route_for_item(item_id: int) -> str:
         return "somatic"
     return "cognitive"
 
+
+def _has_observed_items(state: AgentState, item_ids: List[int]) -> bool:
+    beliefs = state.get("item_beliefs", {})
+    for item_id in item_ids:
+        belief = beliefs.get(item_id)
+        if belief is None:
+            continue
+        try:
+            if int(getattr(belief, "support_count", 0)) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _best_item_from_candidates(state: AgentState, candidates: List[int], fallback: int) -> int:
+    beliefs = state.get("item_beliefs", {})
+    best_item = fallback
+    best_entropy = float("-inf")
+    for item_id in candidates:
+        belief = beliefs.get(item_id)
+        entropy = 0.0
+        if belief is not None:
+            try:
+                entropy = float(getattr(belief, "entropy", 0.0))
+            except (TypeError, ValueError):
+                entropy = 0.0
+        if entropy > best_entropy:
+            best_entropy = entropy
+            best_item = item_id
+    return best_item
 
 
 def _select_target_item(state: AgentState) -> tuple[int, float, str]:
@@ -79,23 +109,40 @@ def _select_target_item(state: AgentState) -> tuple[int, float, str]:
             best_score = score
             best_item_id = parsed
 
-    rationale = (
-        "entropy + IG objective"
-        if best_score > float("-inf")
-        else "fallback default"
-    )
+    rationale = "entropy + IG objective" if best_score > float("-inf") else "fallback default"
     return best_item_id, max(0.0, best_score if best_score > float("-inf") else 0.0), rationale
-
 
 
 def target_selector(state: AgentState) -> Dict:
     turn_index = int(state.get("turn_index", 0))
     has_new_persona_input = bool(state.get("has_new_persona_input", False))
+    force_risk_probe_turn = int(os.getenv("FORCE_RISK_PROBE_TURN", "3"))
+    force_somatic_probe_turn = int(os.getenv("FORCE_SOMATIC_PROBE_TURN", "4"))
+    policy = "entropy_penalized"
 
     if turn_index == 0 and not has_new_persona_input:
         target_item_id, expected_gain, rationale = 2, 0.0, "opening bootstrap"
         route = "cognitive"
         style = "opening"
+        policy = "opening_bootstrap"
+    elif has_new_persona_input and turn_index >= max(1, force_risk_probe_turn) and not _has_observed_items(state, [9]):
+        target_item_id = 9
+        route = "risk"
+        expected_gain = 0.0
+        rationale = "coverage guard: force risk probe"
+        style = STYLE_CYCLE[turn_index % len(STYLE_CYCLE)]
+        policy = "coverage_guard_risk"
+    elif (
+        has_new_persona_input
+        and turn_index >= max(1, force_somatic_probe_turn)
+        and not _has_observed_items(state, SPECIALIST_ITEM_MAP["somatic"])
+    ):
+        target_item_id = _best_item_from_candidates(state, SPECIALIST_ITEM_MAP["somatic"], fallback=16)
+        route = "somatic"
+        expected_gain = 0.0
+        rationale = "coverage guard: force somatic probe"
+        style = STYLE_CYCLE[turn_index % len(STYLE_CYCLE)]
+        policy = "coverage_guard_somatic"
     else:
         target_item_id, expected_gain, rationale = _select_target_item(state)
         route = _route_for_item(target_item_id)
@@ -114,7 +161,7 @@ def target_selector(state: AgentState) -> Dict:
     decision = RouteDecision(
         turn=max(1, turn_index),
         chosen_node=route,
-        policy="entropy_penalized",
+        policy=policy,
         reason=rationale,
         target_items=[target_item_id],
         expected_gain=float(expected_gain),
@@ -123,7 +170,7 @@ def target_selector(state: AgentState) -> Dict:
     turn_trace = dict(state.get("turn_trace", {}))
     supervisor_trace = {
         "turn": max(1, turn_index),
-        "policy": "entropy_penalized",
+        "policy": policy,
         "chosen_node": route,
         "reason": rationale,
         "target_items": [target_item_id],
@@ -134,7 +181,7 @@ def target_selector(state: AgentState) -> Dict:
 
     debug = (
         f"Target selector -> {route}; target_item={target_item_id}; "
-        f"style={style}; gain={expected_gain:.2f}"
+        f"style={style}; policy={policy}; gain={expected_gain:.2f}"
     )
 
     return {

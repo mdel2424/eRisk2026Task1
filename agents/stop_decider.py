@@ -7,11 +7,15 @@ from core.state import AgentState, ControlState, StopDecision
 
 
 
-def compute_stop_decision(state: AgentState, force_risk_stop: bool = False) -> Tuple[bool, str, float, int, bool]:
+def compute_stop_decision(
+    state: AgentState,
+    force_risk_stop: bool = False,
+) -> Tuple[bool, str, float, int, bool, int, bool]:
     min_turns = int(os.getenv("MIN_TURNS", "4"))
     max_turns = int(os.getenv("MAX_TURNS", "10"))
     stop_confidence = float(os.getenv("STOP_CONFIDENCE", "0.75"))
     min_evidence_for_conf_stop = int(os.getenv("MIN_EVIDENCE_FOR_CONF_STOP", "2"))
+    min_items_observed = int(os.getenv("MIN_ITEMS_OBSERVED_FOR_CONF_STOP", "4"))
 
     turn_index = int(state.get("turn_index", 0))
     has_new_persona_input = bool(state.get("has_new_persona_input", False))
@@ -19,7 +23,19 @@ def compute_stop_decision(state: AgentState, force_risk_stop: bool = False) -> T
     confidence = float(state.get("global_confidence", 0.0))
     evidence_total = len(state.get("evidence_log", []))
     evidence_gate_met = evidence_total >= max(0, min_evidence_for_conf_stop)
-    confidence_gate_met = confidence >= stop_confidence and evidence_gate_met
+    item_beliefs = state.get("item_beliefs", {})
+    items_observed = 0
+    for item_id in range(1, 22):
+        belief = item_beliefs.get(item_id)
+        if belief is None:
+            continue
+        try:
+            if int(getattr(belief, "support_count", 0)) > 0:
+                items_observed += 1
+        except (TypeError, ValueError):
+            continue
+    observed_items_gate_met = items_observed >= max(0, min_items_observed)
+    confidence_gate_met = confidence >= stop_confidence and evidence_gate_met and observed_items_gate_met
 
     should_stop = False
     reason = "continue"
@@ -41,13 +57,20 @@ def compute_stop_decision(state: AgentState, force_risk_stop: bool = False) -> T
                 "confidence threshold met but evidence gate blocked "
                 f"({evidence_total}/{min_evidence_for_conf_stop})"
             )
+        elif turn_index >= min_turns and confidence >= stop_confidence and not observed_items_gate_met:
+            reason = (
+                "confidence threshold met but observed-item gate blocked "
+                f"({items_observed}/{min_items_observed})"
+            )
 
-    return should_stop, reason, confidence, evidence_total, evidence_gate_met
+    return should_stop, reason, confidence, evidence_total, evidence_gate_met, items_observed, observed_items_gate_met
 
 
 
 def stop_decider(state: AgentState) -> Dict:
-    should_stop, stop_reason, confidence, evidence_total, evidence_gate_met = compute_stop_decision(state)
+    should_stop, stop_reason, confidence, evidence_total, evidence_gate_met, items_observed, observed_items_gate_met = (
+        compute_stop_decision(state)
+    )
 
     predicted_label = str(state.get("raw_predicted_label") or state.get("predicted_label") or "control")
     if predicted_label not in {"control", "depressed"}:
@@ -71,6 +94,7 @@ def stop_decider(state: AgentState) -> Dict:
         f"Stop decider: turn={int(state.get('turn_index', 0))}, "
         f"conf={confidence:.2f}, risk={bool(state.get('risk_flag', False))}, "
         f"evidence={evidence_total}, gate={evidence_gate_met}, "
+        f"items_observed={items_observed}, items_gate={observed_items_gate_met}, "
         f"stop={should_stop} ({stop_reason})"
     )
 
@@ -80,6 +104,8 @@ def stop_decider(state: AgentState) -> Dict:
         "confidence": round(confidence, 4),
         "evidence_total": evidence_total,
         "evidence_gate_met": evidence_gate_met,
+        "items_observed": items_observed,
+        "observed_items_gate_met": observed_items_gate_met,
         "should_stop": should_stop,
         "reason": stop_reason,
         "label": predicted_label,

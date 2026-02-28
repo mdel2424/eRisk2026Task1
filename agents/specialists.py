@@ -10,7 +10,7 @@ from core.bdi_modules import (
     choose_target_module,
 )
 from core.llm import get_llm
-from core.prompts import get_fallback_questions, get_prompt
+from core.prompts import OPENING_MESSAGE_FIXED, get_fallback_questions, get_prompt
 from core.state import AgentState, BDI_ITEM_NAMES, SPECIALIST_ITEM_MAP
 
 rng = random.Random(17)
@@ -103,9 +103,7 @@ def _build_question(
 ) -> tuple[str, bool, str]:
     previous_question = _previous_detector_question(state)
     if not latest_message.strip() and not previous_question.strip():
-        opening = get_prompt("opening_question").strip()
-        if opening:
-            return " ".join(opening.split()), False, "opening"
+        return OPENING_MESSAGE_FIXED, False, "opening"
 
     turn_index = int(state.get("turn_index", 0))
     probe_goal = PROBE_GOALS[turn_index % len(PROBE_GOALS)]

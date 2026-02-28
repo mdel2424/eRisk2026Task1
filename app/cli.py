@@ -5,6 +5,7 @@ import argparse
 from dotenv import load_dotenv
 
 from app.cli_eval import run_eval
+from app.cli_eval_multi import run_eval_multi_seed
 from app.cli_interactive import run_interactive
 from app.cli_common import _parse_bool
 from app.cli_tune import run_tune
@@ -14,7 +15,7 @@ load_dotenv()
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="eRisk 2026 Conversational Depression Detection PoC")
-    parser.add_argument("--mode", choices=["interactive", "eval", "tune"], default="eval")
+    parser.add_argument("--mode", choices=["interactive", "eval", "eval_multi", "tune"], default="eval")
     parser.add_argument("--personas", type=int, default=10, help="Number of synthetic personas")
     parser.add_argument("--seed", type=int, default=42, help="Seed for synthetic persona generation")
     parser.add_argument(
@@ -38,6 +39,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_api_calls", type=int, default=180)
     parser.add_argument("--trace_level", choices=["compact", "off"], default="compact")
     parser.add_argument("--fit_calibrator", choices=["auto", "on", "off"], default="auto")
+    parser.add_argument(
+        "--multi_seeds",
+        default="42,43,44",
+        help="Comma-separated seeds for --mode eval_multi (e.g., 42,43,44)",
+    )
+    parser.add_argument(
+        "--multi_output_dir",
+        default="outputs/multi_seed",
+        help="Output directory for multi-seed summaries",
+    )
     parser.add_argument("--tune_personas", type=int, default=30)
     parser.add_argument("--tune_seed", type=int, default=42)
     parser.add_argument("--tune_max_api_calls", type=int, default=800)
@@ -68,6 +79,19 @@ def main() -> None:
             max_api_calls=args.max_api_calls,
             trace_level=args.trace_level,
             fit_calibrator_policy=args.fit_calibrator,
+        )
+    elif args.mode == "eval_multi":
+        run_eval_multi_seed(
+            persona_count=args.personas,
+            seeds_raw=args.multi_seeds,
+            fallback_seed=args.seed,
+            eval_mode=args.eval_mode,
+            prompt_version=args.prompt_version,
+            save_diagnostics=_parse_bool(args.save_diagnostics),
+            max_api_calls=args.max_api_calls,
+            trace_level=args.trace_level,
+            fit_calibrator_policy=args.fit_calibrator,
+            output_dir=args.multi_output_dir,
         )
     else:
         tune_prompt_version = args.tune_prompt_version.strip() or args.prompt_version

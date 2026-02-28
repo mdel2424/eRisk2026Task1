@@ -247,6 +247,7 @@ class AgentState(TypedDict):
     predicted_label: Optional[str]
     predicted_bdi_score: Optional[int]
     predicted_key_symptoms: List[str]
+    predicted_key_item_ids: List[int]
     raw_predicted_label: Optional[str]
     raw_predicted_bdi_score: Optional[int]
     final_item_scores: Dict[int, int]
@@ -346,6 +347,7 @@ def build_initial_state(persona_id: Optional[str] = None) -> AgentState:
         predicted_label=None,
         predicted_bdi_score=None,
         predicted_key_symptoms=[],
+        predicted_key_item_ids=[],
         raw_predicted_label=None,
         raw_predicted_bdi_score=None,
         final_item_scores={},
@@ -381,9 +383,14 @@ def top_symptoms_from_beliefs(item_beliefs: Dict[int, ItemBelief], limit: int = 
 
 
 def top_symptoms_from_scores(scores_by_item: Dict[int, int], limit: int = 4) -> List[str]:
-    ranked = sorted(scores_by_item.items(), key=lambda pair: pair[1], reverse=True)
+    ranked = sorted(scores_by_item.items(), key=lambda pair: (-int(pair[1]), int(pair[0])))
     top = [symptom_name_from_item(item_id) for item_id, score in ranked if score > 0]
     return top[:limit]
+
+
+def top_item_ids_from_scores(scores_by_item: Dict[int, int], limit: int = 4) -> List[int]:
+    ranked = sorted(scores_by_item.items(), key=lambda pair: (-int(pair[1]), int(pair[0])))
+    return [int(item_id) for item_id, score in ranked if int(score) > 0][:limit]
 
 
 def bump_failure_counter(

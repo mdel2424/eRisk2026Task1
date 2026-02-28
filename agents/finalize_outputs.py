@@ -10,6 +10,7 @@ from core.state import (
     FinalState,
     ItemBelief,
     coerce_item_belief,
+    symptom_name_from_item,
     top_symptoms_from_scores,
 )
 
@@ -133,6 +134,20 @@ def _evidence_report(state: AgentState) -> Dict[str, object]:
     }
 
 
+def _rank_key_items(final_item_scores: Dict[int, int], item_details: Dict[str, Dict[str, object]], limit: int = 4) -> List[int]:
+    def _rank_key(item_id: int) -> tuple[int, int, int, int]:
+        score = int(final_item_scores.get(item_id, 0))
+        detail = item_details.get(str(item_id), {})
+        source = str(detail.get("source", "imputed"))
+        observed_rank = 0 if source == "observed" else 1
+        support_count = int(detail.get("support_count", 0) or 0)
+        return (-score, observed_rank, -support_count, item_id)
+
+    candidates = [int(item_id) for item_id, score in final_item_scores.items() if int(score) > 0]
+    candidates.sort(key=_rank_key)
+    return candidates[:limit]
+
+
 
 def finalize_outputs(state: AgentState) -> Dict:
     control = state.get("control")
@@ -223,7 +238,11 @@ def finalize_outputs(state: AgentState) -> Dict:
         core_hits >= max(1, final_core_item_min_hits) and module_signal_total >= final_core_signal_gate
     )
     final_label = "depressed" if (depression_from_bdi or risk_flag or depression_from_core_coverage) else "control"
-    final_key_symptoms = top_symptoms_from_scores(final_item_scores, limit=4)
+    ranked_key_item_ids = _rank_key_items(final_item_scores, item_details=item_details, limit=4)
+    if ranked_key_item_ids:
+        final_key_symptoms = [symptom_name_from_item(item_id) for item_id in ranked_key_item_ids]
+    else:
+        final_key_symptoms = top_symptoms_from_scores(final_item_scores, limit=4)
 
     final_trace.update(
         {
@@ -232,6 +251,7 @@ def finalize_outputs(state: AgentState) -> Dict:
             "final_bdi_score": final_bdi_score,
             "final_label": final_label,
             "imputed_item_count": imputed_item_count,
+            "predicted_key_item_ids": ranked_key_item_ids,
         }
     )
 
@@ -277,6 +297,7 @@ def finalize_outputs(state: AgentState) -> Dict:
         "predicted_bdi_score": final_bdi_score,
         "predicted_label": final_label,
         "predicted_key_symptoms": final_key_symptoms,
+        "predicted_key_item_ids": ranked_key_item_ids,
         "final_item_scores": final_item_scores,
         "module_imputation": module_imputation,
         "turn_trace": turn_trace,

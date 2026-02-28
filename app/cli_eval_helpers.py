@@ -16,26 +16,26 @@ from app.cli_common import _parse_bool
 MANIFEST_SCHEMA_VERSION = 2
 
 
-def _objective(metrics: Dict[str, float], max_turns: int, latency_lambda: float = 0.15) -> float:
+def _objective(metrics: Dict[str, Any], max_turns: int, latency_lambda: float = 0.15) -> float:
     if not metrics:
         return 0.0
-    binary_f1 = float(metrics.get("binary_f1", 0.0))
+    headline_f1 = float(metrics.get("headline_f1", metrics.get("binary_f1", 0.0)) or 0.0)
     avg_turns = float(metrics.get("avg_turns_to_decision", 0.0))
     normalized_turns = min(1.0, avg_turns / max(1, max_turns))
-    return round(binary_f1 - (latency_lambda * normalized_turns), 4)
+    return round(headline_f1 - (latency_lambda * normalized_turns), 4)
 
 
-def _with_objective(metrics: Dict[str, float], max_turns: int) -> Dict[str, float]:
+def _with_objective(metrics: Dict[str, Any], max_turns: int) -> Dict[str, Any]:
     if not metrics:
         return {}
     return {**metrics, "objective": _objective(metrics, max_turns=max_turns)}
 
 
 def _select_primary_metrics(
-    synthetic_val: Dict[str, float],
-    synthetic_test: Dict[str, float],
-    overall_labeled: Dict[str, float],
-) -> Tuple[str, Dict[str, float]]:
+    synthetic_val: Dict[str, Any],
+    synthetic_test: Dict[str, Any],
+    overall_labeled: Dict[str, Any],
+) -> Tuple[str, Dict[str, Any]]:
     if overall_labeled:
         return "overall_labeled", overall_labeled
     if synthetic_test:
