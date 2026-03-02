@@ -236,6 +236,11 @@ def write_eval_artifacts(
     max_api_calls: int,
     save_diagnostics: bool,
     fit_calibrator_policy: str,
+    debug_outputs: bool,
+    run_profile: str,
+    requested_save_diagnostics: bool,
+    requested_trace_level: str,
+    requested_debug_outputs: bool,
     train_profiles: List,
     val_profiles: List,
     test_profiles: List,
@@ -287,12 +292,21 @@ def write_eval_artifacts(
 
     interactions_payload = [conv.model_dump() for conv in conversations]
     results_payload = [result.to_erisk_dict() for result in results]
-    error_report_payload = _build_error_report(overall_rows)
     _write_json(output_dir / "interactions_run_local.json", interactions_payload)
     _write_json(output_dir / "results_run_local.json", results_payload)
     _write_json(output_dir / "metrics_run_local.json", metrics_payload)
-    _write_json(output_dir / "error_report_run_local.json", error_report_payload)
-    _write_json(output_dir / "extract_parse_fail_log_run_local.json", extract_parse_fail_log_entries)
+    error_report_payload: Dict[str, Any] = {
+        "status": "disabled_in_lean_mode",
+        "debug_outputs": False,
+    }
+    failure_report_payload: Dict[str, Any] = {
+        "status": "disabled_in_lean_mode",
+        "debug_outputs": False,
+    }
+    if debug_outputs:
+        error_report_payload = _build_error_report(overall_rows)
+        _write_json(output_dir / "error_report_run_local.json", error_report_payload)
+        _write_json(output_dir / "extract_parse_fail_log_run_local.json", extract_parse_fail_log_entries)
 
     evidence_nonempty_rate = (evidence_turns_nonempty / turns_total) if turns_total else 0.0
     avg_evidence_per_turn = (evidence_records_total / turns_total) if turns_total else 0.0
@@ -326,61 +340,62 @@ def write_eval_artifacts(
     blended_observed_mean = (
         float(blended_observed_total) / float(processed_profiles) if processed_profiles > 0 else 0.0
     )
-    family_summary = _family_summary(overall_rows)
-    failure_report_payload = {
-        "run_summary": {
-            "eval_mode_requested": requested_eval_mode,
-            "eval_mode_effective": effective_eval_mode,
-            "prompt_version": prompt_version,
-            "personas_requested": persona_count,
-            "split_seed": split_seed,
-            "profiles_evaluated": processed_profiles,
-            "turns_total": turns_total,
-            "trace_level": trace_level,
-            "max_api_calls": (max_api_calls if max_api_calls > 0 else None),
-        },
-        "failure_counters": dict(run_failure_counters),
-        "route_distribution": dict(route_distribution),
-        "route_policy_distribution": dict(route_policy_distribution),
-        "evidence_nonempty_rate": round(evidence_nonempty_rate, 4),
-        "avg_evidence_per_turn": round(avg_evidence_per_turn, 4),
-        "extract_parse_fail_rate": round(extract_parse_fail_rate, 4),
-        "extract_empty_rate": round(extract_empty_rate, 4),
-        "extract_source_distribution": dict(extract_source_distribution),
-        "extract_recovery_distribution": dict(extract_recovery_distribution),
-        "method_weight_usage": dict(method_weight_usage),
-        "extract_parse_fail_log_count": len(extract_parse_fail_log_entries),
-        "duplicate_evidence_rows_total": int(duplicate_evidence_rows_total),
-        "duplicate_evidence_rows_rate": round(duplicate_evidence_rows_rate, 4),
-        "contradiction_evidence_rows_total": int(contradiction_evidence_rows_total),
-        "contradiction_evidence_rows_rate": round(contradiction_evidence_rows_rate, 4),
-        "support_increments_total": int(support_increments_total),
-        "support_increments_rate": round(support_increments_rate, 4),
-        "confidence_semantics": (
-            "global_confidence uses support+coverage saturation with near-monotonic smoothing: "
-            "item_conf=1-exp(-support/CONF_SUPPORT_TAU); "
-            "target=CONF_DEPTH_WEIGHT*depth_conf + CONF_COVERAGE_WEIGHT*coverage_conf; "
-            "smoothed with CONF_UP_ALPHA and bounded no-info decay"
-        ),
-        "blended_observed_item_count_total": int(blended_observed_total),
-        "blended_observed_item_count_mean_per_profile": round(blended_observed_mean, 4),
-        "post_floor_productivity": {
-            "min_turns_threshold": int(min_turns_for_productivity),
-            "turns_after_min_turns": int(post_floor_turns_total),
-            "avg_new_items_after_min_turns": round(avg_new_items_after_min_turns, 4),
-            "avg_nonempty_turns_after_min_turns": round(avg_nonempty_turns_after_min_turns, 4),
-            "early_stop_reason_distribution": dict(early_stop_reason_distribution),
-        },
-        "calibrator_mode_counts": dict(calibrator_mode_counts),
-        "evaluation_stability_warnings": evaluation_stability_warnings,
-        "metric_mode": str(primary_metrics.get("metric_mode", "")) if primary_metrics else "",
-        "item_f1_macro_at_1": float(primary_metrics.get("item_f1_macro_at_1", 0.0)) if primary_metrics else 0.0,
-        "item_mae": float(primary_metrics.get("item_mae", 0.0)) if primary_metrics else 0.0,
-        "llm_usage": get_llm_usage(),
-        "calibrator_status": calibrator_status,
-        **family_summary,
-    }
-    _write_json(output_dir / "failure_report_run_local.json", failure_report_payload)
+    if debug_outputs:
+        family_summary = _family_summary(overall_rows)
+        failure_report_payload = {
+            "run_summary": {
+                "eval_mode_requested": requested_eval_mode,
+                "eval_mode_effective": effective_eval_mode,
+                "prompt_version": prompt_version,
+                "personas_requested": persona_count,
+                "split_seed": split_seed,
+                "profiles_evaluated": processed_profiles,
+                "turns_total": turns_total,
+                "trace_level": trace_level,
+                "max_api_calls": (max_api_calls if max_api_calls > 0 else None),
+            },
+            "failure_counters": dict(run_failure_counters),
+            "route_distribution": dict(route_distribution),
+            "route_policy_distribution": dict(route_policy_distribution),
+            "evidence_nonempty_rate": round(evidence_nonempty_rate, 4),
+            "avg_evidence_per_turn": round(avg_evidence_per_turn, 4),
+            "extract_parse_fail_rate": round(extract_parse_fail_rate, 4),
+            "extract_empty_rate": round(extract_empty_rate, 4),
+            "extract_source_distribution": dict(extract_source_distribution),
+            "extract_recovery_distribution": dict(extract_recovery_distribution),
+            "method_weight_usage": dict(method_weight_usage),
+            "extract_parse_fail_log_count": len(extract_parse_fail_log_entries),
+            "duplicate_evidence_rows_total": int(duplicate_evidence_rows_total),
+            "duplicate_evidence_rows_rate": round(duplicate_evidence_rows_rate, 4),
+            "contradiction_evidence_rows_total": int(contradiction_evidence_rows_total),
+            "contradiction_evidence_rows_rate": round(contradiction_evidence_rows_rate, 4),
+            "support_increments_total": int(support_increments_total),
+            "support_increments_rate": round(support_increments_rate, 4),
+            "confidence_semantics": (
+                "global_confidence uses support+coverage saturation with near-monotonic smoothing: "
+                "item_conf=1-exp(-support/CONF_SUPPORT_TAU); "
+                "target=CONF_DEPTH_WEIGHT*depth_conf + CONF_COVERAGE_WEIGHT*coverage_conf; "
+                "smoothed with CONF_UP_ALPHA and bounded no-info decay"
+            ),
+            "blended_observed_item_count_total": int(blended_observed_total),
+            "blended_observed_item_count_mean_per_profile": round(blended_observed_mean, 4),
+            "post_floor_productivity": {
+                "min_turns_threshold": int(min_turns_for_productivity),
+                "turns_after_min_turns": int(post_floor_turns_total),
+                "avg_new_items_after_min_turns": round(avg_new_items_after_min_turns, 4),
+                "avg_nonempty_turns_after_min_turns": round(avg_nonempty_turns_after_min_turns, 4),
+                "early_stop_reason_distribution": dict(early_stop_reason_distribution),
+            },
+            "calibrator_mode_counts": dict(calibrator_mode_counts),
+            "evaluation_stability_warnings": evaluation_stability_warnings,
+            "metric_mode": str(primary_metrics.get("metric_mode", "")) if primary_metrics else "",
+            "item_f1_macro_at_1": float(primary_metrics.get("item_f1_macro_at_1", 0.0)) if primary_metrics else 0.0,
+            "item_mae": float(primary_metrics.get("item_mae", 0.0)) if primary_metrics else 0.0,
+            "llm_usage": get_llm_usage(),
+            "calibrator_status": calibrator_status,
+            **family_summary,
+        }
+        _write_json(output_dir / "failure_report_run_local.json", failure_report_payload)
 
     leakage_report_payload = {
         "split_sizes": {"train": len(train_profiles), "val": len(val_profiles), "test": len(test_profiles)},
@@ -396,7 +411,7 @@ def write_eval_artifacts(
     }
     _write_json(output_dir / "leakage_report_run_local.json", leakage_report_payload)
 
-    if save_diagnostics:
+    if debug_outputs and save_diagnostics:
         _write_json(output_dir / "diagnostics_run_local.json", diagnostics_payload)
 
     config_snapshot = {
@@ -407,9 +422,14 @@ def write_eval_artifacts(
             "split_seed": split_seed,
             "eval_mode": requested_eval_mode,
             "prompt_version": prompt_version,
-            "save_diagnostics": save_diagnostics,
+            "save_diagnostics_requested": bool(requested_save_diagnostics),
+            "save_diagnostics_effective": bool(save_diagnostics),
+            "trace_level_requested": requested_trace_level,
+            "trace_level_effective": trace_level,
+            "debug_outputs_requested": bool(requested_debug_outputs),
+            "debug_outputs_effective": bool(debug_outputs),
+            "run_profile": run_profile,
             "max_api_calls": max_api_calls,
-            "trace_level": trace_level,
             "fit_calibrator": fit_calibrator_policy,
         },
         "env": {

@@ -27,6 +27,7 @@ def run_tune(
     tune_prompt_version: str,
     tune_top_k: int,
     fit_calibrator_policy: str,
+    debug_outputs: bool = False,
 ) -> None:
     output_dir = Path("outputs/tuning")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -89,6 +90,7 @@ def run_tune(
                 trace_level=tune_trace_level,
                 fit_calibrator_policy=fit_calibrator_policy,
                 output_dir=candidate_dir,
+                debug_outputs=debug_outputs,
             )
         metrics = result.get("metrics", {}) or {}
         record = {
@@ -281,6 +283,7 @@ def run_tune(
             "tune_prompt_version": tune_prompt_version,
             "tune_top_k": tune_top_k,
             "fit_calibrator": fit_calibrator_policy,
+            "debug_outputs": bool(debug_outputs),
         },
         "baseline": baseline_record,
         "stage1_top": stage1_top,

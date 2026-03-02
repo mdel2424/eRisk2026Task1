@@ -61,6 +61,7 @@ def run_eval_multi_seed(
     trace_level: str,
     fit_calibrator_policy: str,
     output_dir: str | Path,
+    debug_outputs: bool = False,
 ) -> Dict[str, Any]:
     seeds = _parse_seed_list(seeds_raw, fallback_seed)
     root_output = Path(output_dir)
@@ -82,6 +83,7 @@ def run_eval_multi_seed(
             trace_level=trace_level,
             fit_calibrator_policy=fit_calibrator_policy,
             output_dir=seed_output,
+            debug_outputs=debug_outputs,
         )
         metrics = dict(result.get("metrics", {}))
         primary = dict(metrics.get("primary_metrics", {}))
@@ -126,6 +128,7 @@ def run_eval_multi_seed(
             "trace_level": trace_level,
             "fit_calibrator": fit_calibrator_policy,
             "save_diagnostics": bool(save_diagnostics),
+            "debug_outputs": bool(debug_outputs),
         },
         "aggregate": aggregate,
         "per_seed": per_seed,

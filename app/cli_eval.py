@@ -63,6 +63,7 @@ def run_eval(
     trace_level: str,
     fit_calibrator_policy: str,
     randomize_eval_split: bool = False,
+    debug_outputs: bool = False,
     output_dir: str | Path = "outputs",
 ) -> Dict[str, Any]:
     from graph import app as graph_app
@@ -107,12 +108,18 @@ def run_eval(
     }
 
     requested_eval_mode, effective_eval_mode = _resolve_effective_eval_mode(eval_mode)
+    requested_trace_level = str(trace_level).strip().lower()
+    requested_save_diagnostics = bool(save_diagnostics)
+    effective_debug_outputs = bool(debug_outputs) or requested_save_diagnostics or (requested_trace_level == "compact")
+    trace_level_effective = requested_trace_level if effective_debug_outputs else "off"
+    save_diagnostics_effective = requested_save_diagnostics if effective_debug_outputs else False
+    run_profile = "debug" if effective_debug_outputs else "lean"
 
-    if verbose_console:
+    if verbose_console and effective_debug_outputs:
         print(
             f"--- Eval Mode: {requested_eval_mode} | personas={persona_count} | seed={seed} | prompts={prompt_version} ---"
         )
-        _print_backend_info(max_api_calls=max_api_calls if max_api_calls > 0 else None, trace_level=trace_level)
+        _print_backend_info(max_api_calls=max_api_calls if max_api_calls > 0 else None, trace_level=trace_level_effective)
         print(
             "Calibrator policy: "
             f"requested={fit_calibrator_policy} | enabled={fit_calibrator_enabled} | min_train_records={min_train_records}"
@@ -137,18 +144,19 @@ def run_eval(
             f"Running eval: mode={requested_eval_mode}, personas={persona_count}, "
             f"prompt={prompt_version}, live_status=on"
         )
-        print(
-            "Stop policy: "
-            + " | ".join(f"{key}={value}" for key, value in stop_policy.items())
-        )
-        print(
-            "Confidence model: "
-            + " | ".join(f"{key}={value}" for key, value in confidence_model.items())
-        )
-        print(
-            "Risk/extractor controls: "
-            + " | ".join(f"{key}={value}" for key, value in risk_policy.items())
-        )
+        if effective_debug_outputs:
+            print(
+                "Stop policy: "
+                + " | ".join(f"{key}={value}" for key, value in stop_policy.items())
+            )
+            print(
+                "Confidence model: "
+                + " | ".join(f"{key}={value}" for key, value in confidence_model.items())
+            )
+            print(
+                "Risk/extractor controls: "
+                + " | ".join(f"{key}={value}" for key, value in risk_policy.items())
+            )
 
     split_seed = seed
     if randomize_eval_split:
@@ -284,15 +292,16 @@ def run_eval(
         if profile in test_profiles:
             test_rows.append(row)
 
-        diagnostics_payload.append(
-            build_eval_diagnostics_entry(
-                profile=profile,
-                final_state=final_state,
-                timeline=timeline,
-                style_stats=style_stats,
-                trace_level=trace_level,
+        if effective_debug_outputs:
+            diagnostics_payload.append(
+                build_eval_diagnostics_entry(
+                    profile=profile,
+                    final_state=final_state,
+                    timeline=timeline,
+                    style_stats=style_stats,
+                    trace_level=trace_level_effective,
+                )
             )
-        )
         stop_history = list(final_state.get("stop_history", []))
         if stop_history:
             latest_stop = stop_history[-1]
@@ -479,13 +488,18 @@ def run_eval(
             split_seed=split_seed,
             persona_count=persona_count,
             processed_profiles=processed_profiles,
-            trace_level=trace_level,
+            trace_level=trace_level_effective,
             max_api_calls=max_api_calls,
-            save_diagnostics=save_diagnostics,
+            save_diagnostics=save_diagnostics_effective,
             fit_calibrator_policy=fit_calibrator_policy,
             train_profiles=train_profiles,
             val_profiles=val_profiles,
             test_profiles=test_profiles,
+            debug_outputs=effective_debug_outputs,
+            run_profile=run_profile,
+            requested_save_diagnostics=requested_save_diagnostics,
+            requested_trace_level=requested_trace_level,
+            requested_debug_outputs=bool(debug_outputs),
         )
     )
 
@@ -508,11 +522,12 @@ def run_eval(
         print(f" - {output_dir / 'interactions_run_local.json'}")
         print(f" - {output_dir / 'results_run_local.json'}")
         print(f" - {output_dir / 'metrics_run_local.json'}")
-        print(f" - {output_dir / 'error_report_run_local.json'}")
-        print(f" - {output_dir / 'extract_parse_fail_log_run_local.json'}")
-        print(f" - {output_dir / 'failure_report_run_local.json'}")
+        if effective_debug_outputs:
+            print(f" - {output_dir / 'error_report_run_local.json'}")
+            print(f" - {output_dir / 'extract_parse_fail_log_run_local.json'}")
+            print(f" - {output_dir / 'failure_report_run_local.json'}")
         print(f" - {output_dir / 'leakage_report_run_local.json'}")
-        if save_diagnostics:
+        if save_diagnostics_effective:
             print(f" - {output_dir / 'diagnostics_run_local.json'}")
         print(f" - {output_dir / 'config_used.json'}")
 

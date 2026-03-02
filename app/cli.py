@@ -35,9 +35,10 @@ def parse_args() -> argparse.Namespace:
         default="mixed_holdout",
     )
     parser.add_argument("--prompt_version", default="v1")
-    parser.add_argument("--save_diagnostics", default="true")
+    parser.add_argument("--save_diagnostics", default="false")
+    parser.add_argument("--debug_outputs", default="false")
     parser.add_argument("--max_api_calls", type=int, default=180)
-    parser.add_argument("--trace_level", choices=["compact", "off"], default="compact")
+    parser.add_argument("--trace_level", choices=["compact", "off"], default="off")
     parser.add_argument("--fit_calibrator", choices=["auto", "on", "off"], default="auto")
     parser.add_argument(
         "--multi_seeds",
@@ -80,6 +81,7 @@ def main() -> None:
             trace_level=args.trace_level,
             fit_calibrator_policy=args.fit_calibrator,
             randomize_eval_split=True,
+            debug_outputs=_parse_bool(args.debug_outputs),
         )
     elif args.mode == "eval_multi":
         run_eval_multi_seed(
@@ -93,6 +95,7 @@ def main() -> None:
             trace_level=args.trace_level,
             fit_calibrator_policy=args.fit_calibrator,
             output_dir=args.multi_output_dir,
+            debug_outputs=_parse_bool(args.debug_outputs),
         )
     else:
         tune_prompt_version = args.tune_prompt_version.strip() or args.prompt_version
@@ -105,6 +108,7 @@ def main() -> None:
             tune_prompt_version=tune_prompt_version,
             tune_top_k=args.tune_top_k,
             fit_calibrator_policy=args.fit_calibrator,
+            debug_outputs=_parse_bool(args.debug_outputs),
         )
 
 
