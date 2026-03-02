@@ -199,17 +199,6 @@ def _wrap_node(name: str, node_fn: NodeFn) -> NodeFn:
     return _wrapped
 
 
-
-def _risk_branch(state: AgentState) -> str:
-    risk = state.get("risk")
-    short_circuit = bool(getattr(risk, "short_circuit", False))
-    risk_flag = bool(state.get("risk_flag", False))
-    if short_circuit and risk_flag:
-        return "short_circuit"
-    return "continue"
-
-
-
 def _stop_branch(state: AgentState) -> str:
     return "stop" if bool(state.get("should_stop", False)) else "continue"
 
@@ -239,15 +228,7 @@ def build_app(node_overrides: dict[str, NodeFn] | None = None):
     workflow.set_entry_point("ingest_turn")
 
     workflow.add_edge("ingest_turn", "risk_sentinel")
-
-    workflow.add_conditional_edges(
-        "risk_sentinel",
-        _risk_branch,
-        {
-            "short_circuit": "finalize_outputs",
-            "continue": "extract_likelihoods",
-        },
-    )
+    workflow.add_edge("risk_sentinel", "extract_likelihoods")
 
     workflow.add_edge("extract_likelihoods", "belief_update")
     workflow.add_edge("belief_update", "policy_metrics")

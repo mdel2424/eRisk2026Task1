@@ -13,12 +13,12 @@ from core.runtime_policy import resolve_detector_backend
 load_dotenv()
 
 
-@lru_cache(maxsize=1)
-def get_llm() -> LocalHFChatLLM | OpenRouterChatLLM:
-    max_new_tokens = int(os.getenv("DETECTOR_MAX_NEW_TOKENS", "96"))
-    temperature = float(os.getenv("DETECTOR_TEMPERATURE", "0.2"))
-    top_p = float(os.getenv("DETECTOR_TOP_P", "0.9"))
-
+def _build_detector_llm(
+    *,
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
+) -> LocalHFChatLLM | OpenRouterChatLLM:
     if resolve_detector_backend() == "openrouter":
         model_id = os.getenv("OPENROUTER_DETECTOR_MODEL", "openrouter/auto").strip()
         return OpenRouterChatLLM(
@@ -46,6 +46,24 @@ def get_llm() -> LocalHFChatLLM | OpenRouterChatLLM:
 
 
 @lru_cache(maxsize=1)
+def get_llm() -> LocalHFChatLLM | OpenRouterChatLLM:
+    return _build_detector_llm(
+        max_new_tokens=int(os.getenv("DETECTOR_MAX_NEW_TOKENS", "96")),
+        temperature=float(os.getenv("DETECTOR_TEMPERATURE", "0.2")),
+        top_p=float(os.getenv("DETECTOR_TOP_P", "0.9")),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_extractor_llm() -> LocalHFChatLLM | OpenRouterChatLLM:
+    return _build_detector_llm(
+        max_new_tokens=int(os.getenv("DETECTOR_EXTRACTOR_MAX_NEW_TOKENS", os.getenv("DETECTOR_MAX_NEW_TOKENS", "96"))),
+        temperature=float(os.getenv("DETECTOR_EXTRACTOR_TEMPERATURE", "0.0")),
+        top_p=float(os.getenv("DETECTOR_EXTRACTOR_TOP_P", "1.0")),
+    )
+
+
+@lru_cache(maxsize=1)
 def get_persona_openrouter_llm() -> OpenRouterChatLLM:
     return OpenRouterChatLLM(
         model_id=os.getenv("OPENROUTER_PERSONA_MODEL", "openrouter/auto").strip(),
@@ -65,5 +83,6 @@ __all__ = [
     "get_llm_usage",
     "set_llm_call_budget",
     "get_llm",
+    "get_extractor_llm",
     "get_persona_openrouter_llm",
 ]

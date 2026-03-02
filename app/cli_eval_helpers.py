@@ -19,7 +19,9 @@ MANIFEST_SCHEMA_VERSION = 2
 def _objective(metrics: Dict[str, Any], max_turns: int, latency_lambda: float = 0.15) -> float:
     if not metrics:
         return 0.0
-    headline_f1 = float(metrics.get("headline_f1", metrics.get("binary_f1", 0.0)) or 0.0)
+    headline_f1 = float(
+        metrics.get("headline_f1", metrics.get("item_f1_macro_at_1", metrics.get("symptom_f1_at_4", 0.0))) or 0.0
+    )
     avg_turns = float(metrics.get("avg_turns_to_decision", 0.0))
     normalized_turns = min(1.0, avg_turns / max(1, max_turns))
     return round(headline_f1 - (latency_lambda * normalized_turns), 4)
@@ -158,15 +160,15 @@ def _family_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         grouped[str(row.get("family", "unknown"))].append(row)
 
     family_count = {family: len(items) for family, items in grouped.items()}
-    binary_f1_by_family: Dict[str, float] = {}
+    item_f1_by_family: Dict[str, float] = {}
     bdi_mae_by_family: Dict[str, float] = {}
     for family, items in grouped.items():
         metrics = compute_metrics(items)
-        binary_f1_by_family[family] = float(metrics.get("binary_f1", 0.0))
+        item_f1_by_family[family] = float(metrics.get("item_f1_macro_at_1", 0.0) or 0.0)
         bdi_mae_by_family[family] = float(metrics.get("bdi_mae", 0.0))
     return {
         "family_count": family_count,
-        "binary_f1_by_family": binary_f1_by_family,
+        "item_f1_by_family": item_f1_by_family,
         "bdi_mae_by_family": bdi_mae_by_family,
     }
 

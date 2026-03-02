@@ -48,7 +48,7 @@ python -m app.cli --mode tune --tune_personas 30 --tune_seed 42 --tune_max_api_c
 - transcript stays natural-language only; probe intent is shown from hidden handoff metadata
 
 By default, eval prints only:
-- `binary_f1`
+- `item_f1`
 - `objective`
 (`objective` is computed from `headline_f1` with turn penalty)
 
@@ -80,6 +80,7 @@ Set `CLI_VERBOSE=1` to print full backend/run summaries to stdout.
 - `outputs/results_run_local.json`
 - `outputs/metrics_run_local.json`
 - `outputs/error_report_run_local.json` (per-item/family error analysis + worst personas)
+- `outputs/extract_parse_fail_log_run_local.json` (per-turn extractor parse-fail debug records with parser error kind/message, balance diagnostics, and snippets)
 - `outputs/failure_report_run_local.json`
 - `outputs/diagnostics_run_local.json` (if enabled)
 - `outputs/config_used.json`
@@ -90,14 +91,26 @@ Set `CLI_VERBOSE=1` to print full backend/run summaries to stdout.
 - `outputs/tuning/best_vs_baseline.json`
 
 Main tuning knobs live in `.env.example`:
-- stop policy: `MIN_TURNS`, `MAX_TURNS`, `STOP_CONFIDENCE`, `MIN_EVIDENCE_FOR_CONF_STOP`
+- stop policy: `MIN_TURNS`, `MAX_TURNS`, `STOP_CONFIDENCE`
+- confidence model: `CONF_SUPPORT_TAU`, `CONF_DEPTH_WEIGHT`, `CONF_COVERAGE_WEIGHT`, `CONF_UP_ALPHA`, `CONF_DECAY_STREAK_START`, `CONF_DECAY_PER_TURN`, `CONF_DECAY_MAX`, `CONF_MAX_DROP_PER_TURN`
+- extractor robustness: `EXTRACTOR_JSON_KEY_ALIASES`, `EXTRACTOR_STRICT_SCHEMA_COERCE`, `EXTRACTOR_PARSE_SNIPPET_TRACE`, `EXTRACTOR_MIN_RECORDS_TARGET`
+- extractor generation budget: `DETECTOR_EXTRACTOR_MAX_NEW_TOKENS`, `DETECTOR_EXTRACTOR_TEMPERATURE`, `DETECTOR_EXTRACTOR_TOP_P`
 - supervisor routing: `SUPERVISOR_EVIDENCE_MIN_SCORE`, `SUPERVISOR_EVIDENCE_RISK_THRESHOLD`, `SUPERVISOR_ESCAPE_EMPTY_STREAK`
 - simulator style: `SIM_HEDGE_RATE`, `SIM_NORMALIZATION_RATE`, `SIM_CONTEXT_ANCHOR_RATE`, `SIM_DIRECT_ANSWER_RATE`
 - simulator depressed severity target: `SIM_DEPRESSED_TARGET_BDI`, `SIM_DEPRESSED_TARGET_JITTER`, `SIM_DEPRESSED_TARGET_BLEND`
+- finalization blending: `FINAL_OBS_BLEND_ENABLED`, `FINAL_OBS_BLEND_CONF_THRESHOLD`, `FINAL_OBS_BLEND_SUPPORT_MAX`, `FINAL_OBS_BLEND_MODULE_CONF_MIN`, `FINAL_OBS_BLEND_MAX_ALPHA`
+
+Default stop behavior:
+- risk cues no longer short-circuit stop policy.
+- stop rule is simple: after `MIN_TURNS`, stop when `global_confidence >= STOP_CONFIDENCE` (or `MAX_TURNS` safety cap).
+- `global_confidence` is the only confidence metric and uses support+coverage saturation with near-monotonic smoothing.
+- confidence can decline only slightly and rarely after prolonged no-information streaks (bounded by `CONF_MAX_DROP_PER_TURN`).
 
 Output semantics:
 - `results_run_local.json`: includes `item-scores` for all 21 BDI items (`"1"`..`"21"`, values `0..3`) in addition to `bdi-score` and `key-symptoms`.
-- `metrics_run_local.json`: primary quality metrics include `headline_f1`, `item_f1_macro_at_1`, `item_mae`, and `binary_f1`.
+- `metrics_run_local.json`: primary quality metrics include `headline_f1`, `item_f1_macro_at_1`, and `item_mae`.
+- `failure_report_run_local.json`: includes `extract_parse_fail_rate`, `extract_empty_rate`, extractor source/recovery distributions, post-floor productivity summaries, and observed-item blend counters.
+- binary depressed/control scoring is deprecated in local evaluation and no longer used for ranking/objective.
 - `symptom_f1_at_4` is kept for compatibility and aliases `item_f1_macro_at_1`.
 
 If strict split lock is on and persona generation logic changes, bump `SIM_GENERATOR_VERSION` (or remove prior manifest files) before rerunning eval.

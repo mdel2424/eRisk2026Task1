@@ -18,15 +18,8 @@ def _evaluation_stability_warnings(metrics: Dict[str, Any], split_name: str) -> 
     warnings: List[str] = []
     if not metrics:
         return [f"{split_name}:no_records"]
-    class_counts = metrics.get("class_counts", {}) if isinstance(metrics, dict) else {}
-    depressed_true = int(class_counts.get("depressed_true", 0) or 0)
-    control_true = int(class_counts.get("control_true", 0) or 0)
-    if depressed_true == 0 or control_true == 0:
-        warnings.append(f"{split_name}:single_class_eval_split")
-    if not bool(metrics.get("binary_f1_defined", False)):
-        warnings.append(f"{split_name}:binary_f1_unstable")
-    if not bool(metrics.get("risk_recall_defined", False)):
-        warnings.append(f"{split_name}:risk_recall_undefined")
+    if str(metrics.get("metric_mode", "")) != "item_only":
+        warnings.append(f"{split_name}:unexpected_metric_mode")
     return warnings
 
 
@@ -183,6 +176,11 @@ def build_eval_diagnostics_entry(
                     if isinstance(final_state.get("module_imputation", {}), dict)
                     else 0
                 ),
+                "blended_observed_item_count": (
+                    int(final_state.get("module_imputation", {}).get("blended_observed_item_count", 0))
+                    if isinstance(final_state.get("module_imputation", {}), dict)
+                    else 0
+                ),
                 "failure_counters": final_state.get("failure_counters", {}),
                 "calibrator_mode": final_state.get("calibrator_mode", ""),
                 "sim_style_stats": style_stats,
@@ -205,6 +203,15 @@ def write_eval_artifacts(
     turns_total: int,
     evidence_turns_nonempty: int,
     evidence_records_total: int,
+    extract_source_distribution: Counter[str],
+    extract_recovery_distribution: Counter[str],
+    route_policy_distribution: Counter[str],
+    post_floor_new_items_total: int,
+    post_floor_nonempty_turns_total: int,
+    post_floor_turns_total: int,
+    min_turns_for_productivity: int,
+    early_stop_reason_distribution: Counter[str],
+    extract_parse_fail_log_entries: List[Dict[str, Any]],
     run_failure_counters: Counter[str],
     calibrator_status: Dict[str, Any],
     id_overlap_counts: Dict[str, int],
@@ -235,7 +242,7 @@ def write_eval_artifacts(
     val_metrics = compute_metrics(val_rows) if val_rows else {}
     test_metrics = compute_metrics(test_rows) if test_rows else {}
     overall_metrics = compute_metrics(overall_rows) if overall_rows else {}
-    max_turns = int(os.getenv("MAX_TURNS", "10"))
+    max_turns = int(os.getenv("MAX_TURNS", "40"))
     val_metrics_payload = _with_objective(val_metrics, max_turns=max_turns)
     test_metrics_payload = _with_objective(test_metrics, max_turns=max_turns)
     overall_metrics_payload = _with_objective(overall_metrics, max_turns=max_turns)
@@ -264,7 +271,8 @@ def write_eval_artifacts(
         "primary_metrics": primary_metrics,
         "evaluation_stability_warnings": evaluation_stability_warnings,
         "metric_semantics_warnings": [
-            "symptom_f1_at_4 is an alias of item_f1_macro_at_1 (full 21-item macro F1 with positive threshold >=1)."
+            "Evaluation now uses item-level BDI metrics only; binary depressed/control metrics are deprecated.",
+            "symptom_f1_at_4 is an alias of item_f1_macro_at_1 (full 21-item macro F1 with positive threshold >=1).",
         ],
         "calibrator_status": calibrator_status,
         "llm_usage": get_llm_usage(),
@@ -279,9 +287,31 @@ def write_eval_artifacts(
     _write_json(output_dir / "results_run_local.json", results_payload)
     _write_json(output_dir / "metrics_run_local.json", metrics_payload)
     _write_json(output_dir / "error_report_run_local.json", error_report_payload)
+    _write_json(output_dir / "extract_parse_fail_log_run_local.json", extract_parse_fail_log_entries)
 
     evidence_nonempty_rate = (evidence_turns_nonempty / turns_total) if turns_total else 0.0
     avg_evidence_per_turn = (evidence_records_total / turns_total) if turns_total else 0.0
+    extract_parse_fail_rate = (
+        float(run_failure_counters.get("extract_json_parse_fail", 0)) / float(turns_total) if turns_total else 0.0
+    )
+    extract_empty_rate = float(run_failure_counters.get("extract_empty", 0)) / float(turns_total) if turns_total else 0.0
+    avg_new_items_after_min_turns = (
+        float(post_floor_new_items_total) / float(post_floor_turns_total) if post_floor_turns_total else 0.0
+    )
+    avg_nonempty_turns_after_min_turns = (
+        float(post_floor_nonempty_turns_total) / float(post_floor_turns_total) if post_floor_turns_total else 0.0
+    )
+    blended_observed_total = 0
+    for entry in diagnostics_payload:
+        final_state_payload = dict(entry.get("final_state", {}) if isinstance(entry, dict) else {})
+        module_imputation = final_state_payload.get("module_imputation", {})
+        if isinstance(module_imputation, dict):
+            blended_observed_total += int(module_imputation.get("blended_observed_item_count", 0) or 0)
+            continue
+        blended_observed_total += int(final_state_payload.get("blended_observed_item_count", 0) or 0)
+    blended_observed_mean = (
+        float(blended_observed_total) / float(processed_profiles) if processed_profiles > 0 else 0.0
+    )
     family_summary = _family_summary(overall_rows)
     failure_report_payload = {
         "run_summary": {
@@ -296,13 +326,34 @@ def write_eval_artifacts(
         },
         "failure_counters": dict(run_failure_counters),
         "route_distribution": dict(route_distribution),
+        "route_policy_distribution": dict(route_policy_distribution),
         "evidence_nonempty_rate": round(evidence_nonempty_rate, 4),
         "avg_evidence_per_turn": round(avg_evidence_per_turn, 4),
+        "extract_parse_fail_rate": round(extract_parse_fail_rate, 4),
+        "extract_empty_rate": round(extract_empty_rate, 4),
+        "extract_source_distribution": dict(extract_source_distribution),
+        "extract_recovery_distribution": dict(extract_recovery_distribution),
+        "extract_parse_fail_log_count": len(extract_parse_fail_log_entries),
+        "confidence_semantics": (
+            "global_confidence uses support+coverage saturation with near-monotonic smoothing: "
+            "item_conf=1-exp(-support/CONF_SUPPORT_TAU); "
+            "target=CONF_DEPTH_WEIGHT*depth_conf + CONF_COVERAGE_WEIGHT*coverage_conf; "
+            "smoothed with CONF_UP_ALPHA and bounded no-info decay"
+        ),
+        "blended_observed_item_count_total": int(blended_observed_total),
+        "blended_observed_item_count_mean_per_profile": round(blended_observed_mean, 4),
+        "post_floor_productivity": {
+            "min_turns_threshold": int(min_turns_for_productivity),
+            "turns_after_min_turns": int(post_floor_turns_total),
+            "avg_new_items_after_min_turns": round(avg_new_items_after_min_turns, 4),
+            "avg_nonempty_turns_after_min_turns": round(avg_nonempty_turns_after_min_turns, 4),
+            "early_stop_reason_distribution": dict(early_stop_reason_distribution),
+        },
         "calibrator_mode_counts": dict(calibrator_mode_counts),
         "evaluation_stability_warnings": evaluation_stability_warnings,
-        "class_counts": dict(primary_metrics.get("class_counts", {}) if isinstance(primary_metrics, dict) else {}),
-        "binary_f1_defined": bool(primary_metrics.get("binary_f1_defined", False)) if primary_metrics else False,
-        "risk_recall_defined": bool(primary_metrics.get("risk_recall_defined", False)) if primary_metrics else False,
+        "metric_mode": str(primary_metrics.get("metric_mode", "")) if primary_metrics else "",
+        "item_f1_macro_at_1": float(primary_metrics.get("item_f1_macro_at_1", 0.0)) if primary_metrics else 0.0,
+        "item_mae": float(primary_metrics.get("item_mae", 0.0)) if primary_metrics else 0.0,
         "llm_usage": get_llm_usage(),
         "calibrator_status": calibrator_status,
         **family_summary,
@@ -344,37 +395,64 @@ def write_eval_artifacts(
             "DETECTOR_BACKEND": os.getenv("DETECTOR_BACKEND", "local_hf"),
             "DETECTOR_MODEL": os.getenv("DETECTOR_MODEL", ""),
             "OPENROUTER_DETECTOR_MODEL": os.getenv("OPENROUTER_DETECTOR_MODEL", ""),
+            "DETECTOR_MAX_NEW_TOKENS": os.getenv("DETECTOR_MAX_NEW_TOKENS", "96"),
+            "DETECTOR_TEMPERATURE": os.getenv("DETECTOR_TEMPERATURE", "0.2"),
+            "DETECTOR_TOP_P": os.getenv("DETECTOR_TOP_P", "0.9"),
+            "DETECTOR_EXTRACTOR_MAX_NEW_TOKENS": os.getenv(
+                "DETECTOR_EXTRACTOR_MAX_NEW_TOKENS",
+                os.getenv("DETECTOR_MAX_NEW_TOKENS", "96"),
+            ),
+            "DETECTOR_EXTRACTOR_TEMPERATURE": os.getenv("DETECTOR_EXTRACTOR_TEMPERATURE", "0.0"),
+            "DETECTOR_EXTRACTOR_TOP_P": os.getenv("DETECTOR_EXTRACTOR_TOP_P", "1.0"),
             "PERSONA_BACKEND": os.getenv("PERSONA_BACKEND", "openrouter_sim"),
             "PERSONA_RUNTIME_MODE": "deterministic_sim_only",
             "PROBE_INTENT_REQUIRED": "1",
             "MIN_CUDA_VRAM_GB": os.getenv("MIN_CUDA_VRAM_GB", "8"),
-            "MIN_TURNS": os.getenv("MIN_TURNS", ""),
-            "MAX_TURNS": os.getenv("MAX_TURNS", ""),
-            "STOP_CONFIDENCE": os.getenv("STOP_CONFIDENCE", ""),
-            "MIN_EVIDENCE_FOR_CONF_STOP": os.getenv("MIN_EVIDENCE_FOR_CONF_STOP", "2"),
-            "MIN_ITEMS_OBSERVED_FOR_CONF_STOP": os.getenv("MIN_ITEMS_OBSERVED_FOR_CONF_STOP", "4"),
+            "MIN_TURNS": os.getenv("MIN_TURNS", "20"),
+            "MAX_TURNS": os.getenv("MAX_TURNS", "40"),
+            "STOP_CONFIDENCE": os.getenv("STOP_CONFIDENCE", "0.66"),
+            "CONF_SUPPORT_TAU": os.getenv("CONF_SUPPORT_TAU", "1.25"),
+            "CONF_DEPTH_WEIGHT": os.getenv("CONF_DEPTH_WEIGHT", "0.70"),
+            "CONF_COVERAGE_WEIGHT": os.getenv("CONF_COVERAGE_WEIGHT", "0.30"),
+            "CONF_UP_ALPHA": os.getenv("CONF_UP_ALPHA", "0.55"),
+            "CONF_DECAY_STREAK_START": os.getenv("CONF_DECAY_STREAK_START", "6"),
+            "CONF_DECAY_PER_TURN": os.getenv("CONF_DECAY_PER_TURN", "0.002"),
+            "CONF_DECAY_MAX": os.getenv("CONF_DECAY_MAX", "0.01"),
+            "CONF_MAX_DROP_PER_TURN": os.getenv("CONF_MAX_DROP_PER_TURN", "0.01"),
             "DETERMINISTIC_BDI_LABEL_THRESHOLD": os.getenv("DETERMINISTIC_BDI_LABEL_THRESHOLD", "14"),
             "DETERMINISTIC_CORE_ITEM_MEAN_THRESHOLD": os.getenv("DETERMINISTIC_CORE_ITEM_MEAN_THRESHOLD", "0.6"),
             "DETERMINISTIC_CORE_ITEM_MIN_HITS": os.getenv("DETERMINISTIC_CORE_ITEM_MIN_HITS", "4"),
             "EVIDENCE_LLM_ON_LEXICAL_HIT": os.getenv("EVIDENCE_LLM_ON_LEXICAL_HIT", "0"),
+            "EXTRACTOR_JSON_KEY_ALIASES": os.getenv("EXTRACTOR_JSON_KEY_ALIASES", "1"),
+            "EXTRACTOR_STRICT_SCHEMA_COERCE": os.getenv("EXTRACTOR_STRICT_SCHEMA_COERCE", "1"),
+            "EXTRACTOR_PARSE_SNIPPET_TRACE": os.getenv("EXTRACTOR_PARSE_SNIPPET_TRACE", "1"),
+            "EXTRACTOR_MIN_RECORDS_TARGET": os.getenv("EXTRACTOR_MIN_RECORDS_TARGET", "1"),
             "FORCE_RISK_PROBE_TURN": os.getenv("FORCE_RISK_PROBE_TURN", "3"),
             "FORCE_SOMATIC_PROBE_TURN": os.getenv("FORCE_SOMATIC_PROBE_TURN", "4"),
             "SUPERVISOR_EVIDENCE_MIN_SCORE": os.getenv("SUPERVISOR_EVIDENCE_MIN_SCORE", "0.30"),
             "SUPERVISOR_EVIDENCE_RISK_THRESHOLD": os.getenv("SUPERVISOR_EVIDENCE_RISK_THRESHOLD", "0.22"),
             "SUPERVISOR_ESCAPE_EMPTY_STREAK": os.getenv("SUPERVISOR_ESCAPE_EMPTY_STREAK", "2"),
+            "RISK_SENTINEL_FLAG_THRESHOLD": os.getenv("RISK_SENTINEL_FLAG_THRESHOLD", "0.45"),
+            "RISK_SENTINEL_SHORTCIRCUIT_THRESHOLD": os.getenv("RISK_SENTINEL_SHORTCIRCUIT_THRESHOLD", "1.1"),
+            "RISK_SENTINEL_ACTIVE_SHORTCIRCUIT": os.getenv("RISK_SENTINEL_ACTIVE_SHORTCIRCUIT", "0"),
             "CALIBRATOR_MIN_TRAIN_RECORDS": os.getenv("CALIBRATOR_MIN_TRAIN_RECORDS", "10"),
             "CALIBRATOR_PATH": os.getenv("CALIBRATOR_PATH", ""),
             "STRICT_SPLIT_LOCK": os.getenv("STRICT_SPLIT_LOCK", "1"),
             "EVAL_STRATIFIED_STRICT": os.getenv("EVAL_STRATIFIED_STRICT", "1"),
             "SIM_GENERATOR_VERSION": os.getenv("SIM_GENERATOR_VERSION", "sim_v3"),
             "SIM_TEMPLATE_DISJOINT_ENFORCE": os.getenv("SIM_TEMPLATE_DISJOINT_ENFORCE", "1"),
-            "SIM_HEDGE_RATE": os.getenv("SIM_HEDGE_RATE", "0.65"),
-            "SIM_NORMALIZATION_RATE": os.getenv("SIM_NORMALIZATION_RATE", "0.45"),
+            "SIM_HEDGE_RATE": os.getenv("SIM_HEDGE_RATE", "0.60"),
+            "SIM_NORMALIZATION_RATE": os.getenv("SIM_NORMALIZATION_RATE", "0.40"),
             "SIM_CONTEXT_ANCHOR_RATE": os.getenv("SIM_CONTEXT_ANCHOR_RATE", "0.55"),
-            "SIM_DIRECT_ANSWER_RATE": os.getenv("SIM_DIRECT_ANSWER_RATE", "0.78"),
+            "SIM_DIRECT_ANSWER_RATE": os.getenv("SIM_DIRECT_ANSWER_RATE", "0.82"),
             "SIM_DEPRESSED_TARGET_BDI": os.getenv("SIM_DEPRESSED_TARGET_BDI", "30"),
             "SIM_DEPRESSED_TARGET_JITTER": os.getenv("SIM_DEPRESSED_TARGET_JITTER", "4"),
             "SIM_DEPRESSED_TARGET_BLEND": os.getenv("SIM_DEPRESSED_TARGET_BLEND", "0.85"),
+            "FINAL_OBS_BLEND_ENABLED": os.getenv("FINAL_OBS_BLEND_ENABLED", "1"),
+            "FINAL_OBS_BLEND_CONF_THRESHOLD": os.getenv("FINAL_OBS_BLEND_CONF_THRESHOLD", "0.60"),
+            "FINAL_OBS_BLEND_SUPPORT_MAX": os.getenv("FINAL_OBS_BLEND_SUPPORT_MAX", "2"),
+            "FINAL_OBS_BLEND_MODULE_CONF_MIN": os.getenv("FINAL_OBS_BLEND_MODULE_CONF_MIN", "0.50"),
+            "FINAL_OBS_BLEND_MAX_ALPHA": os.getenv("FINAL_OBS_BLEND_MAX_ALPHA", "0.35"),
         },
         "resolved_backends": {
             "auto_enabled": auto_backend_switch_enabled(),

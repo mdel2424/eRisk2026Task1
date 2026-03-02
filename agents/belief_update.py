@@ -81,14 +81,30 @@ def update_beliefs(state: AgentState) -> Dict:
         updated_item_ids.append(item_id)
 
     turn_trace = dict(state.get("turn_trace", {}))
+    window_size = 4
+    new_items_this_turn = len(updated_item_ids)
+    nonempty_this_turn = 1 if len(latest_likelihoods) > 0 else 0
+    recent_new_items = list(state.get("recent_new_items_window", [])) + [new_items_this_turn]
+    recent_nonempty = list(state.get("recent_nonempty_window", [])) + [nonempty_this_turn]
+    if len(recent_new_items) > window_size:
+        recent_new_items = recent_new_items[-window_size:]
+    if len(recent_nonempty) > window_size:
+        recent_nonempty = recent_nonempty[-window_size:]
+
     turn_trace["belief_update"] = {
         "turn": turn,
         "updated_item_ids": sorted(updated_item_ids),
         "likelihood_rows": len(latest_likelihoods),
+        "new_items_this_turn": new_items_this_turn,
+        "recent_new_items_window": recent_new_items,
+        "recent_nonempty_window": recent_nonempty,
     }
 
     return {
         "beliefs": BeliefState(items=beliefs),
         "item_beliefs": beliefs,
+        "new_items_this_turn": new_items_this_turn,
+        "recent_new_items_window": recent_new_items,
+        "recent_nonempty_window": recent_nonempty,
         "turn_trace": turn_trace,
     }

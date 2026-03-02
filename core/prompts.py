@@ -45,7 +45,7 @@ Recent context (most recent turns):
         "opening_question": OPENING_MESSAGE_FIXED,
         "evidence_extraction": """
 You extract interpretable depression evidence from one persona message.
-Return strict JSON with schema:
+Return STRICT JSON ONLY, exactly one top-level object with this schema:
 {{
   "evidence": [
     {{
@@ -63,9 +63,19 @@ Return strict JSON with schema:
 Constraints:
 - If no credible evidence, return {{ "evidence": [] }}.
 - item_id must be 1..21.
+- symptom_name must be the exact canonical BDI label for the given item_id (no alternative labels).
 - intensity in [0, 3], confidence in [0, 1].
 - use only BDI-II symptom labels.
-- no markdown, no prose, JSON only.
+- Output MUST start with "{{" and end with "}}".
+- Do not wrap output in markdown fences.
+- Do not add commentary, notes, explanations, headings, or trailing text.
+- Do not include fields outside the schema.
+- Keep evidence list length <= 4 (unless strong concurrent risk+somatic evidence).
+
+Invalid output examples (do NOT do these):
+- ```json ... ```
+- "Here is the JSON:" followed by object
+- Objects missing item_id/intensity/confidence
 
 Current specialist node: {node_name}
 Recent conversation:

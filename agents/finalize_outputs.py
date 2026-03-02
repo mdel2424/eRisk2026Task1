@@ -20,6 +20,18 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, float(value)))
 
 
+def _env_bool(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _env_float(name: str, default: str) -> float:
+    try:
+        value = float(os.getenv(name, default))
+    except (TypeError, ValueError):
+        value = float(default)
+    return float(value)
+
+
 
 def _module_stats_from_beliefs(item_beliefs: Dict[int, ItemBelief]) -> Dict[int, Dict[str, float | List[int]]]:
     module_stats: Dict[int, Dict[str, float | List[int]]] = {}
@@ -139,7 +151,7 @@ def _rank_key_items(final_item_scores: Dict[int, int], item_details: Dict[str, D
         score = int(final_item_scores.get(item_id, 0))
         detail = item_details.get(str(item_id), {})
         source = str(detail.get("source", "imputed"))
-        observed_rank = 0 if source == "observed" else 1
+        observed_rank = 0 if source in {"observed", "observed_blended"} else 1
         support_count = int(detail.get("support_count", 0) or 0)
         return (-score, observed_rank, -support_count, item_id)
 
@@ -153,18 +165,14 @@ def finalize_outputs(state: AgentState) -> Dict:
     control = state.get("control")
     control_stop = bool(getattr(control, "stop", False))
     control_reason = str(getattr(control, "stop_reason", "") or "")
-
-    risk = state.get("risk")
-    risk_short_circuit = bool(getattr(risk, "short_circuit", False)) and bool(state.get("risk_flag", False))
-    should_finalize = control_stop or risk_short_circuit
+    should_finalize = control_stop
 
     turn_trace = dict(state.get("turn_trace", {}))
     final_trace = {
         "turn": int(state.get("turn_index", 0)),
         "ran_final_imputation": bool(should_finalize),
         "control_stop": control_stop,
-        "risk_short_circuit": risk_short_circuit,
-        "reason": control_reason if control_reason else ("risk_short_circuit" if risk_short_circuit else "continue"),
+        "reason": control_reason if control_reason else "continue",
     }
 
     if not should_finalize:
@@ -196,19 +204,91 @@ def finalize_outputs(state: AgentState) -> Dict:
     final_item_scores: Dict[int, int] = {}
     item_details: Dict[str, Dict[str, object]] = {}
     imputed_item_count = 0
+    blended_observed_item_count = 0
+    blended_item_ids: List[int] = []
+
+    obs_blend_enabled = _env_bool("FINAL_OBS_BLEND_ENABLED", "1")
+    obs_blend_conf_threshold = _clamp(_env_float("FINAL_OBS_BLEND_CONF_THRESHOLD", "0.60"), 0.0, 1.0)
+    obs_blend_support_max = max(1, int(_env_float("FINAL_OBS_BLEND_SUPPORT_MAX", "2")))
+    obs_blend_module_conf_min = _clamp(_env_float("FINAL_OBS_BLEND_MODULE_CONF_MIN", "0.50"), 0.0, 1.0)
+    obs_blend_max_alpha = _clamp(_env_float("FINAL_OBS_BLEND_MAX_ALPHA", "0.35"), 0.0, 1.0)
 
     for item_id in range(1, 22):
         belief = beliefs[item_id]
         if int(belief.support_count) > 0:
             observed_float = _clamp(float(belief.expected_score), 0.0, 3.0)
             observed_int = int(round(observed_float))
-            final_item_scores[item_id] = max(0, min(3, observed_int))
+            observed_confidence = _clamp(1.0 - float(belief.uncertainty), 0.0, 1.0)
+            support_count = int(belief.support_count)
+            module_estimate_float, contributions = _impute_missing_item_score(item_id, module_stats)
+            best_module_conf = 0.0
+            for contribution in contributions:
+                try:
+                    best_module_conf = max(best_module_conf, float(contribution.get("module_conf", 0.0)))
+                except (TypeError, ValueError):
+                    continue
+
+            blend_applied = False
+            blend_alpha = 0.0
+            blend_reason = "high_conf_kept"
+            final_float = observed_float
+
+            if not obs_blend_enabled:
+                blend_reason = "blend_disabled"
+            elif not contributions:
+                blend_reason = "no_module_signal"
+            elif observed_confidence >= obs_blend_conf_threshold:
+                blend_reason = "high_conf_kept"
+            elif support_count > obs_blend_support_max:
+                blend_reason = "high_support_kept"
+            elif best_module_conf < obs_blend_module_conf_min:
+                blend_reason = "low_module_conf_kept"
+            else:
+                confidence_gap = (obs_blend_conf_threshold - observed_confidence) / max(obs_blend_conf_threshold, 1e-6)
+                confidence_gap = _clamp(confidence_gap, 0.0, 1.0)
+                support_factor = _clamp(
+                    float((obs_blend_support_max + 1) - support_count) / float(max(1, obs_blend_support_max)),
+                    0.0,
+                    1.0,
+                )
+                module_factor = _clamp(best_module_conf, 0.0, 1.0)
+                blend_alpha = _clamp(confidence_gap * support_factor * module_factor, 0.0, obs_blend_max_alpha)
+                if blend_alpha > 0.0:
+                    final_float = _clamp(
+                        ((1.0 - blend_alpha) * observed_float) + (blend_alpha * module_estimate_float),
+                        0.0,
+                        3.0,
+                    )
+                    blend_applied = True
+                    blend_reason = "low_conf_blended"
+                else:
+                    blend_reason = "low_conf_blend_zero_alpha"
+
+            final_int = max(0, min(3, int(round(final_float))))
+            # Safety rule: never down-adjust observed non-zero risk item.
+            if item_id == 9 and observed_int >= 1 and final_int < observed_int:
+                final_int = observed_int
+                if blend_applied:
+                    blend_reason = "risk_item9_floor_applied"
+
+            final_item_scores[item_id] = final_int
+            source = "observed_blended" if blend_applied else "observed"
+            if blend_applied:
+                blended_observed_item_count += 1
+                blended_item_ids.append(item_id)
             item_details[str(item_id)] = {
-                "source": "observed",
-                "support_count": int(belief.support_count),
+                "source": source,
+                "support_count": support_count,
                 "expected_score": round(float(belief.expected_score), 6),
+                "observed_confidence": round(observed_confidence, 6),
+                "module_estimate_float": round(float(module_estimate_float), 6),
+                "best_module_conf": round(float(best_module_conf), 6),
+                "blend_alpha": round(float(blend_alpha), 6),
+                "blend_applied": bool(blend_applied),
+                "blend_reason": blend_reason,
                 "final_score": final_item_scores[item_id],
                 "candidate_modules": ITEM_TO_MODULES.get(item_id, []),
+                "contributions": contributions,
             }
             continue
 
@@ -220,6 +300,15 @@ def finalize_outputs(state: AgentState) -> Dict:
             "source": "imputed",
             "support_count": 0,
             "imputed_float": round(float(imputed_float), 6),
+            "observed_confidence": None,
+            "module_estimate_float": round(float(imputed_float), 6),
+            "best_module_conf": round(
+                max((float(c.get("module_conf", 0.0)) for c in contributions), default=0.0),
+                6,
+            ),
+            "blend_alpha": 0.0,
+            "blend_applied": False,
+            "blend_reason": "missing_imputed",
             "final_score": final_item_scores[item_id],
             "candidate_modules": ITEM_TO_MODULES.get(item_id, []),
             "contributions": contributions,
@@ -251,6 +340,8 @@ def finalize_outputs(state: AgentState) -> Dict:
             "final_bdi_score": final_bdi_score,
             "final_label": final_label,
             "imputed_item_count": imputed_item_count,
+            "blended_observed_item_count": blended_observed_item_count,
+            "blended_item_ids": blended_item_ids,
             "predicted_key_item_ids": ranked_key_item_ids,
         }
     )
@@ -268,6 +359,13 @@ def finalize_outputs(state: AgentState) -> Dict:
         "module_stats": module_stats,
         "item_details": item_details,
         "imputed_item_count": imputed_item_count,
+        "blended_observed_item_count": blended_observed_item_count,
+        "blended_item_ids": blended_item_ids,
+        "obs_blend_enabled": obs_blend_enabled,
+        "obs_blend_conf_threshold": obs_blend_conf_threshold,
+        "obs_blend_support_max": obs_blend_support_max,
+        "obs_blend_module_conf_min": obs_blend_module_conf_min,
+        "obs_blend_max_alpha": obs_blend_max_alpha,
         "threshold": bdi_threshold,
         "risk_flag": risk_flag,
         "core_hits": core_hits,
@@ -288,7 +386,7 @@ def finalize_outputs(state: AgentState) -> Dict:
     return {
         "control": ControlState(
             stop=True,
-            stop_reason=control_reason or ("risk_short_circuit" if risk_short_circuit else "finalized"),
+            stop_reason=control_reason or "finalized",
         ),
         "should_stop": True,
         "final": final_state,

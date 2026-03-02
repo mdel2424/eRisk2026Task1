@@ -148,26 +148,82 @@ class OpenRouterChatLLM:
         return normalized
 
     @staticmethod
-    def _extract_content(payload: dict) -> str:
-        choices = payload.get("choices", [])
-        if not choices:
-            return ""
-        message = choices[0].get("message", {})
-        content = message.get("content", "")
+    def _collect_text(value: object) -> List[str]:
+        chunks: List[str] = []
+        if value is None:
+            return chunks
+        if isinstance(value, str):
+            text = value.strip()
+            if text:
+                chunks.append(text)
+            return chunks
+        if isinstance(value, (int, float, bool)):
+            chunks.append(str(value))
+            return chunks
+        if isinstance(value, list):
+            for item in value:
+                chunks.extend(OpenRouterChatLLM._collect_text(item))
+            return chunks
+        if isinstance(value, dict):
+            # Prefer common text-bearing keys first.
+            preferred_keys = (
+                "text",
+                "content",
+                "output_text",
+                "value",
+                "message",
+                "final",
+            )
+            for key in preferred_keys:
+                if key in value:
+                    chunks.extend(OpenRouterChatLLM._collect_text(value.get(key)))
+            # Generic fallback: walk remaining keys.
+            for key, nested in value.items():
+                if key in preferred_keys:
+                    continue
+                chunks.extend(OpenRouterChatLLM._collect_text(nested))
+            return chunks
+        return chunks
 
-        if isinstance(content, str):
-            return content.strip()
-        if isinstance(content, list):
-            chunks: List[str] = []
-            for part in content:
-                if isinstance(part, dict):
-                    text = part.get("text")
-                    if text:
-                        chunks.append(str(text))
-                elif isinstance(part, str):
-                    chunks.append(part)
-            return " ".join(chunks).strip()
-        return str(content).strip()
+    @staticmethod
+    def _extract_content(payload: dict) -> str:
+        if not isinstance(payload, dict):
+            return ""
+
+        candidates: List[object] = []
+        choices = payload.get("choices", [])
+        if isinstance(choices, list) and choices:
+            first = choices[0]
+            if isinstance(first, dict):
+                # OpenAI/OpenRouter chat format
+                message = first.get("message")
+                if message is not None:
+                    candidates.append(message)
+                # Legacy completion-style text fallback
+                if "text" in first:
+                    candidates.append(first.get("text"))
+                # Some providers return delta-like structures even in non-stream calls
+                if "delta" in first:
+                    candidates.append(first.get("delta"))
+
+        # Responses-style / provider-specific fallbacks.
+        candidates.extend(
+            [
+                payload.get("output_text"),
+                payload.get("output"),
+                payload.get("response"),
+                payload.get("data"),
+                payload.get("message"),
+            ]
+        )
+
+        for candidate in candidates:
+            parts = OpenRouterChatLLM._collect_text(candidate)
+            if parts:
+                text = " ".join(part for part in parts if part).strip()
+                if text:
+                    return text
+        return ""
 
     def invoke(self, messages: Sequence[dict | tuple[str, str]]) -> LLMResponse:
         normalized = self._normalize_messages(messages)
@@ -254,6 +310,20 @@ class OpenRouterChatLLM:
         _record_token_usage(prompt_tokens, completion_tokens, total_tokens)
 
         content = self._extract_content(parsed)
+        strict_nonempty = os.getenv("OPENROUTER_STRICT_NONEMPTY", "0").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "y",
+            "on",
+        }
+        if strict_nonempty and not content.strip():
+            _record_llm_error()
+            preview = raw[:500].replace("\n", " ")
+            raise RuntimeError(
+                "OpenRouter returned an empty assistant content payload. "
+                f"Model={self.model_id}. Raw preview={preview}"
+            )
         latency_ms = (time.perf_counter() - started) * 1000.0
         return LLMResponse(
             content=content,

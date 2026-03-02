@@ -72,6 +72,14 @@ def _run_detector_until_stop(
     progress_prefix: str = "",
     live_status: bool = False,
 ) -> Tuple[Dict, List[Dict]]:
+    def _confidence_text(current_state: Dict[str, Any]) -> str:
+        try:
+            value = float(current_state.get("global_confidence", 0.0))
+        except (TypeError, ValueError):
+            value = 0.0
+        value = max(0.0, min(1.0, value))
+        return f"{value * 100.0:.1f}%"
+
     timeline: List[Dict] = []
     cycle = 0
     while True:
@@ -79,7 +87,7 @@ def _run_detector_until_stop(
         if live_status:
             print(
                 f"\r{progress_prefix} cycle={cycle} turn={state.get('turn_index', 0)} "
-                f"stage=detector_graph {_usage_snippet()}",
+                f"stage=detector_graph conf={_confidence_text(state)} {_usage_snippet()}",
                 end="",
                 flush=True,
             )
@@ -115,7 +123,7 @@ def _run_detector_until_stop(
         if live_status:
             print(
                 f"\r{progress_prefix} cycle={cycle} turn={state.get('turn_index', 0)} "
-                f"stage=persona_reply {_usage_snippet()}",
+                f"stage=persona_reply conf={_confidence_text(state)} {_usage_snippet()}",
                 end="",
                 flush=True,
             )

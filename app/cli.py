@@ -10,7 +10,7 @@ from app.cli_interactive import run_interactive
 from app.cli_common import _parse_bool
 from app.cli_tune import run_tune
 
-load_dotenv()
+load_dotenv(override=True)
 
 
 def parse_args() -> argparse.Namespace:

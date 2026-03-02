@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Dict, List, Tuple
 
 from agents.evidence_lexicon import LEXICAL_EVIDENCE_CUES
-from core.llm import LLMBudgetExceeded, get_llm
+from core.llm import LLMBudgetExceeded, get_extractor_llm
 from core.prompts import get_prompt
 from core.state import (
     AgentState,
@@ -15,6 +16,24 @@ from core.state import (
     SYMPTOM_NAME_TO_ITEM,
     bump_failure_counter,
 )
+
+EXTRACTOR_KEY_ALIASES = {
+    "item": "item_id",
+    "id": "item_id",
+    "bdi_item": "item_id",
+    "bdi_item_id": "item_id",
+    "symptom": "symptom_name",
+    "label": "symptom_name",
+    "conf": "confidence",
+    "certainty": "confidence",
+    "score": "intensity",
+    "severity": "intensity",
+    "rationale": "reason",
+}
+
+
+def _env_bool(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 
@@ -28,38 +47,157 @@ def _recent_context(state: AgentState, limit: int = 4) -> str:
 
 
 
-def _parse_json_payload(raw_text: str) -> Tuple[Any, bool]:
+def _parse_json_payload(raw_text: str) -> Tuple[Any, bool, Dict[str, Any]]:
     text = raw_text.strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.lower().startswith("json"):
-            text = text[4:].strip()
+    if not text:
+        return (
+            {},
+            False,
+            {
+                "error_kind": "empty_output",
+                "error_message": "Extractor output is empty",
+                "brace_open": 0,
+                "brace_close": 0,
+                "bracket_open": 0,
+                "bracket_close": 0,
+                "double_quote_count": 0,
+                "unmatched_double_quote": False,
+            },
+        )
 
-    starts = []
-    obj_start = text.find("{")
-    arr_start = text.find("[")
-    if obj_start != -1:
-        starts.append(obj_start)
-    if arr_start != -1:
-        starts.append(arr_start)
-    if not starts:
-        return {}, False
-    start = min(starts)
+    def _normalize_quotes(value: str) -> str:
+        return (
+            value.replace("\u201c", '"')
+            .replace("\u201d", '"')
+            .replace("\u2018", "'")
+            .replace("\u2019", "'")
+        )
 
-    obj_end = text.rfind("}")
-    arr_end = text.rfind("]")
-    end = max(obj_end, arr_end)
-    if end == -1 or end < start:
-        return {}, False
+    def _strip_markdown_fence(value: str) -> str:
+        stripped = value.strip()
+        if not stripped.startswith("```"):
+            return stripped
+        lines = stripped.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        while lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        if lines and lines[0].strip().lower() in {"json", "application/json"}:
+            lines = lines[1:]
+        return "\n".join(lines).strip()
 
-    candidate = text[start : end + 1].strip()
-    try:
-        payload = json.loads(candidate)
+    def _cleanup_candidate(value: str) -> str:
+        cleaned = _normalize_quotes(_strip_markdown_fence(value))
+        cleaned = re.sub(r"^\s*json\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r",\s*([}\]])", r"\1", cleaned)
+        return cleaned.strip()
+
+    def _balanced_segments(value: str, open_char: str, close_char: str) -> List[str]:
+        segments: List[str] = []
+        start = -1
+        depth = 0
+        for idx, ch in enumerate(value):
+            if ch == open_char:
+                if depth == 0:
+                    start = idx
+                depth += 1
+            elif ch == close_char and depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    segment = value[start : idx + 1].strip()
+                    if segment:
+                        segments.append(segment)
+                    start = -1
+        return segments
+
+    cleaned_text = _cleanup_candidate(text)
+    candidates: List[str] = [cleaned_text]
+
+    obj_start = cleaned_text.find("{")
+    obj_end = cleaned_text.rfind("}")
+    if obj_start != -1 and obj_end != -1 and obj_end > obj_start:
+        candidates.append(cleaned_text[obj_start : obj_end + 1])
+
+    arr_start = cleaned_text.find("[")
+    arr_end = cleaned_text.rfind("]")
+    if arr_start != -1 and arr_end != -1 and arr_end > arr_start:
+        candidates.append(cleaned_text[arr_start : arr_end + 1])
+
+    for segment in _balanced_segments(cleaned_text, "{", "}"):
+        if "item_id" in segment or "evidence" in segment:
+            candidates.append(segment)
+    for segment in _balanced_segments(cleaned_text, "[", "]"):
+        if "item_id" in segment or "evidence" in segment:
+            candidates.append(segment)
+
+    def _shape_diagnostics(value: str) -> Dict[str, Any]:
+        brace_open = value.count("{")
+        brace_close = value.count("}")
+        bracket_open = value.count("[")
+        bracket_close = value.count("]")
+        quote_count = value.count('"')
+        unmatched_quote = (quote_count % 2) != 0
+        return {
+            "brace_open": brace_open,
+            "brace_close": brace_close,
+            "bracket_open": bracket_open,
+            "bracket_close": bracket_close,
+            "double_quote_count": quote_count,
+            "unmatched_double_quote": unmatched_quote,
+        }
+
+    def _infer_error_kind(shape: Dict[str, Any], had_json_error: bool) -> str:
+        if shape["brace_open"] > shape["brace_close"]:
+            return "missing_closing_brace"
+        if shape["brace_close"] > shape["brace_open"]:
+            return "extra_closing_brace"
+        if shape["bracket_open"] > shape["bracket_close"]:
+            return "missing_closing_bracket"
+        if shape["bracket_close"] > shape["bracket_open"]:
+            return "extra_closing_bracket"
+        if bool(shape["unmatched_double_quote"]):
+            return "unmatched_quote"
+        if had_json_error:
+            return "json_decode_error"
+        return "no_json_like_payload"
+
+    shape = _shape_diagnostics(cleaned_text)
+    first_error: Dict[str, Any] | None = None
+    had_json_error = False
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized = _cleanup_candidate(candidate)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        try:
+            payload = json.loads(normalized)
+        except json.JSONDecodeError as exc:
+            had_json_error = True
+            if first_error is None:
+                first_error = {
+                    "message": str(exc),
+                    "line": int(getattr(exc, "lineno", 0) or 0),
+                    "column": int(getattr(exc, "colno", 0) or 0),
+                    "position": int(getattr(exc, "pos", 0) or 0),
+                    "candidate_preview": normalized[:180],
+                }
+            continue
         if isinstance(payload, (dict, list)):
-            return payload, True
-        return {}, False
-    except json.JSONDecodeError:
-        return {}, False
+            return payload, True, {"error_kind": "", "error_message": "", **shape}
+
+    diagnostics: Dict[str, Any] = {
+        "error_kind": _infer_error_kind(shape, had_json_error),
+        "error_message": str(first_error.get("message", "")) if isinstance(first_error, dict) else "",
+        **shape,
+    }
+    if isinstance(first_error, dict):
+        diagnostics["error_line"] = int(first_error.get("line", 0) or 0)
+        diagnostics["error_column"] = int(first_error.get("column", 0) or 0)
+        diagnostics["error_position"] = int(first_error.get("position", 0) or 0)
+        diagnostics["error_candidate_preview"] = str(first_error.get("candidate_preview", "") or "")
+    return {}, False, diagnostics
 
 
 
@@ -69,6 +207,72 @@ def _number_in_range(value: Any, low: float, high: float) -> bool:
     except (TypeError, ValueError):
         return False
     return low <= numeric <= high
+
+
+def _normalize_item_keys(
+    item: Dict[str, Any],
+    *,
+    key_aliases_enabled: bool,
+) -> tuple[Dict[str, Any], int]:
+    normalized = dict(item)
+    alias_hits = 0
+    if not key_aliases_enabled:
+        return normalized, alias_hits
+    for alias, canonical in EXTRACTOR_KEY_ALIASES.items():
+        if canonical in normalized:
+            continue
+        if alias in normalized:
+            normalized[canonical] = normalized.get(alias)
+            alias_hits += 1
+    return normalized, alias_hits
+
+
+def _coerce_schema_defaults(
+    item: Dict[str, Any],
+    *,
+    strict_schema_coerce: bool,
+) -> tuple[Dict[str, Any], int]:
+    normalized = dict(item)
+    coerce_count = 0
+    if not strict_schema_coerce:
+        return normalized, coerce_count
+
+    defaults: Dict[str, Any] = {
+        "direction": "increase",
+        "intensity": 1.0,
+        "confidence": 0.4,
+        "evidence_text": "",
+        "reason": "schema-coerced extractor output",
+    }
+    for key, value in defaults.items():
+        if key not in normalized or normalized.get(key) in {None, ""}:
+            normalized[key] = value
+            coerce_count += 1
+    return normalized, coerce_count
+
+
+def _payload_items(parsed: Any) -> tuple[List[Any], int]:
+    schema_coerce_used = 0
+    items: List[Any] = []
+    if isinstance(parsed, dict):
+        for key in ("evidence", "items", "records"):
+            value = parsed.get(key)
+            if isinstance(value, list):
+                items = value
+                if key != "evidence":
+                    schema_coerce_used += 1
+                break
+        if not items and "item_id" in parsed:
+            items = [parsed]
+            schema_coerce_used += 1
+    elif isinstance(parsed, list):
+        items = parsed
+    return items, schema_coerce_used
+
+
+def _parse_snippet(text: str, limit: int = 200) -> str:
+    compact = " ".join(str(text or "").split())
+    return compact[:limit]
 
 
 
@@ -125,14 +329,26 @@ def _coerce_item_id(raw_item_id: Any, raw_symptom_name: str) -> int | None:
     return None
 
 
+def _canonicalize_symptom_name(
+    item_id: int,
+    raw_symptom_name: str,
+) -> tuple[str, bool]:
+    canonical = BDI_ITEM_NAMES.get(item_id, f"Item {item_id}")
+    incoming = str(raw_symptom_name or "").strip()
+    if not incoming:
+        return canonical, False
+    if incoming.lower() == canonical.lower():
+        return canonical, False
+    return canonical, True
+
+
 
 def _coerce_evidence_record(node_name: str, turn: int, item: Dict, fallback_text: str) -> EvidenceRecord | None:
-    symptom_name = str(item.get("symptom_name", "")).strip()
-    item_id = _coerce_item_id(item.get("item_id"), symptom_name)
+    raw_symptom_name = str(item.get("symptom_name", "")).strip()
+    item_id = _coerce_item_id(item.get("item_id"), raw_symptom_name)
     if item_id is None:
         return None
-    if not symptom_name:
-        symptom_name = BDI_ITEM_NAMES[item_id]
+    symptom_name, _ = _canonicalize_symptom_name(item_id, raw_symptom_name)
 
     direction = str(item.get("direction", "increase")).strip().lower()
     if direction not in {"increase", "decrease", "neutral"}:
@@ -166,6 +382,95 @@ def _coerce_evidence_record(node_name: str, turn: int, item: Dict, fallback_text
         reason=reason,
         method=method,
     )
+
+
+def _salvage_items_from_text(raw_text: str) -> List[Dict[str, Any]]:
+    text = str(raw_text or "").strip()
+    if not text:
+        return []
+
+    line_items: List[Dict[str, Any]] = []
+    current: Dict[str, Any] = {}
+
+    item_id_re = re.compile(r"\b(?:item[\s_\-]*id|item|id|bdi_item)\b\s*[:=]?\s*(\d{1,2})", re.IGNORECASE)
+    symptom_re = re.compile(
+        r"\b(?:symptom[\s_\-]*name|symptom|label)\b\s*[:=]?\s*([A-Za-z][A-Za-z \-']+)",
+        re.IGNORECASE,
+    )
+    intensity_re = re.compile(r"\b(?:intensity|score|severity)\b\s*[:=]?\s*([0-3](?:\.\d+)?)", re.IGNORECASE)
+    confidence_re = re.compile(
+        r"\b(?:confidence|conf|certainty)\b\s*[:=]?\s*((?:0(?:\.\d+)?)|(?:1(?:\.0+)?))",
+        re.IGNORECASE,
+    )
+    direction_re = re.compile(r"\bdirection\b\s*[:=]?\s*(increase|decrease|neutral)", re.IGNORECASE)
+    evidence_text_re = re.compile(r"\bevidence[\s_\-]*text\b\s*[:=]?\s*(.+)$", re.IGNORECASE)
+    reason_re = re.compile(r"\breason\b\s*[:=]?\s*(.+)$", re.IGNORECASE)
+
+    def _flush() -> None:
+        nonlocal current
+        if current:
+            line_items.append(dict(current))
+            current = {}
+
+    candidate_lines = text.splitlines()
+    if len(candidate_lines) <= 1:
+        candidate_lines = re.split(r"[;|]", text)
+    for raw_line in candidate_lines:
+        line = raw_line.strip().strip("-*").strip()
+        if not line:
+            continue
+
+        item_match = item_id_re.search(line)
+        if item_match:
+            if "item_id" in current:
+                _flush()
+            current["item_id"] = int(item_match.group(1))
+
+        symptom_match = symptom_re.search(line)
+        if symptom_match:
+            current["symptom_name"] = symptom_match.group(1).strip().strip('"')
+
+        intensity_match = intensity_re.search(line)
+        if intensity_match:
+            try:
+                current["intensity"] = float(intensity_match.group(1))
+            except (TypeError, ValueError):
+                pass
+
+        confidence_match = confidence_re.search(line)
+        if confidence_match:
+            try:
+                current["confidence"] = float(confidence_match.group(1))
+            except (TypeError, ValueError):
+                pass
+
+        direction_match = direction_re.search(line)
+        if direction_match:
+            current["direction"] = direction_match.group(1).lower()
+
+        evidence_text_match = evidence_text_re.search(line)
+        if evidence_text_match:
+            current["evidence_text"] = evidence_text_match.group(1).strip().strip('"')
+
+        reason_match = reason_re.search(line)
+        if reason_match:
+            current["reason"] = reason_match.group(1).strip().strip('"')
+
+    _flush()
+
+    sanitized: List[Dict[str, Any]] = []
+    for item in line_items:
+        if "item_id" not in item and not str(item.get("symptom_name", "")).strip():
+            continue
+        item.setdefault("symptom_name", "")
+        item.setdefault("direction", "increase")
+        item.setdefault("intensity", 1.0)
+        item.setdefault("confidence", 0.4)
+        item.setdefault("evidence_text", "")
+        item.setdefault("reason", "salvaged extractor output")
+        item["method"] = "llm_salvage"
+        sanitized.append(item)
+    return sanitized[:6]
 
 
 
@@ -229,17 +534,30 @@ def extract_likelihoods(state: AgentState) -> Dict:
     source = "llm_extractor"
     counters = dict(state.get("failure_counters", {}))
     lexical_prefilter: List[EvidenceRecord] = []
-    llm_on_lexical_hit = os.getenv("EVIDENCE_LLM_ON_LEXICAL_HIT", "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "y",
-        "on",
-    }
+    salvage_used = False
+    salvage_items_count = 0
+    key_alias_used_count = 0
+    schema_coerce_used_count = 0
+    symptom_name_normalized_count = 0
+    parse_snippet = ""
+    parse_error_kind = ""
+    parse_error_message = ""
+    parse_error_line = 0
+    parse_error_column = 0
+    parse_error_position = 0
+    parse_balance: Dict[str, Any] = {}
+    llm_called = False
+    llm_raw_text = ""
+    llm_on_lexical_hit = _env_bool("EVIDENCE_LLM_ON_LEXICAL_HIT", "0")
+    key_aliases_enabled = _env_bool("EXTRACTOR_JSON_KEY_ALIASES", "1")
+    strict_schema_coerce = _env_bool("EXTRACTOR_STRICT_SCHEMA_COERCE", "1")
+    parse_snippet_trace = _env_bool("EXTRACTOR_PARSE_SNIPPET_TRACE", "1")
+    extractor_min_records_target = max(1, int(os.getenv("EXTRACTOR_MIN_RECORDS_TARGET", "1")))
 
     if latest_message.strip():
         lexical_prefilter = _fallback_evidence_from_text(node_name, turn, latest_message)
-        if lexical_prefilter and not llm_on_lexical_hit:
+        should_skip_llm = len(lexical_prefilter) >= extractor_min_records_target and not llm_on_lexical_hit
+        if should_skip_llm:
             evidence_records = lexical_prefilter
             source = "lexical_prefilter"
         else:
@@ -249,43 +567,96 @@ def extract_likelihoods(state: AgentState) -> Dict:
                 latest_message=latest_message,
             )
             try:
-                llm = get_llm()
+                llm_called = True
+                llm = get_extractor_llm()
                 raw = llm.invoke([("system", prompt)]).content
-                raw_nonempty = bool(str(raw).strip())
-                parsed, json_parse_ok = _parse_json_payload(str(raw))
-                items: List[Any] = []
-                if isinstance(parsed, dict):
-                    maybe_items = parsed.get("evidence", [])
-                    if isinstance(maybe_items, list):
-                        items = maybe_items
-                elif isinstance(parsed, list):
-                    items = parsed
+                raw_text = str(raw)
+                llm_raw_text = raw_text
+                raw_nonempty = bool(raw_text.strip())
+                if not raw_nonempty:
+                    counters = bump_failure_counter(counters, "extract_llm_empty_payload")
+                    source = "llm_extractor_empty_payload"
+                parsed, json_parse_ok, parse_diagnostics = _parse_json_payload(raw_text)
+                parse_error_kind = str(parse_diagnostics.get("error_kind", "") or "")
+                parse_error_message = str(parse_diagnostics.get("error_message", "") or "")
+                parse_error_line = int(parse_diagnostics.get("error_line", 0) or 0)
+                parse_error_column = int(parse_diagnostics.get("error_column", 0) or 0)
+                parse_error_position = int(parse_diagnostics.get("error_position", 0) or 0)
+                parse_balance = {
+                    "brace_open": int(parse_diagnostics.get("brace_open", 0) or 0),
+                    "brace_close": int(parse_diagnostics.get("brace_close", 0) or 0),
+                    "bracket_open": int(parse_diagnostics.get("bracket_open", 0) or 0),
+                    "bracket_close": int(parse_diagnostics.get("bracket_close", 0) or 0),
+                    "double_quote_count": int(parse_diagnostics.get("double_quote_count", 0) or 0),
+                    "unmatched_double_quote": bool(parse_diagnostics.get("unmatched_double_quote", False)),
+                }
+                items, schema_payload_coerce = _payload_items(parsed)
+                schema_coerce_used_count += int(schema_payload_coerce)
+                if schema_payload_coerce > 0:
+                    counters = bump_failure_counter(counters, "extract_schema_coerce_used", amount=schema_payload_coerce)
 
-                if raw_nonempty and not json_parse_ok:
-                    counters = bump_failure_counter(counters, "extract_json_parse_fail")
+                if raw_nonempty and not items:
+                    salvage_items = _salvage_items_from_text(raw_text)
+                    if salvage_items:
+                        items = salvage_items
+                        salvage_used = True
+                        salvage_items_count = len(salvage_items)
+                        source = "llm_salvage"
+                        counters = bump_failure_counter(counters, "extract_salvage_used")
+                        counters = bump_failure_counter(
+                            counters, "extract_salvage_kept_items", amount=salvage_items_count
+                        )
 
+                raw_items_count = len(items) if isinstance(items, list) else 0
                 if isinstance(items, list):
-                    raw_items_count = len(items)
                     for raw_item in items:
                         if not isinstance(raw_item, dict):
                             dropped_invalid += 1
                             continue
-                        symptom_name = str(raw_item.get("symptom_name", "")).strip()
-                        resolved_item_id = _coerce_item_id(raw_item.get("item_id"), symptom_name)
+                        normalized_item, alias_hits = _normalize_item_keys(
+                            raw_item,
+                            key_aliases_enabled=key_aliases_enabled,
+                        )
+                        key_alias_used_count += int(alias_hits)
+                        if alias_hits > 0:
+                            counters = bump_failure_counter(counters, "extract_key_alias_used", amount=alias_hits)
+
+                        normalized_item, schema_hits = _coerce_schema_defaults(
+                            normalized_item,
+                            strict_schema_coerce=strict_schema_coerce,
+                        )
+                        schema_coerce_used_count += int(schema_hits)
+                        if schema_hits > 0:
+                            counters = bump_failure_counter(counters, "extract_schema_coerce_used", amount=schema_hits)
+
+                        symptom_name = str(normalized_item.get("symptom_name", "")).strip()
+                        resolved_item_id = _coerce_item_id(normalized_item.get("item_id"), symptom_name)
                         if resolved_item_id is None:
                             dropped_unknown += 1
                             continue
-                        if not _number_in_range(raw_item.get("intensity"), 0.0, 3.0):
+                        canonical_symptom_name, normalized_symptom = _canonicalize_symptom_name(
+                            resolved_item_id,
+                            symptom_name,
+                        )
+                        normalized_item["symptom_name"] = canonical_symptom_name
+                        if normalized_symptom:
+                            symptom_name_normalized_count += 1
+                            counters = bump_failure_counter(counters, "extract_symptom_name_normalized")
+                        if "item_id" not in normalized_item:
+                            normalized_item["item_id"] = resolved_item_id
+
+                        if not _number_in_range(normalized_item.get("intensity"), 0.0, 3.0):
                             dropped_invalid += 1
                             continue
-                        if not _number_in_range(raw_item.get("confidence"), 0.0, 1.0):
+                        if not _number_in_range(normalized_item.get("confidence"), 0.0, 1.0):
                             dropped_invalid += 1
                             continue
-                        record = _coerce_evidence_record(node_name, turn, raw_item, latest_message)
+                        record = _coerce_evidence_record(node_name, turn, normalized_item, latest_message)
                         if record is not None:
                             evidence_records.append(record)
                 else:
                     source = "llm_extractor_non_list_payload"
+
             except LLMBudgetExceeded:
                 raise
             except Exception as exc:
@@ -304,6 +675,11 @@ def extract_likelihoods(state: AgentState) -> Dict:
         if fallback_records:
             evidence_records = fallback_records
             source = "lexical_fallback"
+
+    if llm_called and raw_nonempty and not evidence_records:
+        counters = bump_failure_counter(counters, "extract_json_parse_fail")
+        if parse_snippet_trace:
+            parse_snippet = _parse_snippet(llm_raw_text, limit=200)
 
     if not evidence_records:
         counters = bump_failure_counter(counters, "extract_empty")
@@ -327,18 +703,34 @@ def extract_likelihoods(state: AgentState) -> Dict:
     trace_payload = {
         "turn": turn,
         "source": source,
+        "latest_message_snippet": _parse_snippet(latest_message, limit=220),
         "raw_nonempty": raw_nonempty,
         "json_parse_ok": json_parse_ok,
+        "parse_error_kind": parse_error_kind,
+        "parse_error_message": parse_error_message,
+        "parse_error_line": parse_error_line,
+        "parse_error_column": parse_error_column,
+        "parse_error_position": parse_error_position,
+        "parse_balance": parse_balance,
         "raw_items_count": raw_items_count,
         "kept_items_count": len(evidence_records),
         "drop_unknown_item_count": dropped_unknown,
         "drop_invalid_range_count": dropped_invalid,
         "prefilter_count": len(lexical_prefilter),
         "llm_on_lexical_hit": llm_on_lexical_hit,
+        "extractor_min_records_target": extractor_min_records_target,
+        "llm_called": llm_called,
+        "key_alias_used_count": key_alias_used_count,
+        "schema_coerce_used_count": schema_coerce_used_count,
+        "symptom_name_normalized_count": symptom_name_normalized_count,
         "fallback_used": bool(fallback_records),
+        "salvage_used": salvage_used,
+        "salvage_items_count": salvage_items_count,
         "empty_streak": empty_streak,
         "has_new_persona_input": True,
     }
+    if parse_snippet:
+        trace_payload["parse_snippet"] = parse_snippet
     turn_trace = dict(state.get("turn_trace", {}))
     turn_trace["extract_likelihoods"] = trace_payload
     turn_trace["extract_evidence"] = trace_payload

@@ -29,10 +29,8 @@ from app.eval_calibration import fit_calibrator_from_train_profiles
 
 
 def _result_record(profile: PersonaProfile, state: Dict) -> Dict:
-    predicted_label = state.get("predicted_label", "control")
     predicted_bdi = int(state.get("predicted_bdi_score") or 0)
     predicted_symptoms = list(state.get("predicted_key_symptoms") or [])[:4]
-    risk_flag = bool(state.get("risk_flag", False))
     final_scores_raw = dict(state.get("final_item_scores", {}))
     item_scores_pred = {
         str(item_id): int(final_scores_raw.get(item_id, final_scores_raw.get(str(item_id), 0)) or 0)
@@ -44,8 +42,6 @@ def _result_record(profile: PersonaProfile, state: Dict) -> Dict:
         "llm": profile.persona_id,
         "family": profile.family,
         "split": profile.split,
-        "y_true": profile.depressed,
-        "y_pred": predicted_label == "depressed",
         "bdi_true": profile.bdi_total,
         "bdi_pred": predicted_bdi,
         "symptoms_true": profile.key_symptoms,
@@ -53,8 +49,6 @@ def _result_record(profile: PersonaProfile, state: Dict) -> Dict:
         "item_scores_true": item_scores_true,
         "item_scores_pred": item_scores_pred,
         "turns": int(state.get("turn_index", 0)),
-        "risk_true": profile.has_risk_signal,
-        "risk_pred": risk_flag,
     }
 
 
@@ -88,6 +82,27 @@ def run_eval(
     min_train_records = _parse_int(os.getenv("CALIBRATOR_MIN_TRAIN_RECORDS", "10"), 10)
     strict_split_lock = _strict_split_lock_enabled()
     generator_version = os.getenv("SIM_GENERATOR_VERSION", "sim_v3").strip() or "sim_v3"
+    stop_policy = {
+        "MIN_TURNS": os.getenv("MIN_TURNS", "20"),
+        "MAX_TURNS": os.getenv("MAX_TURNS", "40"),
+        "STOP_CONFIDENCE": os.getenv("STOP_CONFIDENCE", "0.66"),
+    }
+    confidence_model = {
+        "CONF_SUPPORT_TAU": os.getenv("CONF_SUPPORT_TAU", "1.25"),
+        "CONF_DEPTH_WEIGHT": os.getenv("CONF_DEPTH_WEIGHT", "0.70"),
+        "CONF_COVERAGE_WEIGHT": os.getenv("CONF_COVERAGE_WEIGHT", "0.30"),
+        "CONF_UP_ALPHA": os.getenv("CONF_UP_ALPHA", "0.55"),
+        "CONF_DECAY_STREAK_START": os.getenv("CONF_DECAY_STREAK_START", "6"),
+        "CONF_DECAY_PER_TURN": os.getenv("CONF_DECAY_PER_TURN", "0.002"),
+        "CONF_DECAY_MAX": os.getenv("CONF_DECAY_MAX", "0.01"),
+        "CONF_MAX_DROP_PER_TURN": os.getenv("CONF_MAX_DROP_PER_TURN", "0.01"),
+    }
+    risk_policy = {
+        "RISK_SENTINEL_FLAG_THRESHOLD": os.getenv("RISK_SENTINEL_FLAG_THRESHOLD", "0.45"),
+        "RISK_SENTINEL_SHORTCIRCUIT_THRESHOLD": os.getenv("RISK_SENTINEL_SHORTCIRCUIT_THRESHOLD", "1.1"),
+        "RISK_SENTINEL_ACTIVE_SHORTCIRCUIT": os.getenv("RISK_SENTINEL_ACTIVE_SHORTCIRCUIT", "0"),
+        "EXTRACTOR_MIN_RECORDS_TARGET": os.getenv("EXTRACTOR_MIN_RECORDS_TARGET", "1"),
+    }
 
     requested_eval_mode, effective_eval_mode = _resolve_effective_eval_mode(eval_mode)
 
@@ -103,10 +118,34 @@ def run_eval(
         print(
             f"Synthetic generator: version={generator_version} | strict_split_lock={'on' if strict_split_lock else 'off'}"
         )
+        print(
+            "Stop policy: "
+            + " | ".join(f"{key}={value}" for key, value in stop_policy.items())
+        )
+        print(
+            "Confidence model: "
+            + " | ".join(f"{key}={value}" for key, value in confidence_model.items())
+        )
+        print(
+            "Risk/extractor controls: "
+            + " | ".join(f"{key}={value}" for key, value in risk_policy.items())
+        )
     elif live_status:
         print(
             f"Running eval: mode={requested_eval_mode}, personas={persona_count}, "
             f"prompt={prompt_version}, live_status=on"
+        )
+        print(
+            "Stop policy: "
+            + " | ".join(f"{key}={value}" for key, value in stop_policy.items())
+        )
+        print(
+            "Confidence model: "
+            + " | ".join(f"{key}={value}" for key, value in confidence_model.items())
+        )
+        print(
+            "Risk/extractor controls: "
+            + " | ".join(f"{key}={value}" for key, value in risk_policy.items())
         )
 
     splits = build_split_profiles(count=persona_count, seed=seed)
@@ -176,10 +215,19 @@ def run_eval(
     test_rows: List[Dict[str, Any]] = []
     overall_rows: List[Dict[str, Any]] = []
     route_distribution: Counter[str] = Counter()
+    route_policy_distribution: Counter[str] = Counter()
     calibrator_mode_counts: Counter[str] = Counter()
+    extract_source_distribution: Counter[str] = Counter()
+    extract_recovery_distribution: Counter[str] = Counter()
+    extract_parse_fail_log_entries: List[Dict[str, Any]] = []
     turns_total = 0
     evidence_turns_nonempty = 0
     evidence_records_total = 0
+    min_turns_for_productivity = max(1, int(os.getenv("MIN_TURNS", "20")))
+    post_floor_new_items_total = 0
+    post_floor_nonempty_turns_total = 0
+    post_floor_turns_total = 0
+    early_stop_reason_distribution: Counter[str] = Counter()
 
     eval_profiles = val_profiles + test_profiles
     eval_total = len(eval_profiles)
@@ -231,6 +279,15 @@ def run_eval(
                 trace_level=trace_level,
             )
         )
+        stop_history = list(final_state.get("stop_history", []))
+        if stop_history:
+            latest_stop = stop_history[-1]
+            if isinstance(latest_stop, dict):
+                stop_reason = str(latest_stop.get("reason", "")).strip()
+            else:
+                stop_reason = str(getattr(latest_stop, "reason", "")).strip()
+            if stop_reason:
+                early_stop_reason_distribution[stop_reason] += 1
 
         for entry in timeline:
             turns_total += 1
@@ -245,14 +302,100 @@ def run_eval(
                 chosen = str(route_decision.get("chosen_node", "")).strip()
                 if chosen:
                     route_distribution[chosen] += 1
+                policy = str(route_decision.get("policy", "")).strip()
+                if policy:
+                    route_policy_distribution[policy] += 1
 
             turn_trace = entry.get("turn_trace", {})
             if isinstance(turn_trace, dict):
-                belief_trace = turn_trace.get("update_beliefs", {})
+                belief_trace = turn_trace.get("belief_update")
+                if not isinstance(belief_trace, dict):
+                    belief_trace = turn_trace.get("update_beliefs", {})
                 if isinstance(belief_trace, dict):
                     mode = str(belief_trace.get("calibrator_mode", "")).strip()
                     if mode:
                         calibrator_mode_counts[mode] += 1
+                extract_trace = turn_trace.get("extract_evidence", {})
+                if isinstance(extract_trace, dict):
+                    source = str(extract_trace.get("source", "")).strip()
+                    if source:
+                        extract_source_distribution[source] += 1
+                    if bool(extract_trace.get("salvage_used", False)):
+                        extract_recovery_distribution["salvage"] += 1
+                    alias_used = int(extract_trace.get("key_alias_used_count", 0) or 0)
+                    schema_used = int(extract_trace.get("schema_coerce_used_count", 0) or 0)
+                    if alias_used > 0:
+                        extract_recovery_distribution["key_alias"] += alias_used
+                    if schema_used > 0:
+                        extract_recovery_distribution["schema_coerce"] += schema_used
+
+                    llm_called = bool(extract_trace.get("llm_called", False))
+                    raw_nonempty = bool(extract_trace.get("raw_nonempty", False))
+                    kept_items_count = int(extract_trace.get("kept_items_count", 0) or 0)
+                    if llm_called and raw_nonempty and kept_items_count == 0:
+                        dropped_unknown_item_count = int(extract_trace.get("drop_unknown_item_count", 0) or 0)
+                        dropped_invalid_range_count = int(extract_trace.get("drop_invalid_range_count", 0) or 0)
+                        json_parse_ok = bool(extract_trace.get("json_parse_ok", False))
+                        parse_error_kind = str(extract_trace.get("parse_error_kind", "") or "")
+                        parse_error_message = str(extract_trace.get("parse_error_message", "") or "")
+                        if not json_parse_ok:
+                            failure_reason = parse_error_kind or "invalid_or_truncated_json"
+                        elif dropped_unknown_item_count > 0 and dropped_invalid_range_count == 0:
+                            failure_reason = "unknown_item_mapping"
+                        elif dropped_invalid_range_count > 0:
+                            failure_reason = "invalid_intensity_or_confidence_range"
+                        else:
+                            failure_reason = "parsed_but_no_usable_evidence"
+                        extract_parse_fail_log_entries.append(
+                            {
+                                "llm": profile.persona_id,
+                                "split": profile.split,
+                                "family": profile.family,
+                                "turn": int(entry.get("turn", extract_trace.get("turn", 0)) or 0),
+                                "source": source or "llm_extractor",
+                                "failure_reason": failure_reason,
+                                "json_parse_ok": json_parse_ok,
+                                "parse_error_kind": parse_error_kind,
+                                "parse_error_message": parse_error_message,
+                                "parse_error_line": int(extract_trace.get("parse_error_line", 0) or 0),
+                                "parse_error_column": int(extract_trace.get("parse_error_column", 0) or 0),
+                                "parse_error_position": int(extract_trace.get("parse_error_position", 0) or 0),
+                                "parse_balance": extract_trace.get("parse_balance", {}),
+                                "raw_items_count": int(extract_trace.get("raw_items_count", 0) or 0),
+                                "kept_items_count": kept_items_count,
+                                "drop_unknown_item_count": dropped_unknown_item_count,
+                                "drop_invalid_range_count": dropped_invalid_range_count,
+                                "key_alias_used_count": int(extract_trace.get("key_alias_used_count", 0) or 0),
+                                "schema_coerce_used_count": int(extract_trace.get("schema_coerce_used_count", 0) or 0),
+                                "salvage_used": bool(extract_trace.get("salvage_used", False)),
+                                "fallback_used": bool(extract_trace.get("fallback_used", False)),
+                                "parse_snippet": str(extract_trace.get("parse_snippet", "") or ""),
+                                "latest_message_snippet": str(extract_trace.get("latest_message_snippet", "") or ""),
+                                "route_node": (
+                                    str(route_decision.get("chosen_node", "")).strip()
+                                    if isinstance(route_decision, dict)
+                                    else ""
+                                ),
+                                "route_policy": (
+                                    str(route_decision.get("policy", "")).strip()
+                                    if isinstance(route_decision, dict)
+                                    else ""
+                                ),
+                            }
+                        )
+
+                    if bool(extract_trace.get("has_new_persona_input", False)):
+                        effective_turn = int(extract_trace.get("turn", entry.get("turn", 0)) or 0)
+                        if effective_turn >= min_turns_for_productivity:
+                            post_floor_turns_total += 1
+                            if ev_count > 0:
+                                post_floor_nonempty_turns_total += 1
+                            new_items_this_turn = int(belief_trace.get("new_items_this_turn", 0) or 0)
+                            if new_items_this_turn <= 0:
+                                updated_items = belief_trace.get("updated_item_ids", [])
+                                if isinstance(updated_items, list):
+                                    new_items_this_turn = len(updated_items)
+                            post_floor_new_items_total += max(0, int(new_items_this_turn))
 
         for key, value in dict(final_state.get("failure_counters", {})).items():
             try:
@@ -283,6 +426,15 @@ def run_eval(
             turns_total=turns_total,
             evidence_turns_nonempty=evidence_turns_nonempty,
             evidence_records_total=evidence_records_total,
+            extract_source_distribution=extract_source_distribution,
+            extract_recovery_distribution=extract_recovery_distribution,
+            route_policy_distribution=route_policy_distribution,
+            post_floor_new_items_total=post_floor_new_items_total,
+            post_floor_nonempty_turns_total=post_floor_nonempty_turns_total,
+            post_floor_turns_total=post_floor_turns_total,
+            min_turns_for_productivity=min_turns_for_productivity,
+            early_stop_reason_distribution=early_stop_reason_distribution,
+            extract_parse_fail_log_entries=extract_parse_fail_log_entries,
             run_failure_counters=run_failure_counters,
             calibrator_status=calibrator_status,
             id_overlap_counts=id_overlap_counts,
@@ -310,11 +462,11 @@ def run_eval(
 
     if primary_metrics:
         print(
-            f"binary_f1={float(primary_metrics.get('binary_f1', 0.0)):.4f} "
+            f"item_f1={float(primary_metrics.get('item_f1_macro_at_1', 0.0)):.4f} "
             f"objective={float(primary_metrics.get('objective', 0.0)):.4f}"
         )
     else:
-        print("binary_f1=0.0000 objective=0.0000")
+        print("item_f1=0.0000 objective=0.0000")
 
     if verbose_console:
         print("\n--- Evaluation Summary ---")
@@ -328,6 +480,7 @@ def run_eval(
         print(f" - {output_dir / 'results_run_local.json'}")
         print(f" - {output_dir / 'metrics_run_local.json'}")
         print(f" - {output_dir / 'error_report_run_local.json'}")
+        print(f" - {output_dir / 'extract_parse_fail_log_run_local.json'}")
         print(f" - {output_dir / 'failure_report_run_local.json'}")
         print(f" - {output_dir / 'leakage_report_run_local.json'}")
         if save_diagnostics:

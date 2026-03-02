@@ -34,10 +34,12 @@ def run_tune(
     baseline_overrides = {key: os.getenv(key, "").strip() for key in BASELINE_ENV_KEYS}
     baseline_overrides.update(
         {
-            "MIN_TURNS": baseline_overrides.get("MIN_TURNS") or "6",
-            "MAX_TURNS": baseline_overrides.get("MAX_TURNS") or "10",
-            "STOP_CONFIDENCE": baseline_overrides.get("STOP_CONFIDENCE") or "0.75",
-            "MIN_EVIDENCE_FOR_CONF_STOP": baseline_overrides.get("MIN_EVIDENCE_FOR_CONF_STOP") or "2",
+            "MIN_TURNS": baseline_overrides.get("MIN_TURNS") or "18",
+            "MAX_TURNS": baseline_overrides.get("MAX_TURNS") or "34",
+            "STOP_CONFIDENCE": baseline_overrides.get("STOP_CONFIDENCE") or "0.66",
+            "CONF_SUPPORT_TAU": baseline_overrides.get("CONF_SUPPORT_TAU") or "1.25",
+            "CONF_UP_ALPHA": baseline_overrides.get("CONF_UP_ALPHA") or "0.55",
+            "CONF_DEPTH_WEIGHT": baseline_overrides.get("CONF_DEPTH_WEIGHT") or "0.70",
             "SUPERVISOR_EVIDENCE_MIN_SCORE": baseline_overrides.get("SUPERVISOR_EVIDENCE_MIN_SCORE") or "0.30",
             "SUPERVISOR_EVIDENCE_RISK_THRESHOLD": baseline_overrides.get("SUPERVISOR_EVIDENCE_RISK_THRESHOLD") or "0.22",
             "SUPERVISOR_ESCAPE_EMPTY_STREAK": baseline_overrides.get("SUPERVISOR_ESCAPE_EMPTY_STREAK") or "2",
@@ -96,13 +98,10 @@ def run_tune(
             "overrides": {str(k): str(v) for k, v in overrides.items()},
             "metrics": {
                 "objective": _safe_float(metrics.get("objective", 0.0)),
-                "headline_f1": _safe_float(metrics.get("headline_f1", metrics.get("binary_f1", 0.0))),
-                "binary_f1": _safe_float(metrics.get("binary_f1", 0.0)),
+                "headline_f1": _safe_float(metrics.get("headline_f1", metrics.get("item_f1_macro_at_1", 0.0))),
                 "item_f1_macro_at_1": _safe_float(metrics.get("item_f1_macro_at_1", metrics.get("symptom_f1_at_4", 0.0))),
                 "item_mae": _safe_float(metrics.get("item_mae", 0.0)),
-                "risk_recall": _safe_float(metrics.get("risk_recall", 0.0)),
                 "avg_turns_to_decision": _safe_float(metrics.get("avg_turns_to_decision", 0.0)),
-                "binary_accuracy": _safe_float(metrics.get("binary_accuracy", 0.0)),
                 "bdi_mae": _safe_float(metrics.get("bdi_mae", 0.0)),
             },
             "profiles_evaluated": int(result.get("profiles_evaluated", 0)),
@@ -121,15 +120,13 @@ def run_tune(
         seed=tune_seed,
     )
     baseline_headline_f1 = _safe_float(
-        baseline_record["metrics"].get("headline_f1", baseline_record["metrics"].get("binary_f1", 0.0))
+        baseline_record["metrics"].get("headline_f1", baseline_record["metrics"].get("item_f1_macro_at_1", 0.0))
     )
-    baseline_binary_f1 = _safe_float(baseline_record["metrics"].get("binary_f1", 0.0))
-    baseline_risk_recall = _safe_float(baseline_record["metrics"].get("risk_recall", 0.0))
+    baseline_item_f1 = _safe_float(baseline_record["metrics"].get("item_f1_macro_at_1", 0.0))
     baseline_record = _apply_guardrails(
         record=baseline_record,
         baseline_headline_f1=baseline_headline_f1,
-        baseline_binary_f1=baseline_binary_f1,
-        baseline_risk_recall=baseline_risk_recall,
+        baseline_item_f1=baseline_item_f1,
     )
     tune_runs.append(baseline_record)
 
@@ -146,8 +143,7 @@ def run_tune(
         record = _apply_guardrails(
             record=record,
             baseline_headline_f1=baseline_headline_f1,
-            baseline_binary_f1=baseline_binary_f1,
-            baseline_risk_recall=baseline_risk_recall,
+            baseline_item_f1=baseline_item_f1,
         )
         stage1_records.append(record)
         tune_runs.append(record)
@@ -170,8 +166,7 @@ def run_tune(
             record = _apply_guardrails(
                 record=record,
                 baseline_headline_f1=baseline_headline_f1,
-                baseline_binary_f1=baseline_binary_f1,
-                baseline_risk_recall=baseline_risk_recall,
+                baseline_item_f1=baseline_item_f1,
             )
             stage2_records.append(record)
             tune_runs.append(record)
@@ -191,8 +186,7 @@ def run_tune(
         confirm_record = _apply_guardrails(
             record=confirm_record,
             baseline_headline_f1=baseline_headline_f1,
-            baseline_binary_f1=baseline_binary_f1,
-            baseline_risk_recall=baseline_risk_recall,
+            baseline_item_f1=baseline_item_f1,
         )
         confirmation_records.append(confirm_record)
         tune_runs.append(confirm_record)
@@ -204,11 +198,14 @@ def run_tune(
         mean_objective = sum(_safe_float(row["metrics"].get("objective", 0.0)) for row in valid_confirms) / len(
             valid_confirms
         )
-        mean_binary_f1 = sum(_safe_float(row["metrics"].get("binary_f1", 0.0)) for row in valid_confirms) / len(
+        mean_item_f1 = sum(
+            _safe_float(row["metrics"].get("item_f1_macro_at_1", row["metrics"].get("symptom_f1_at_4", 0.0)))
+            for row in valid_confirms
+        ) / len(
             valid_confirms
         )
         mean_headline_f1 = sum(
-            _safe_float(row["metrics"].get("headline_f1", row["metrics"].get("binary_f1", 0.0)))
+            _safe_float(row["metrics"].get("headline_f1", row["metrics"].get("item_f1_macro_at_1", 0.0)))
             for row in valid_confirms
         ) / len(valid_confirms)
         mean_turns = sum(
@@ -218,19 +215,19 @@ def run_tune(
             {
                 "mean_objective": round(mean_objective, 4),
                 "mean_headline_f1": round(mean_headline_f1, 4),
-                "mean_binary_f1": round(mean_binary_f1, 4),
+                "mean_item_f1": round(mean_item_f1, 4),
                 "mean_avg_turns": round(mean_turns, 4),
             }
         )
-        if mean_headline_f1 >= max(0.5, baseline_headline_f1 - 0.03) and mean_binary_f1 >= max(
-            0.5, baseline_binary_f1 - 0.02
+        if mean_headline_f1 >= max(0.35, baseline_headline_f1 - 0.03) and mean_item_f1 >= max(
+            0.30, baseline_item_f1 - 0.03
         ):
             final_candidate = dict(selected_candidate)
             final_candidate["metrics"] = {
                 **final_candidate.get("metrics", {}),
                 "objective": round(mean_objective, 4),
                 "headline_f1": round(mean_headline_f1, 4),
-                "binary_f1": round(mean_binary_f1, 4),
+                "item_f1_macro_at_1": round(mean_item_f1, 4),
                 "avg_turns_to_decision": round(mean_turns, 4),
             }
             final_candidate["source"] = "confirm_mean"
@@ -255,22 +252,18 @@ def run_tune(
                 4,
             ),
             "headline_f1": round(
-                _safe_float(final_metrics.get("headline_f1", final_metrics.get("binary_f1", 0.0)))
-                - _safe_float(baseline_metrics.get("headline_f1", baseline_metrics.get("binary_f1", 0.0))),
+                _safe_float(final_metrics.get("headline_f1", final_metrics.get("item_f1_macro_at_1", 0.0)))
+                - _safe_float(baseline_metrics.get("headline_f1", baseline_metrics.get("item_f1_macro_at_1", 0.0))),
                 4,
             ),
-            "binary_f1": round(
-                float(final_metrics.get("binary_f1", 0.0)) - float(baseline_metrics.get("binary_f1", 0.0)),
+            "item_f1_macro_at_1": round(
+                _safe_float(final_metrics.get("item_f1_macro_at_1", 0.0))
+                - _safe_float(baseline_metrics.get("item_f1_macro_at_1", 0.0)),
                 4,
             ),
             "avg_turns_to_decision": round(
                 float(final_metrics.get("avg_turns_to_decision", 0.0))
                 - float(baseline_metrics.get("avg_turns_to_decision", 0.0)),
-                4,
-            ),
-            "risk_recall": round(
-                _safe_float(final_metrics.get("risk_recall", 0.0))
-                - _safe_float(baseline_metrics.get("risk_recall", 0.0)),
                 4,
             ),
         },
@@ -305,8 +298,8 @@ def run_tune(
 
     print(
         f"tune_final objective={float(final_metrics.get('objective', 0.0)):.4f} "
-        f"headline_f1={_safe_float(final_metrics.get('headline_f1', final_metrics.get('binary_f1', 0.0))):.4f} "
-        f"binary_f1={_safe_float(final_metrics.get('binary_f1', 0.0)):.4f} "
+        f"headline_f1={_safe_float(final_metrics.get('headline_f1', final_metrics.get('item_f1_macro_at_1', 0.0))):.4f} "
+        f"item_f1={_safe_float(final_metrics.get('item_f1_macro_at_1', 0.0)):.4f} "
         f"avg_turns={_safe_float(final_metrics.get('avg_turns_to_decision', 0.0)):.2f}"
     )
     print(f"tune_artifacts={output_dir}")

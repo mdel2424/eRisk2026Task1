@@ -93,13 +93,11 @@ def run_eval_multi_seed(
                 "metrics": {
                     "objective": _safe_float(primary.get("objective", metrics.get("objective", 0.0))),
                     "headline_f1": _safe_float(primary.get("headline_f1", metrics.get("headline_f1", 0.0))),
-                    "binary_f1": _safe_float(primary.get("binary_f1", metrics.get("binary_f1", 0.0))),
                     "item_f1_macro_at_1": _safe_float(
                         primary.get("item_f1_macro_at_1", metrics.get("item_f1_macro_at_1", 0.0))
                     ),
                     "item_mae": _safe_float(primary.get("item_mae", metrics.get("item_mae", 0.0))),
                     "bdi_mae": _safe_float(primary.get("bdi_mae", metrics.get("bdi_mae", 0.0))),
-                    "risk_recall": _safe_float(primary.get("risk_recall", metrics.get("risk_recall", 0.0))),
                     "avg_turns_to_decision": _safe_float(
                         primary.get("avg_turns_to_decision", metrics.get("avg_turns_to_decision", 0.0))
                     ),
@@ -111,11 +109,9 @@ def run_eval_multi_seed(
     metric_keys = [
         "objective",
         "headline_f1",
-        "binary_f1",
         "item_f1_macro_at_1",
         "item_mae",
         "bdi_mae",
-        "risk_recall",
         "avg_turns_to_decision",
     ]
     aggregate = _aggregate([row.get("metrics", {}) for row in per_seed], metric_keys)
@@ -139,9 +135,7 @@ def run_eval_multi_seed(
     print(
         "multi-seed summary: "
         f"headline_f1_mean={aggregate['headline_f1']['mean']:.4f} "
-        f"binary_f1_mean={aggregate['binary_f1']['mean']:.4f} "
         f"item_f1_mean={aggregate['item_f1_macro_at_1']['mean']:.4f}"
     )
     print(f"Wrote: {summary_path}")
     return summary
-

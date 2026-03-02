@@ -64,17 +64,26 @@ def risk_sentinel(state: AgentState) -> Dict:
         turn_id = int(getattr(turn_state, "turn_id", turn_id) or turn_id)
 
     if has_new_persona_input and text.strip():
-        risk_prob, spans, reason, short_circuit = _risk_assessment(text)
+        risk_prob, spans, reason, has_active_cue = _risk_assessment(text)
     else:
         risk_prob = prior_prob
         spans = list(getattr(prior_risk, "evidence_spans", []) if prior_risk else [])
         reason = str(getattr(prior_risk, "reason", "carry_forward") if prior_risk else "carry_forward")
-        short_circuit = bool(getattr(prior_risk, "short_circuit", False) if prior_risk else False)
+        has_active_cue = False
 
     flag_threshold = float(os.getenv("RISK_SENTINEL_FLAG_THRESHOLD", "0.65"))
     short_circuit_threshold = float(os.getenv("RISK_SENTINEL_SHORTCIRCUIT_THRESHOLD", "0.95"))
+    active_short_circuit_override = os.getenv("RISK_SENTINEL_ACTIVE_SHORTCIRCUIT", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
     risk_flag = bool(risk_prob >= flag_threshold) or prior_flag
-    short_circuit = bool(short_circuit or (risk_prob >= short_circuit_threshold))
+    short_circuit = bool(risk_prob >= short_circuit_threshold)
+    if active_short_circuit_override and has_active_cue:
+        short_circuit = True
 
     risk = RiskState(
         risk_prob=max(0.0, min(1.0, risk_prob)),
@@ -91,6 +100,8 @@ def risk_sentinel(state: AgentState) -> Dict:
         "risk_prob": round(risk.risk_prob, 4),
         "risk_flag": risk.risk_flag,
         "short_circuit": risk.short_circuit,
+        "has_active_cue": bool(has_active_cue),
+        "active_short_circuit_override": bool(active_short_circuit_override),
         "reason": risk.reason,
         "evidence_spans": list(risk.evidence_spans),
     }

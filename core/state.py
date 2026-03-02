@@ -263,6 +263,9 @@ class AgentState(TypedDict):
     trace_log: Annotated[List[dict], operator.add]
     failure_counters: Dict[str, int]
     empty_evidence_streak: int
+    new_items_this_turn: int
+    recent_new_items_window: List[int]
+    recent_nonempty_window: List[int]
     route_debug: str
     specialist_debug: str
     stop_debug: str
@@ -344,6 +347,9 @@ def build_initial_state(persona_id: Optional[str] = None) -> AgentState:
         trace_log=[],
         failure_counters={},
         empty_evidence_streak=0,
+        new_items_this_turn=0,
+        recent_new_items_window=[],
+        recent_nonempty_window=[],
         predicted_label=None,
         predicted_bdi_score=None,
         predicted_key_symptoms=[],
