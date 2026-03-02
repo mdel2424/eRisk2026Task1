@@ -90,8 +90,13 @@ def _coerce_probe_intent(probe_intent: Dict[str, object] | None) -> Dict[str, ob
 def _item_sentence(item_id: int, score: int) -> str:
     clipped = max(0, min(3, int(score)))
     if clipped == 0:
-        name = BDI_ITEM_NAMES.get(item_id, "general stress").lower()
-        return f"that area feels mostly manageable, with occasional stress around {name}"
+        neutral_zero_bank = [
+            "that area has felt mostly stable lately",
+            "that has not stood out as a major issue recently",
+            "overall that part has been manageable without major change",
+            "I have not noticed strong symptoms in that area lately",
+        ]
+        return neutral_zero_bank[(item_id - 1) % len(neutral_zero_bank)]
 
     bank = ITEM_SENTENCE_BANK.get(item_id)
     if bank:

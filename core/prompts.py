@@ -49,8 +49,8 @@ Return STRICT JSON ONLY, exactly one top-level object with this schema:
 {{
   "evidence": [
     {{
-      "item_id": 1,
-      "symptom_name": "Sadness",
+      "item_id": 19,
+      "symptom_name": "Concentration Difficulty",
       "direction": "increase|decrease|neutral",
       "intensity": 0.0,
       "confidence": 0.0,
@@ -64,8 +64,12 @@ Constraints:
 - If no credible evidence, return {{ "evidence": [] }}.
 - item_id must be 1..21.
 - symptom_name must be the exact canonical BDI label for the given item_id (no alternative labels).
+- If symptom wording is non-canonical, map it to the closest canonical BDI label; do not invent new labels.
 - intensity in [0, 3], confidence in [0, 1].
 - use only BDI-II symptom labels.
+- Do not default to item 1 (Sadness) when evidence is vague or unspecific.
+- Item 1 increase requires explicit mood-affect language (sad/down/low mood/tearful/crying/numb or emotionally flat).
+- Fatigue/sleep/concentration-only evidence should map to their specific items, not item 1.
 - Output MUST start with "{{" and end with "}}".
 - Do not wrap output in markdown fences.
 - Do not add commentary, notes, explanations, headings, or trailing text.

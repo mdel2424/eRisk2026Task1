@@ -206,6 +206,10 @@ def write_eval_artifacts(
     extract_source_distribution: Counter[str],
     extract_recovery_distribution: Counter[str],
     route_policy_distribution: Counter[str],
+    duplicate_evidence_rows_total: int,
+    contradiction_evidence_rows_total: int,
+    support_increments_total: int,
+    method_weight_usage: Counter[str],
     post_floor_new_items_total: int,
     post_floor_nonempty_turns_total: int,
     post_floor_turns_total: int,
@@ -225,6 +229,7 @@ def write_eval_artifacts(
     effective_eval_mode: str,
     prompt_version: str,
     seed: int,
+    split_seed: int,
     persona_count: int,
     processed_profiles: int,
     trace_level: str,
@@ -295,6 +300,15 @@ def write_eval_artifacts(
         float(run_failure_counters.get("extract_json_parse_fail", 0)) / float(turns_total) if turns_total else 0.0
     )
     extract_empty_rate = float(run_failure_counters.get("extract_empty", 0)) / float(turns_total) if turns_total else 0.0
+    duplicate_evidence_rows_rate = (
+        float(duplicate_evidence_rows_total) / float(turns_total) if turns_total else 0.0
+    )
+    contradiction_evidence_rows_rate = (
+        float(contradiction_evidence_rows_total) / float(turns_total) if turns_total else 0.0
+    )
+    support_increments_rate = (
+        float(support_increments_total) / float(turns_total) if turns_total else 0.0
+    )
     avg_new_items_after_min_turns = (
         float(post_floor_new_items_total) / float(post_floor_turns_total) if post_floor_turns_total else 0.0
     )
@@ -319,6 +333,7 @@ def write_eval_artifacts(
             "eval_mode_effective": effective_eval_mode,
             "prompt_version": prompt_version,
             "personas_requested": persona_count,
+            "split_seed": split_seed,
             "profiles_evaluated": processed_profiles,
             "turns_total": turns_total,
             "trace_level": trace_level,
@@ -333,7 +348,14 @@ def write_eval_artifacts(
         "extract_empty_rate": round(extract_empty_rate, 4),
         "extract_source_distribution": dict(extract_source_distribution),
         "extract_recovery_distribution": dict(extract_recovery_distribution),
+        "method_weight_usage": dict(method_weight_usage),
         "extract_parse_fail_log_count": len(extract_parse_fail_log_entries),
+        "duplicate_evidence_rows_total": int(duplicate_evidence_rows_total),
+        "duplicate_evidence_rows_rate": round(duplicate_evidence_rows_rate, 4),
+        "contradiction_evidence_rows_total": int(contradiction_evidence_rows_total),
+        "contradiction_evidence_rows_rate": round(contradiction_evidence_rows_rate, 4),
+        "support_increments_total": int(support_increments_total),
+        "support_increments_rate": round(support_increments_rate, 4),
         "confidence_semantics": (
             "global_confidence uses support+coverage saturation with near-monotonic smoothing: "
             "item_conf=1-exp(-support/CONF_SUPPORT_TAU); "
@@ -382,6 +404,7 @@ def write_eval_artifacts(
             "mode": "eval",
             "personas": persona_count,
             "seed": seed,
+            "split_seed": split_seed,
             "eval_mode": requested_eval_mode,
             "prompt_version": prompt_version,
             "save_diagnostics": save_diagnostics,
@@ -425,8 +448,22 @@ def write_eval_artifacts(
             "EVIDENCE_LLM_ON_LEXICAL_HIT": os.getenv("EVIDENCE_LLM_ON_LEXICAL_HIT", "0"),
             "EXTRACTOR_JSON_KEY_ALIASES": os.getenv("EXTRACTOR_JSON_KEY_ALIASES", "1"),
             "EXTRACTOR_STRICT_SCHEMA_COERCE": os.getenv("EXTRACTOR_STRICT_SCHEMA_COERCE", "1"),
-            "EXTRACTOR_PARSE_SNIPPET_TRACE": os.getenv("EXTRACTOR_PARSE_SNIPPET_TRACE", "1"),
             "EXTRACTOR_MIN_RECORDS_TARGET": os.getenv("EXTRACTOR_MIN_RECORDS_TARGET", "1"),
+            "EXTRACT_ITEM1_STRICT_GATE": os.getenv("EXTRACT_ITEM1_STRICT_GATE", "1"),
+            "EXTRACT_ITEM1_WEAK_MAX_CONF": os.getenv("EXTRACT_ITEM1_WEAK_MAX_CONF", "0.55"),
+            "EXTRACT_ITEM1_WEAK_MAX_INTENSITY": os.getenv("EXTRACT_ITEM1_WEAK_MAX_INTENSITY", "1.5"),
+            "BELIEF_WEIGHT_LLM_EXTRACTOR": os.getenv("BELIEF_WEIGHT_LLM_EXTRACTOR", "1.00"),
+            "BELIEF_WEIGHT_LLM_SALVAGE": os.getenv("BELIEF_WEIGHT_LLM_SALVAGE", "0.60"),
+            "BELIEF_WEIGHT_LEXICAL_FALLBACK": os.getenv("BELIEF_WEIGHT_LEXICAL_FALLBACK", "0.45"),
+            "BELIEF_WEIGHT_LEXICAL_PREFILTER": os.getenv("BELIEF_WEIGHT_LEXICAL_PREFILTER", "0.40"),
+            "BELIEF_WEIGHT_DEFAULT": os.getenv("BELIEF_WEIGHT_DEFAULT", "0.50"),
+            "BELIEF_DUPLICATE_WEIGHT": os.getenv("BELIEF_DUPLICATE_WEIGHT", "0.15"),
+            "BELIEF_DECAY_START_SUPPORT": os.getenv("BELIEF_DECAY_START_SUPPORT", "2"),
+            "BELIEF_DECAY_TAU": os.getenv("BELIEF_DECAY_TAU", "2.0"),
+            "BELIEF_CONTRADICTION_WEIGHT": os.getenv("BELIEF_CONTRADICTION_WEIGHT", "0.50"),
+            "BELIEF_CONTRADICTION_NEUTRAL_BLEND": os.getenv("BELIEF_CONTRADICTION_NEUTRAL_BLEND", "0.35"),
+            "BELIEF_SUPPORT_MIN_WEIGHT": os.getenv("BELIEF_SUPPORT_MIN_WEIGHT", "0.45"),
+            "BELIEF_MEMORY_PER_ITEM": os.getenv("BELIEF_MEMORY_PER_ITEM", "24"),
             "FORCE_RISK_PROBE_TURN": os.getenv("FORCE_RISK_PROBE_TURN", "3"),
             "FORCE_SOMATIC_PROBE_TURN": os.getenv("FORCE_SOMATIC_PROBE_TURN", "4"),
             "SUPERVISOR_EVIDENCE_MIN_SCORE": os.getenv("SUPERVISOR_EVIDENCE_MIN_SCORE", "0.30"),

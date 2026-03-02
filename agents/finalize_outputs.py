@@ -110,17 +110,6 @@ def _impute_missing_item_score(
     else:
         imputed_float = 0.0
 
-    for module_id in candidates:
-        module_row = module_stats.get(module_id)
-        if not module_row:
-            continue
-        coverage = float(module_row.get("coverage", 0.0))
-        module_mean = float(module_row.get("module_mean", 0.0))
-        if coverage >= 0.66 and module_mean >= 2.5:
-            imputed_float = max(imputed_float, 2.0)
-        if coverage >= 0.80 and module_mean >= 2.8:
-            imputed_float = max(imputed_float, 2.5)
-
     return _clamp(imputed_float, 0.0, 3.0), contributions
 
 

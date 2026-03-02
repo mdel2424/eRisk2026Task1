@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import random
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List
@@ -61,6 +62,7 @@ def run_eval(
     max_api_calls: int,
     trace_level: str,
     fit_calibrator_policy: str,
+    randomize_eval_split: bool = False,
     output_dir: str | Path = "outputs",
 ) -> Dict[str, Any]:
     from graph import app as graph_app
@@ -148,7 +150,14 @@ def run_eval(
             + " | ".join(f"{key}={value}" for key, value in risk_policy.items())
         )
 
-    splits = build_split_profiles(count=persona_count, seed=seed)
+    split_seed = seed
+    if randomize_eval_split:
+        split_seed = random.SystemRandom().randint(1, 2_147_483_647)
+    if live_status:
+        split_mode = "random_per_run" if randomize_eval_split else "deterministic"
+        print(f"Eval split: mode={split_mode} | split_seed={split_seed}")
+
+    splits = build_split_profiles(count=persona_count, seed=seed, split_seed=split_seed)
     train_profiles = splits["synthetic_train"]
     val_profiles = splits["synthetic_val"]
     test_profiles = splits["synthetic_test"]
@@ -156,6 +165,7 @@ def run_eval(
     manifest_payload = _manifest_payload(
         persona_count=persona_count,
         seed=seed,
+        split_seed=split_seed,
         generator_version=generator_version,
         train_profiles=train_profiles,
         val_profiles=val_profiles,
@@ -220,6 +230,10 @@ def run_eval(
     extract_source_distribution: Counter[str] = Counter()
     extract_recovery_distribution: Counter[str] = Counter()
     extract_parse_fail_log_entries: List[Dict[str, Any]] = []
+    duplicate_evidence_rows_total = 0
+    contradiction_evidence_rows_total = 0
+    support_increments_total = 0
+    method_weight_usage: Counter[str] = Counter()
     turns_total = 0
     evidence_turns_nonempty = 0
     evidence_records_total = 0
@@ -315,6 +329,16 @@ def run_eval(
                     mode = str(belief_trace.get("calibrator_mode", "")).strip()
                     if mode:
                         calibrator_mode_counts[mode] += 1
+                    duplicate_evidence_rows_total += int(belief_trace.get("duplicate_rows_count", 0) or 0)
+                    contradiction_evidence_rows_total += int(belief_trace.get("contradiction_rows_count", 0) or 0)
+                    support_increments_total += int(belief_trace.get("support_increments_count", 0) or 0)
+                    method_counts = belief_trace.get("method_counts", {})
+                    if isinstance(method_counts, dict):
+                        for method_name, count in method_counts.items():
+                            try:
+                                method_weight_usage[str(method_name)] += int(count)
+                            except (TypeError, ValueError):
+                                continue
                 extract_trace = turn_trace.get("extract_evidence", {})
                 if isinstance(extract_trace, dict):
                     source = str(extract_trace.get("source", "")).strip()
@@ -369,8 +393,8 @@ def run_eval(
                                 "schema_coerce_used_count": int(extract_trace.get("schema_coerce_used_count", 0) or 0),
                                 "salvage_used": bool(extract_trace.get("salvage_used", False)),
                                 "fallback_used": bool(extract_trace.get("fallback_used", False)),
-                                "parse_snippet": str(extract_trace.get("parse_snippet", "") or ""),
-                                "latest_message_snippet": str(extract_trace.get("latest_message_snippet", "") or ""),
+                                "raw_extractor_payload": str(extract_trace.get("raw_extractor_payload", "") or ""),
+                                "latest_message": str(extract_trace.get("latest_message", "") or ""),
                                 "route_node": (
                                     str(route_decision.get("chosen_node", "")).strip()
                                     if isinstance(route_decision, dict)
@@ -429,6 +453,10 @@ def run_eval(
             extract_source_distribution=extract_source_distribution,
             extract_recovery_distribution=extract_recovery_distribution,
             route_policy_distribution=route_policy_distribution,
+            duplicate_evidence_rows_total=duplicate_evidence_rows_total,
+            contradiction_evidence_rows_total=contradiction_evidence_rows_total,
+            support_increments_total=support_increments_total,
+            method_weight_usage=method_weight_usage,
             post_floor_new_items_total=post_floor_new_items_total,
             post_floor_nonempty_turns_total=post_floor_nonempty_turns_total,
             post_floor_turns_total=post_floor_turns_total,
@@ -448,6 +476,7 @@ def run_eval(
             effective_eval_mode=effective_eval_mode,
             prompt_version=prompt_version,
             seed=seed,
+            split_seed=split_seed,
             persona_count=persona_count,
             processed_profiles=processed_profiles,
             trace_level=trace_level,
@@ -496,6 +525,7 @@ def run_eval(
         "output_dir": str(output_dir),
         "profiles_evaluated": processed_profiles,
         "expected_eval_profiles": len(eval_profiles),
+        "split_seed": split_seed,
         "route_distribution": dict(route_distribution),
         "failure_counters": dict(run_failure_counters),
     }

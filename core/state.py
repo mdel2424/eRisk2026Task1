@@ -92,6 +92,9 @@ class LikelihoodEvidence(BaseModel):
     extract_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     evidence_type: str = "llm_extractor"
     symptom_name: str = ""
+    direction: Literal["increase", "decrease", "neutral"] = "neutral"
+    evidence_id: str = ""
+    method_weight_hint: float = Field(default=0.0, ge=0.0, le=2.0)
 
     @field_validator("likelihood")
     @classmethod
@@ -242,6 +245,8 @@ class AgentState(TypedDict):
     latest_turn_evidence: List[EvidenceRecord]
     evidence_log: Annotated[List[EvidenceRecord], operator.add]
     item_beliefs: Dict[int, ItemBelief]
+    item_evidence_memory: Dict[int, List[str]]
+    item_direction_tally: Dict[int, Dict[str, int]]
 
     # Compatibility predictions
     predicted_label: Optional[str]
@@ -364,6 +369,8 @@ def build_initial_state(persona_id: Optional[str] = None) -> AgentState:
         latest_turn_likelihoods=[],
         latest_turn_evidence=[],
         item_beliefs=beliefs,
+        item_evidence_memory={},
+        item_direction_tally={},
         route_history=[],
         stop_history=[],
         global_confidence=0.0,

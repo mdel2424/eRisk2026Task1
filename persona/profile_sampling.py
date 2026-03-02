@@ -442,11 +442,13 @@ def assign_splits(
 def build_split_profiles(
     count: int,
     seed: int,
+    split_seed: int | None = None,
     ratios: tuple[float, float, float] = (0.6, 0.2, 0.2),
 ) -> Dict[str, List[PersonaProfile]]:
     generator_version = os.getenv("SIM_GENERATOR_VERSION", "sim_v3").strip() or "sim_v3"
     pool = generate_persona_pool(count=count, seed=seed, generator_version=generator_version)
-    split_profiles = assign_splits(pool=pool, seed=seed, ratios=ratios)
+    effective_split_seed = int(split_seed) if split_seed is not None else int(seed)
+    split_profiles = assign_splits(pool=pool, seed=effective_split_seed, ratios=ratios)
 
     enforce_disjoint = os.getenv("SIM_TEMPLATE_DISJOINT_ENFORCE", "1").strip().lower() in {
         "1",

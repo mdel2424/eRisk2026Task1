@@ -79,6 +79,7 @@ def main() -> None:
             max_api_calls=args.max_api_calls,
             trace_level=args.trace_level,
             fit_calibrator_policy=args.fit_calibrator,
+            randomize_eval_split=True,
         )
     elif args.mode == "eval_multi":
         run_eval_multi_seed(

@@ -103,7 +103,15 @@ def _snapshot_turn(state: Dict) -> Dict:
     if isinstance(turn_trace, dict):
         turn_trace = {
             key: turn_trace.get(key)
-            for key in ("supervisor", "specialist", "extract_evidence", "update_beliefs", "stop", "persona_handoff")
+            for key in (
+                "supervisor",
+                "specialist",
+                "extract_evidence",
+                "belief_update",
+                "update_beliefs",
+                "stop",
+                "persona_handoff",
+            )
             if key in turn_trace
         }
     return {

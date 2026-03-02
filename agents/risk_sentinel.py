@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Dict, List, Tuple
 
 from core.state import AgentState, RiskState
@@ -29,15 +30,43 @@ PASSIVE_RISK_CUES = {
 
 
 
-def _match_cues(text: str, cues: set[str]) -> List[str]:
+def _cue_is_negated(text: str, cue: str) -> bool:
     lowered = text.lower()
-    return [cue for cue in cues if cue in lowered]
+    cue_lower = cue.lower()
+    idx = lowered.find(cue_lower)
+    if idx < 0:
+        return False
+    prefix = lowered[max(0, idx - 96) : idx]
+    local = lowered[max(0, idx - 24) : idx + len(cue_lower) + 24]
+    if re.search(r"\b(?:can(?:not|'t)\s+(?:stop|shake))\b", local):
+        return False
+    if re.search(r"\bnot\s+only\b", prefix):
+        return False
+    negation_re = re.compile(
+        r"\b(?:no|not|never|without|hardly|rarely|don'?t|didn'?t|haven'?t|hasn'?t|"
+        r"won'?t|cannot|can'?t|isn'?t|aren'?t|wasn'?t|weren'?t)\b"
+    )
+    return bool(negation_re.search(prefix))
+
+
+def _match_cues(text: str, cues: set[str]) -> Tuple[List[str], List[str]]:
+    lowered = text.lower()
+    positive_hits: List[str] = []
+    negated_hits: List[str] = []
+    for cue in cues:
+        if cue not in lowered:
+            continue
+        if _cue_is_negated(lowered, cue):
+            negated_hits.append(cue)
+        else:
+            positive_hits.append(cue)
+    return positive_hits, negated_hits
 
 
 
 def _risk_assessment(text: str) -> Tuple[float, List[str], str, bool]:
-    active_hits = _match_cues(text, ACTIVE_RISK_CUES)
-    passive_hits = _match_cues(text, PASSIVE_RISK_CUES)
+    active_hits, active_negated = _match_cues(text, ACTIVE_RISK_CUES)
+    passive_hits, passive_negated = _match_cues(text, PASSIVE_RISK_CUES)
     hits = active_hits + passive_hits
 
     if active_hits:
@@ -46,6 +75,8 @@ def _risk_assessment(text: str) -> Tuple[float, List[str], str, bool]:
         return 0.86, hits, "multiple passive death ideation cues", False
     if len(passive_hits) == 1:
         return 0.68, hits, "passive death ideation cue", False
+    if active_negated or passive_negated:
+        return 0.01, [], "negated risk cue", False
     return 0.02, [], "no lexical risk cue", False
 
 

@@ -37,7 +37,7 @@ Simulator behavior defaults:
 
 ```bash
 python -m app.cli --mode interactive --personas 10 --seed 42 --interactive_persona_index 0
-python -m app.cli --mode eval --personas 10 --seed 42 --eval_mode mixed_holdout --prompt_version v1 --save_diagnostics true --max_api_calls 380 --trace_level compact --fit_calibrator auto
+python -m app.cli --mode eval --personas 10 --seed 42 --eval_mode mixed_holdout --prompt_version v1 --save_diagnostics true --max_api_calls 500 --trace_level compact --fit_calibrator auto
 python -m app.cli --mode eval_multi --personas 30 --multi_seeds 42,43,44 --eval_mode mixed_holdout --prompt_version v1 --save_diagnostics false --max_api_calls 380 --trace_level compact --fit_calibrator auto
 python -m app.cli --mode tune --tune_personas 30 --tune_seed 42 --tune_max_api_calls 800 --tune_trace_level off --fit_calibrator auto
 ```
@@ -46,6 +46,9 @@ python -m app.cli --mode tune --tune_personas 30 --tune_seed 42 --tune_max_api_c
 - press Enter to alternate `detector -> persona -> detector -> ...`
 - each step prints compact pipeline flow (ingest, risk, extraction, belief/policy, route, stop, usage)
 - transcript stays natural-language only; probe intent is shown from hidden handoff metadata
+
+`eval` randomizes holdout split membership per run (same generated pool, different val/test IDs) to improve persona coverage across repeated local runs.  
+`eval_multi`/`tune` remain deterministic by seed.
 
 By default, eval prints only:
 - `item_f1`
@@ -80,7 +83,7 @@ Set `CLI_VERBOSE=1` to print full backend/run summaries to stdout.
 - `outputs/results_run_local.json`
 - `outputs/metrics_run_local.json`
 - `outputs/error_report_run_local.json` (per-item/family error analysis + worst personas)
-- `outputs/extract_parse_fail_log_run_local.json` (per-turn extractor parse-fail debug records with parser error kind/message, balance diagnostics, and snippets)
+- `outputs/extract_parse_fail_log_run_local.json` (per-turn extractor parse-fail debug records with parser error kind/message, balance diagnostics, full raw extractor payload, and full persona message)
 - `outputs/failure_report_run_local.json`
 - `outputs/diagnostics_run_local.json` (if enabled)
 - `outputs/config_used.json`
@@ -93,7 +96,9 @@ Set `CLI_VERBOSE=1` to print full backend/run summaries to stdout.
 Main tuning knobs live in `.env.example`:
 - stop policy: `MIN_TURNS`, `MAX_TURNS`, `STOP_CONFIDENCE`
 - confidence model: `CONF_SUPPORT_TAU`, `CONF_DEPTH_WEIGHT`, `CONF_COVERAGE_WEIGHT`, `CONF_UP_ALPHA`, `CONF_DECAY_STREAK_START`, `CONF_DECAY_PER_TURN`, `CONF_DECAY_MAX`, `CONF_MAX_DROP_PER_TURN`
-- extractor robustness: `EXTRACTOR_JSON_KEY_ALIASES`, `EXTRACTOR_STRICT_SCHEMA_COERCE`, `EXTRACTOR_PARSE_SNIPPET_TRACE`, `EXTRACTOR_MIN_RECORDS_TARGET`
+- extractor robustness: `EXTRACTOR_JSON_KEY_ALIASES`, `EXTRACTOR_STRICT_SCHEMA_COERCE`, `EXTRACTOR_MIN_RECORDS_TARGET`
+- item-1 sadness guard: `EXTRACT_ITEM1_STRICT_GATE`, `EXTRACT_ITEM1_WEAK_MAX_CONF`, `EXTRACT_ITEM1_WEAK_MAX_INTENSITY`
+- belief debiasing: `BELIEF_WEIGHT_LLM_EXTRACTOR`, `BELIEF_WEIGHT_LLM_SALVAGE`, `BELIEF_WEIGHT_LEXICAL_FALLBACK`, `BELIEF_WEIGHT_LEXICAL_PREFILTER`, `BELIEF_WEIGHT_DEFAULT`, `BELIEF_DUPLICATE_WEIGHT`, `BELIEF_DECAY_START_SUPPORT`, `BELIEF_DECAY_TAU`, `BELIEF_CONTRADICTION_WEIGHT`, `BELIEF_CONTRADICTION_NEUTRAL_BLEND`, `BELIEF_SUPPORT_MIN_WEIGHT`, `BELIEF_MEMORY_PER_ITEM`
 - extractor generation budget: `DETECTOR_EXTRACTOR_MAX_NEW_TOKENS`, `DETECTOR_EXTRACTOR_TEMPERATURE`, `DETECTOR_EXTRACTOR_TOP_P`
 - supervisor routing: `SUPERVISOR_EVIDENCE_MIN_SCORE`, `SUPERVISOR_EVIDENCE_RISK_THRESHOLD`, `SUPERVISOR_ESCAPE_EMPTY_STREAK`
 - simulator style: `SIM_HEDGE_RATE`, `SIM_NORMALIZATION_RATE`, `SIM_CONTEXT_ANCHOR_RATE`, `SIM_DIRECT_ANSWER_RATE`
@@ -109,7 +114,8 @@ Default stop behavior:
 Output semantics:
 - `results_run_local.json`: includes `item-scores` for all 21 BDI items (`"1"`..`"21"`, values `0..3`) in addition to `bdi-score` and `key-symptoms`.
 - `metrics_run_local.json`: primary quality metrics include `headline_f1`, `item_f1_macro_at_1`, and `item_mae`.
-- `failure_report_run_local.json`: includes `extract_parse_fail_rate`, `extract_empty_rate`, extractor source/recovery distributions, post-floor productivity summaries, and observed-item blend counters.
+- `failure_report_run_local.json`: includes `extract_parse_fail_rate`, `extract_empty_rate`, extractor source/recovery distributions, post-floor productivity summaries, observed-item blend counters, duplicate/contradiction evidence rates, support increment rate, and method-weight usage.
+- extractor applies a strict item-1 guard for LLM-derived rows: unsupported sadness-increase rows are dropped, weak sadness signals are confidence/intensity-clamped.
 - binary depressed/control scoring is deprecated in local evaluation and no longer used for ranking/objective.
 - `symptom_f1_at_4` is kept for compatibility and aliases `item_f1_macro_at_1`.
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -31,9 +32,47 @@ EXTRACTOR_KEY_ALIASES = {
     "rationale": "reason",
 }
 
+METHOD_WEIGHT_HINTS = {
+    "llm_extractor": 1.00,
+    "llm_salvage": 0.60,
+    "lexical_fallback": 0.45,
+    "lexical_prefilter": 0.40,
+}
+
+ITEM1_STRONG_PATTERNS = (
+    re.compile(r"\bfeel(?:ing)?\s+sad\b"),
+    re.compile(r"\bfelt\s+sad\b"),
+    re.compile(r"\blow\s+mood\b"),
+    re.compile(r"\bfeeling\s+down\b"),
+    re.compile(r"\btearful\b"),
+    re.compile(r"\bcr(?:y|ies|ied|ying)\b"),
+    re.compile(r"\bemotionally\s+flat\b"),
+    re.compile(r"\bemotionally\s+numb\b"),
+)
+
+ITEM1_WEAK_PATTERNS = (
+    re.compile(r"\bbeen\s+down\b"),
+    re.compile(r"\bmood\s+down\b"),
+    re.compile(r"\bkind\s+of\s+flat\b"),
+    re.compile(r"\bfeels?\s+flat\b"),
+    re.compile(r"\bfeels?\s+numb\b"),
+)
+
 
 def _env_bool(name: str, default: str = "0") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, float(value)))
 
 
 
@@ -238,7 +277,7 @@ def _coerce_schema_defaults(
         return normalized, coerce_count
 
     defaults: Dict[str, Any] = {
-        "direction": "increase",
+        "direction": "neutral",
         "intensity": 1.0,
         "confidence": 0.4,
         "evidence_text": "",
@@ -269,13 +308,6 @@ def _payload_items(parsed: Any) -> tuple[List[Any], int]:
         items = parsed
     return items, schema_coerce_used
 
-
-def _parse_snippet(text: str, limit: int = 200) -> str:
-    compact = " ".join(str(text or "").split())
-    return compact[:limit]
-
-
-
 def _sentence_for_cue(text: str, cue: str) -> str:
     chunks = [part.strip() for part in text.replace("!", ".").replace("?", ".").split(".")]
     lower_cue = cue.lower()
@@ -285,28 +317,150 @@ def _sentence_for_cue(text: str, cue: str) -> str:
     return text[:220].strip()
 
 
+def _normalize_evidence_text_for_id(text: str) -> str:
+    lowered = str(text or "").lower()
+    lowered = re.sub(r"[^a-z0-9\s]", " ", lowered)
+    return re.sub(r"\s+", " ", lowered).strip()
+
+
+def _evidence_id(record: EvidenceRecord) -> str:
+    normalized_text = _normalize_evidence_text_for_id(record.evidence_text)
+    base = f"{int(record.item_id)}|{str(record.direction)}|{normalized_text}"
+    return hashlib.sha1(base.encode("utf-8")).hexdigest()[:16]
+
+
+def _has_explicit_sadness_signal(text: str) -> str:
+    normalized = " ".join(str(text or "").lower().split())
+    if not normalized:
+        return "none"
+    for pattern in ITEM1_STRONG_PATTERNS:
+        if pattern.search(normalized):
+            return "strong"
+    for pattern in ITEM1_WEAK_PATTERNS:
+        if pattern.search(normalized):
+            return "weak"
+    return "none"
+
+
+def _is_item1_llm_candidate(record: EvidenceRecord) -> bool:
+    if int(record.item_id) != 1:
+        return False
+    if str(record.direction).strip().lower() != "increase":
+        return False
+    return str(record.method).strip().lower() in {"llm_extractor", "llm_salvage"}
+
+
+def _apply_item1_gate(
+    record: EvidenceRecord,
+    *,
+    latest_message: str,
+    strict_gate: bool,
+    weak_max_conf: float,
+    weak_max_intensity: float,
+) -> tuple[EvidenceRecord | None, str]:
+    signal = _has_explicit_sadness_signal(f"{record.evidence_text}\n{latest_message}")
+    if signal == "none":
+        if strict_gate:
+            return None, "dropped"
+        clamped = record.model_copy(
+            update={
+                "confidence": min(float(record.confidence), weak_max_conf),
+                "intensity": min(float(record.intensity), weak_max_intensity),
+            }
+        )
+        if (
+            float(clamped.confidence) < float(record.confidence)
+            or float(clamped.intensity) < float(record.intensity)
+        ):
+            return clamped, "soft_clamped"
+        return record, "kept"
+
+    if signal == "weak":
+        clamped = record.model_copy(
+            update={
+                "confidence": min(float(record.confidence), weak_max_conf),
+                "intensity": min(float(record.intensity), weak_max_intensity),
+            }
+        )
+        if (
+            float(clamped.confidence) < float(record.confidence)
+            or float(clamped.intensity) < float(record.intensity)
+        ):
+            return clamped, "soft_clamped"
+    return record, "kept"
+
+
+def _cue_direction(sentence: str, cue: str) -> str:
+    lowered_sentence = str(sentence or "").lower()
+    lowered_cue = str(cue or "").lower().strip()
+    if not lowered_sentence or not lowered_cue:
+        return "increase"
+
+    idx = lowered_sentence.find(lowered_cue)
+    if idx < 0:
+        return "increase"
+
+    prefix = lowered_sentence[max(0, idx - 96) : idx]
+    local = lowered_sentence[max(0, idx - 24) : idx + len(lowered_cue) + 24]
+
+    if re.search(r"\b(?:can(?:not|'t)\s+(?:stop|shake))\b", local):
+        return "increase"
+    if re.search(r"\bnot\s+only\b", prefix):
+        return "increase"
+
+    negation_re = re.compile(
+        r"\b(?:no|not|never|without|hardly|rarely|don'?t|didn'?t|haven'?t|hasn'?t|"
+        r"won'?t|cannot|can'?t|isn'?t|aren'?t|wasn'?t|weren'?t)\b"
+    )
+    if negation_re.search(prefix):
+        return "decrease"
+    return "increase"
+
+
 
 def _fallback_evidence_from_text(node_name: str, turn: int, text: str) -> List[EvidenceRecord]:
     lowered = text.lower()
     records: List[EvidenceRecord] = []
     for item_id, cues in LEXICAL_EVIDENCE_CUES.items():
-        hits = [cue for cue in cues if cue in lowered]
-        if not hits:
+        hit_rows: List[Tuple[str, str, str]] = []
+        for cue in cues:
+            if cue not in lowered:
+                continue
+            sentence = _sentence_for_cue(text, cue)
+            direction = _cue_direction(sentence, cue)
+            hit_rows.append((cue, sentence, direction))
+        if not hit_rows:
             continue
-        intensity = min(3.0, 1.0 + (0.35 * len(hits)))
-        confidence = min(0.90, 0.45 + (0.1 * len(hits)))
-        evidence_text = _sentence_for_cue(text, hits[0])
+
+        increase_hits = [row for row in hit_rows if row[2] == "increase"]
+        decrease_hits = [row for row in hit_rows if row[2] == "decrease"]
+
+        if increase_hits:
+            direction = "increase"
+            cue, evidence_text, _ = increase_hits[0]
+            hit_count = len(increase_hits)
+            intensity = min(3.0, 0.90 + (0.30 * hit_count))
+            confidence = min(0.82, 0.40 + (0.08 * hit_count))
+        elif decrease_hits:
+            direction = "decrease"
+            cue, evidence_text, _ = decrease_hits[0]
+            hit_count = len(decrease_hits)
+            intensity = min(3.0, 1.10 + (0.25 * hit_count))
+            confidence = min(0.90, 0.55 + (0.08 * hit_count))
+        else:
+            continue
+
         records.append(
             EvidenceRecord(
                 turn=turn,
                 node=node_name if node_name in {"somatic", "cognitive", "risk"} else "cognitive",
                 item_id=item_id,
                 symptom_name=BDI_ITEM_NAMES.get(item_id, f"Item {item_id}"),
-                direction="increase",
+                direction=direction,
                 intensity=float(intensity),
                 confidence=float(confidence),
                 evidence_text=evidence_text,
-                reason=f"lexical cue match: {', '.join(hits[:3])}",
+                reason=f"lexical cue match: {cue} ({direction})",
                 method="lexical_fallback",
             )
         )
@@ -539,7 +693,9 @@ def extract_likelihoods(state: AgentState) -> Dict:
     key_alias_used_count = 0
     schema_coerce_used_count = 0
     symptom_name_normalized_count = 0
-    parse_snippet = ""
+    item1_gate_kept_count = 0
+    item1_gate_dropped_count = 0
+    item1_gate_soft_clamped_count = 0
     parse_error_kind = ""
     parse_error_message = ""
     parse_error_line = 0
@@ -548,10 +704,13 @@ def extract_likelihoods(state: AgentState) -> Dict:
     parse_balance: Dict[str, Any] = {}
     llm_called = False
     llm_raw_text = ""
+    raw_payload_logged = ""
     llm_on_lexical_hit = _env_bool("EVIDENCE_LLM_ON_LEXICAL_HIT", "0")
     key_aliases_enabled = _env_bool("EXTRACTOR_JSON_KEY_ALIASES", "1")
     strict_schema_coerce = _env_bool("EXTRACTOR_STRICT_SCHEMA_COERCE", "1")
-    parse_snippet_trace = _env_bool("EXTRACTOR_PARSE_SNIPPET_TRACE", "1")
+    item1_strict_gate = _env_bool("EXTRACT_ITEM1_STRICT_GATE", "1")
+    item1_weak_max_conf = _clamp(_env_float("EXTRACT_ITEM1_WEAK_MAX_CONF", 0.55), 0.0, 1.0)
+    item1_weak_max_intensity = _clamp(_env_float("EXTRACT_ITEM1_WEAK_MAX_INTENSITY", 1.5), 0.0, 3.0)
     extractor_min_records_target = max(1, int(os.getenv("EXTRACTOR_MIN_RECORDS_TARGET", "1")))
 
     if latest_message.strip():
@@ -653,6 +812,22 @@ def extract_likelihoods(state: AgentState) -> Dict:
                             continue
                         record = _coerce_evidence_record(node_name, turn, normalized_item, latest_message)
                         if record is not None:
+                            if _is_item1_llm_candidate(record):
+                                gated_record, gate_action = _apply_item1_gate(
+                                    record,
+                                    latest_message=latest_message,
+                                    strict_gate=item1_strict_gate,
+                                    weak_max_conf=item1_weak_max_conf,
+                                    weak_max_intensity=item1_weak_max_intensity,
+                                )
+                                if gate_action == "dropped":
+                                    item1_gate_dropped_count += 1
+                                    continue
+                                if gate_action == "soft_clamped":
+                                    item1_gate_soft_clamped_count += 1
+                                else:
+                                    item1_gate_kept_count += 1
+                                record = gated_record
                             evidence_records.append(record)
                 else:
                     source = "llm_extractor_non_list_payload"
@@ -678,8 +853,7 @@ def extract_likelihoods(state: AgentState) -> Dict:
 
     if llm_called and raw_nonempty and not evidence_records:
         counters = bump_failure_counter(counters, "extract_json_parse_fail")
-        if parse_snippet_trace:
-            parse_snippet = _parse_snippet(llm_raw_text, limit=200)
+        raw_payload_logged = llm_raw_text
 
     if not evidence_records:
         counters = bump_failure_counter(counters, "extract_empty")
@@ -689,21 +863,24 @@ def extract_likelihoods(state: AgentState) -> Dict:
 
     likelihood_rows: List[LikelihoodEvidence] = []
     for record in evidence_records:
+        method = str(record.method or "llm_extractor")
         likelihood_rows.append(
             LikelihoodEvidence(
                 item_id=int(record.item_id),
                 likelihood=_likelihood_from_record(record),
                 spans=[record.evidence_text],
                 extract_confidence=float(record.confidence),
-                evidence_type=str(record.method),
+                evidence_type=method,
                 symptom_name=str(record.symptom_name),
+                direction=str(record.direction),
+                evidence_id=_evidence_id(record),
+                method_weight_hint=float(METHOD_WEIGHT_HINTS.get(method, 0.50)),
             )
         )
 
     trace_payload = {
         "turn": turn,
         "source": source,
-        "latest_message_snippet": _parse_snippet(latest_message, limit=220),
         "raw_nonempty": raw_nonempty,
         "json_parse_ok": json_parse_ok,
         "parse_error_kind": parse_error_kind,
@@ -723,14 +900,17 @@ def extract_likelihoods(state: AgentState) -> Dict:
         "key_alias_used_count": key_alias_used_count,
         "schema_coerce_used_count": schema_coerce_used_count,
         "symptom_name_normalized_count": symptom_name_normalized_count,
+        "item1_gate_kept_count": item1_gate_kept_count,
+        "item1_gate_dropped_count": item1_gate_dropped_count,
+        "item1_gate_soft_clamped_count": item1_gate_soft_clamped_count,
         "fallback_used": bool(fallback_records),
         "salvage_used": salvage_used,
         "salvage_items_count": salvage_items_count,
+        "raw_extractor_payload": raw_payload_logged,
+        "latest_message": latest_message if raw_payload_logged else "",
         "empty_streak": empty_streak,
         "has_new_persona_input": True,
     }
-    if parse_snippet:
-        trace_payload["parse_snippet"] = parse_snippet
     turn_trace = dict(state.get("turn_trace", {}))
     turn_trace["extract_likelihoods"] = trace_payload
     turn_trace["extract_evidence"] = trace_payload
