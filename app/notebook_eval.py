@@ -62,6 +62,8 @@ def _normalize_item_scores(raw_scores: Dict[Any, Any] | None) -> Dict[str, int]:
     source = dict(raw_scores or {})
     for item_id in range(1, 22):
         raw_value = source.get(str(item_id), source.get(item_id, 0))
+        if isinstance(raw_value, dict):
+            raw_value = raw_value.get("score", 0)
         try:
             value = int(raw_value or 0)
         except (TypeError, ValueError):

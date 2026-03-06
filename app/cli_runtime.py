@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List, Tuple
 
 from core.llm import LLMBudgetExceeded
@@ -91,14 +92,33 @@ def _run_detector_until_stop(
                 end="",
                 flush=True,
             )
-        try:
-            state = graph_app.invoke(state)
-        except LLMBudgetExceeded as exc:
-            state = _mark_budget_exceeded(state, "detector_graph", exc)
-            timeline.append(_snapshot_turn(state))
-            if live_status:
-                print()
-            return state, timeline
+        _graph_retries = 0
+        _graph_max_retries = 3
+        while True:
+            try:
+                state = graph_app.invoke(state)
+                break
+            except LLMBudgetExceeded as exc:
+                state = _mark_budget_exceeded(state, "detector_graph", exc)
+                timeline.append(_snapshot_turn(state))
+                if live_status:
+                    print()
+                return state, timeline
+            except RuntimeError as exc:
+                msg = str(exc).lower()
+                _transient = any(kw in msg for kw in (
+                    "connection reset", "connection aborted", "broken pipe",
+                    "timed out", "temporary failure", "network is unreachable",
+                    "502", "503", "504",
+                ))
+                if _transient and _graph_retries < _graph_max_retries:
+                    _graph_retries += 1
+                    _delay = 2.0 * _graph_retries
+                    if live_status:
+                        print(f"\n{progress_prefix} transient error, retrying turn in {_delay:.0f}s ({_graph_retries}/{_graph_max_retries}): {exc}")
+                    time.sleep(_delay)
+                    continue
+                raise
 
         if state.get("should_stop"):
             timeline.append(_snapshot_turn(state))

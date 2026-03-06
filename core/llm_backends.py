@@ -339,7 +339,7 @@ class OpenRouterChatLLM:
             method="POST",
         )
 
-        max_retries = max(0, int(os.getenv("OPENROUTER_MAX_RETRIES", "1")))
+        max_retries = max(0, int(os.getenv("OPENROUTER_MAX_RETRIES", "3")))
         retry_base_ms = max(0, int(os.getenv("OPENROUTER_RETRY_BASE_MS", "400")))
         retry_jitter_ms = max(0, int(os.getenv("OPENROUTER_RETRY_JITTER_MS", "250")))
 

@@ -48,6 +48,10 @@ ITEM1_STRONG_PATTERNS = (
     re.compile(r"\bcr(?:y|ies|ied|ying)\b"),
     re.compile(r"\bemotionally\s+flat\b"),
     re.compile(r"\bemotionally\s+numb\b"),
+    re.compile(r"\bfeel\b.{0,20}\bsad\b"),
+    re.compile(r"\bheaviness\b"),
+    re.compile(r"\bweighed\s+down\b"),
+    re.compile(r"\bheartbroken\b"),
 )
 
 ITEM1_WEAK_PATTERNS = (
@@ -56,6 +60,9 @@ ITEM1_WEAK_PATTERNS = (
     re.compile(r"\bkind\s+of\s+flat\b"),
     re.compile(r"\bfeels?\s+flat\b"),
     re.compile(r"\bfeels?\s+numb\b"),
+    re.compile(r"\bdown\s+lately\b"),
+    re.compile(r"\bfeeling\s+(?:low|blue|grey|gray)\b"),
+    re.compile(r"\bfeeling\s+empty\b"),
 )
 
 
@@ -708,7 +715,7 @@ def extract_likelihoods(state: AgentState) -> Dict:
     llm_on_lexical_hit = _env_bool("EVIDENCE_LLM_ON_LEXICAL_HIT", "0")
     key_aliases_enabled = _env_bool("EXTRACTOR_JSON_KEY_ALIASES", "1")
     strict_schema_coerce = _env_bool("EXTRACTOR_STRICT_SCHEMA_COERCE", "1")
-    item1_strict_gate = _env_bool("EXTRACT_ITEM1_STRICT_GATE", "1")
+    item1_strict_gate = _env_bool("EXTRACT_ITEM1_STRICT_GATE", "0")
     item1_weak_max_conf = _clamp(_env_float("EXTRACT_ITEM1_WEAK_MAX_CONF", 0.55), 0.0, 1.0)
     item1_weak_max_intensity = _clamp(_env_float("EXTRACT_ITEM1_WEAK_MAX_INTENSITY", 1.5), 0.0, 3.0)
     extractor_min_records_target = max(1, int(os.getenv("EXTRACTOR_MIN_RECORDS_TARGET", "1")))

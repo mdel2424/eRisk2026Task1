@@ -64,7 +64,9 @@ Return STRICT JSON ONLY, exactly one top-level object with this schema:
 }}
 
 Constraints:
-- If no credible evidence, return {{ "evidence": [] }}.
+- Return {{ "evidence": [] }} ONLY if the message is purely factual/neutral with zero emotional, behavioral, or somatic content.
+- Err on the side of extracting with lower confidence rather than omitting. Even hedged, tentative, or indirect signals should be extracted — use lower confidence (0.2-0.4) and intensity to reflect uncertainty.
+- Examples of extractable hedged signals: "things have been weird lately" → Loss of Pleasure (confidence 0.3); "I guess I haven't been eating much" → Changes in Appetite (confidence 0.4); "not the best week" → Sadness (confidence 0.25).
 - item_id must be 1..21.
 - symptom_name must be the exact canonical BDI label for the given item_id (no alternative labels).
 - If symptom wording is non-canonical, map it to the closest canonical BDI label; do not invent new labels.

@@ -68,22 +68,37 @@ FAMILY_SAMPLING_WEIGHTS: Dict[str, float] = {
     "control_neutral": 0.12,
 }
 
+# Clinical severity tiers matching standard settings.
+# General population 0-13, primary care 10-25, outpatient 18-35, inpatient 25-50.
+SEVERITY_TIERS: Dict[str, Dict[str, int | float]] = {
+    "minimal": {"target": 7, "jitter": 5, "floor": 0, "ceiling": 13},
+    "mild": {"target": 17, "jitter": 5, "floor": 10, "ceiling": 25},
+    "moderate": {"target": 26, "jitter": 5, "floor": 18, "ceiling": 35},
+    "severe": {"target": 38, "jitter": 6, "floor": 25, "ceiling": 50},
+}
+
+DEPRESSED_SEVERITY_WEIGHTS: Dict[str, float] = {
+    "minimal": 0.15,
+    "mild": 0.25,
+    "moderate": 0.35,
+    "severe": 0.25,
+}
+
 
 def _empty_scores() -> Dict[int, int]:
     return {item_id: 0 for item_id in range(1, 22)}
 
 
-def _sample_depressed_score(rng: random.Random) -> int:
-    severity = rng.choices(
-        population=["mild", "moderate", "severe"],
-        weights=[0.42, 0.42, 0.16],
-        k=1,
-    )[0]
+def _sample_item_score(rng: random.Random, severity: str) -> int:
+    """Sample a single BDI item score appropriate for the severity tier."""
+    if severity == "minimal":
+        return rng.choice([0, 0, 1, 1])
     if severity == "mild":
-        return rng.choice([1, 1, 2])
+        return rng.choice([1, 1, 1, 2])
     if severity == "moderate":
-        return rng.choice([1, 2, 2, 3])
-    return rng.choice([2, 2, 3, 3])
+        return rng.choices([1, 2, 3], weights=[0.35, 0.45, 0.20], k=1)[0]
+    # severe
+    return rng.choices([2, 3], weights=[0.45, 0.55], k=1)[0]
 
 
 def _env_float(name: str, default: float) -> float:
@@ -111,13 +126,6 @@ def _env_int(name: str, default: int, *, minimum: int | None = None, maximum: in
     if maximum is not None:
         value = min(int(maximum), value)
     return value
-
-
-def _depressed_target_config() -> tuple[int, int, float]:
-    target = _env_int("SIM_DEPRESSED_TARGET_BDI", 30, minimum=0, maximum=63)
-    jitter = _env_int("SIM_DEPRESSED_TARGET_JITTER", 4, minimum=0, maximum=16)
-    blend = _env_float("SIM_DEPRESSED_TARGET_BLEND", 0.85)
-    return target, jitter, blend
 
 
 def _style_defaults() -> Dict[str, float]:
@@ -166,12 +174,14 @@ def _adjust_depressed_total(
     target_total: int,
     target_jitter: int,
     target_blend: float,
+    floor: int = 0,
+    ceiling: int = 63,
 ) -> None:
     current_total = sum(int(value) for value in scores.values())
     sampled_target = target_total + (rng.randint(-target_jitter, target_jitter) if target_jitter > 0 else 0)
-    sampled_target = max(14, min(45, sampled_target))
+    sampled_target = max(floor, min(ceiling, sampled_target))
     desired_total = int(round((1.0 - target_blend) * current_total + target_blend * sampled_target))
-    desired_total = max(14, min(45, desired_total))
+    desired_total = max(floor, min(ceiling, desired_total))
 
     blueprint = FAMILY_BLUEPRINTS[family]
     core_items = [int(item_id) for item_id in blueprint["core_items"]]
@@ -216,31 +226,46 @@ def _adjust_depressed_total(
             delta += 1
 
 
-def _sample_bdi_scores_for_family(family: str, rng: random.Random) -> Dict[int, int]:
+def _sample_bdi_scores_for_family(family: str, rng: random.Random, severity: str = "moderate") -> Dict[int, int]:
     blueprint = FAMILY_BLUEPRINTS[family]
     depressed = bool(blueprint["depressed"])
     core_items = list(blueprint["core_items"])
     secondary_items = list(blueprint["secondary_items"])
     risk_prob = float(blueprint["risk_prob"])
+    tier = SEVERITY_TIERS[severity]
 
     scores = _empty_scores()
 
     if depressed:
+        # Core item activation varies by severity tier.
+        core_activation = {"minimal": 0.45, "mild": 0.70, "moderate": 1.0, "severe": 1.0}[severity]
         for item_id in core_items:
-            scores[item_id] = _sample_depressed_score(rng)
-        secondary_k = rng.randint(2, min(5, len(secondary_items)))
-        for item_id in rng.sample(secondary_items, k=secondary_k):
-            scores[item_id] = max(scores[item_id], rng.choice([1, 2, 2, 3]))
-        if rng.random() < risk_prob:
-            scores[9] = max(scores[9], rng.choice([1, 2, 3]))
-        target_total, target_jitter, target_blend = _depressed_target_config()
+            if rng.random() < core_activation:
+                scores[item_id] = _sample_item_score(rng, severity)
+
+        # Secondary items: fewer activated at lower severity.
+        sec_activation = {"minimal": 0.25, "mild": 0.40, "moderate": 0.65, "severe": 0.80}[severity]
+        for item_id in secondary_items:
+            if rng.random() < sec_activation:
+                scores[item_id] = max(scores[item_id], _sample_item_score(rng, severity))
+
+        # Risk signal: scaled by severity.
+        if severity in ("moderate", "severe"):
+            if rng.random() < risk_prob:
+                scores[9] = max(scores[9], rng.choice([1, 2, 3]))
+        elif severity == "mild":
+            if rng.random() < risk_prob * 0.3:
+                scores[9] = max(scores[9], 1)
+
         _adjust_depressed_total(
             scores,
             family=family,
             rng=rng,
-            target_total=target_total,
-            target_jitter=target_jitter,
-            target_blend=target_blend,
+            target_total=int(tier["target"]),
+            target_jitter=int(tier["jitter"]),
+            target_blend=0.85,
+            floor=int(tier["floor"]),
+            ceiling=int(tier["ceiling"]),
         )
     else:
         for item_id in core_items:
@@ -277,6 +302,9 @@ def generate_persona_pool(
     family_names = list(FAMILY_SAMPLING_WEIGHTS.keys())
     family_weights = [float(FAMILY_SAMPLING_WEIGHTS[name]) for name in family_names]
 
+    severity_names = list(DEPRESSED_SEVERITY_WEIGHTS.keys())
+    severity_weights = [float(DEPRESSED_SEVERITY_WEIGHTS[n]) for n in severity_names]
+
     profiles: List[PersonaProfile] = []
     for idx in range(1, count + 1):
         family = rng.choices(family_names, weights=family_weights, k=1)[0]
@@ -284,7 +312,12 @@ def generate_persona_pool(
         generation_seed = (seed * 1000) + idx
         local_rng = random.Random(generation_seed)
 
-        scores = _sample_bdi_scores_for_family(family, local_rng)
+        if bool(blueprint["depressed"]):
+            severity = local_rng.choices(severity_names, weights=severity_weights, k=1)[0]
+        else:
+            severity = "minimal"
+
+        scores = _sample_bdi_scores_for_family(family, local_rng, severity=severity)
         behavior = _jitter_behavior(dict(blueprint["behavior"]), local_rng)
 
         profiles.append(

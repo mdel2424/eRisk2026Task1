@@ -7,10 +7,33 @@ from core.state import AgentState, ControlState, StopDecision
 
 
 
+def _structural_stop_eligible(state: AgentState) -> Tuple[bool, float, float]:
+    """Check whether coverage and evidence depth are sufficient to stop."""
+    min_coverage = float(os.getenv("STOP_MIN_COVERAGE", "0.714"))
+    min_avg_support = float(os.getenv("STOP_MIN_AVG_SUPPORT", "1.0"))
+
+    beliefs = state.get("item_beliefs", {})
+    observed_supports = []
+    for item_id in range(1, 22):
+        belief = beliefs.get(item_id)
+        support = 0
+        if belief is not None:
+            try:
+                support = int(getattr(belief, "support_count", 0))
+            except (TypeError, ValueError):
+                support = 0
+        if support > 0:
+            observed_supports.append(support)
+
+    coverage = len(observed_supports) / 21.0
+    avg_support = (sum(observed_supports) / len(observed_supports)) if observed_supports else 0.0
+    eligible = coverage >= min_coverage and avg_support >= min_avg_support
+    return eligible, coverage, avg_support
+
+
 def compute_stop_decision(state: AgentState) -> Tuple[bool, str, float]:
     min_turns = int(os.getenv("MIN_TURNS", "20"))
     max_turns = int(os.getenv("MAX_TURNS", "40"))
-    stop_confidence = float(os.getenv("STOP_CONFIDENCE", "0.66"))
 
     turn_index = int(state.get("turn_index", 0))
     has_new_persona_input = bool(state.get("has_new_persona_input", False))
@@ -25,9 +48,11 @@ def compute_stop_decision(state: AgentState) -> Tuple[bool, str, float]:
         if turn_index >= max_turns:
             should_stop = True
             reason = "max_turns_reached"
-        elif turn_index >= min_turns and confidence >= stop_confidence:
-            should_stop = True
-            reason = "confidence_threshold_reached"
+        elif turn_index >= min_turns:
+            eligible, _, _ = _structural_stop_eligible(state)
+            if eligible:
+                should_stop = True
+                reason = "structural_coverage_met"
 
     return should_stop, reason, confidence
 
@@ -54,9 +79,14 @@ def stop_decider(state: AgentState) -> Dict:
         )
         stop_history_payload = [stop_record]
 
+    _, coverage, avg_support = _structural_stop_eligible(state)
+    structural_eligible = should_stop and stop_reason == "structural_coverage_met"
+
     debug_line = (
         f"Stop decider: turn={int(state.get('turn_index', 0))}, "
-        f"conf={confidence:.2f}, threshold={float(os.getenv('STOP_CONFIDENCE', '0.66')):.2f}, "
+        f"conf={confidence:.2f} (logging only), "
+        f"coverage={coverage:.2f}, avg_support={avg_support:.2f}, "
+        f"structural_eligible={structural_eligible}, "
         f"risk={bool(state.get('risk_flag', False))}, "
         f"stop={should_stop} ({stop_reason})"
     )
@@ -65,14 +95,19 @@ def stop_decider(state: AgentState) -> Dict:
     stop_trace = {
         "turn": int(state.get("turn_index", 0)),
         "confidence": round(confidence, 4),
-        "confidence_source": "support_coverage_saturation_smoothed",
+        "confidence_logging_only": True,
+        "stop_method": "structural_coverage_support",
+        "coverage": round(coverage, 4),
+        "avg_support": round(avg_support, 4),
+        "structural_eligible": structural_eligible,
         "should_stop": should_stop,
         "reason": stop_reason,
         "label": predicted_label,
         "risk_flag": bool(state.get("risk_flag", False)),
         "min_turns": int(os.getenv("MIN_TURNS", "20")),
         "max_turns": int(os.getenv("MAX_TURNS", "40")),
-        "stop_confidence": float(os.getenv("STOP_CONFIDENCE", "0.66")),
+        "stop_min_coverage": float(os.getenv("STOP_MIN_COVERAGE", "0.714")),
+        "stop_min_avg_support": float(os.getenv("STOP_MIN_AVG_SUPPORT", "1.5")),
     }
     turn_trace["stop_decider"] = stop_trace
     turn_trace["stop"] = stop_trace

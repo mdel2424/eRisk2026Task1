@@ -18,8 +18,6 @@ def _evaluation_stability_warnings(metrics: Dict[str, Any], split_name: str) -> 
     warnings: List[str] = []
     if not metrics:
         return [f"{split_name}:no_records"]
-    if str(metrics.get("metric_mode", "")) != "item_only":
-        warnings.append(f"{split_name}:unexpected_metric_mode")
     return warnings
 
 
@@ -254,6 +252,7 @@ def write_eval_artifacts(
             "symptom_f1_at_4 is an alias of item_f1_macro_at_1 (full 21-item macro F1 with positive threshold >=1).",
         ],
         "llm_usage": get_llm_usage(),
+        "extract_json_parse_failures": int(run_failure_counters.get("extract_json_parse_fail", 0)),
     }
     if primary_metrics:
         metrics_payload.update(primary_metrics)
@@ -354,7 +353,6 @@ def write_eval_artifacts(
                 "early_stop_reason_distribution": dict(early_stop_reason_distribution),
             },
             "evaluation_stability_warnings": evaluation_stability_warnings,
-            "metric_mode": str(primary_metrics.get("metric_mode", "")) if primary_metrics else "",
             "item_f1_macro_at_1": float(primary_metrics.get("item_f1_macro_at_1", 0.0)) if primary_metrics else 0.0,
             "item_mae": float(primary_metrics.get("item_mae", 0.0)) if primary_metrics else 0.0,
             "llm_usage": get_llm_usage(),
@@ -411,6 +409,8 @@ def write_eval_artifacts(
             "MIN_TURNS": os.getenv("MIN_TURNS", "20"),
             "MAX_TURNS": os.getenv("MAX_TURNS", "40"),
             "STOP_CONFIDENCE": os.getenv("STOP_CONFIDENCE", "0.66"),
+            "STOP_MIN_COVERAGE": os.getenv("STOP_MIN_COVERAGE", "0.714"),
+            "STOP_MIN_AVG_SUPPORT": os.getenv("STOP_MIN_AVG_SUPPORT", "1.0"),
             "CONF_SUPPORT_TAU": os.getenv("CONF_SUPPORT_TAU", "1.25"),
             "CONF_DEPTH_WEIGHT": os.getenv("CONF_DEPTH_WEIGHT", "0.70"),
             "CONF_COVERAGE_WEIGHT": os.getenv("CONF_COVERAGE_WEIGHT", "0.30"),
@@ -441,8 +441,6 @@ def write_eval_artifacts(
             "BELIEF_CONTRADICTION_NEUTRAL_BLEND": os.getenv("BELIEF_CONTRADICTION_NEUTRAL_BLEND", "0.35"),
             "BELIEF_SUPPORT_MIN_WEIGHT": os.getenv("BELIEF_SUPPORT_MIN_WEIGHT", "0.45"),
             "BELIEF_MEMORY_PER_ITEM": os.getenv("BELIEF_MEMORY_PER_ITEM", "24"),
-            "FORCE_RISK_PROBE_TURN": os.getenv("FORCE_RISK_PROBE_TURN", "3"),
-            "FORCE_SOMATIC_PROBE_TURN": os.getenv("FORCE_SOMATIC_PROBE_TURN", "4"),
             "SUPERVISOR_EVIDENCE_MIN_SCORE": os.getenv("SUPERVISOR_EVIDENCE_MIN_SCORE", "0.30"),
             "SUPERVISOR_EVIDENCE_RISK_THRESHOLD": os.getenv("SUPERVISOR_EVIDENCE_RISK_THRESHOLD", "0.22"),
             "SUPERVISOR_ESCAPE_EMPTY_STREAK": os.getenv("SUPERVISOR_ESCAPE_EMPTY_STREAK", "2"),

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from typing import Dict, List
 
 from core.state import AgentState, NextAction, RouteDecision, SPECIALIST_ITEM_MAP
@@ -11,11 +10,10 @@ STYLE_CYCLE = ("gentle_probe", "clarify_frequency", "functional_impact")
 
 def _priority_from_gain(expected_gain: float) -> float:
     gain = max(0.0, float(expected_gain))
-    # Smooth normalization so larger expected-gain targets get higher handoff priority.
     return max(0.0, min(1.0, gain / (gain + 2.0)))
 
 
-def _recent_target_counts(route_history: List, window: int = 4) -> Dict[int, int]:
+def _recent_target_counts(route_history: List, window: int = 6) -> Dict[int, int]:
     counts: Dict[int, int] = {}
     for row in route_history[-window:]:
         if isinstance(row, dict):
@@ -39,36 +37,40 @@ def _route_for_item(item_id: int) -> str:
     return "cognitive"
 
 
-def _has_observed_items(state: AgentState, item_ids: List[int]) -> bool:
-    beliefs = state.get("item_beliefs", {})
-    for item_id in item_ids:
-        belief = beliefs.get(item_id)
-        if belief is None:
-            continue
-        try:
-            if int(getattr(belief, "support_count", 0)) > 0:
-                return True
-        except (TypeError, ValueError):
-            continue
-    return False
+def _uncovered_items(state: AgentState) -> List[int]:
+    """Return item_ids with support_count == 0 that haven't been targeted
+    too many times already, sorted by entropy descending.
 
-
-def _best_item_from_candidates(state: AgentState, candidates: List[int], fallback: int) -> int:
+    Items that have been targeted >= MAX_UNCOVERED_ATTEMPTS times without
+    gaining any support are skipped — they are likely extraction-resistant
+    and should be left to the entropy+IG selector which will deprioritize
+    them via repetition penalty.
+    """
+    MAX_UNCOVERED_ATTEMPTS = 2
     beliefs = state.get("item_beliefs", {})
-    best_item = fallback
-    best_entropy = float("-inf")
-    for item_id in candidates:
+    # Count how many times each item has been targeted across entire history.
+    all_target_counts = _recent_target_counts(
+        list(state.get("route_history", [])),
+        window=999,
+    )
+    uncovered = []
+    for item_id in range(1, 22):
         belief = beliefs.get(item_id)
-        entropy = 0.0
+        support = 0
+        entropy = 2.0
         if belief is not None:
             try:
-                entropy = float(getattr(belief, "entropy", 0.0))
+                support = int(getattr(belief, "support_count", 0))
             except (TypeError, ValueError):
-                entropy = 0.0
-        if entropy > best_entropy:
-            best_entropy = entropy
-            best_item = item_id
-    return best_item
+                support = 0
+            try:
+                entropy = float(getattr(belief, "entropy", 2.0))
+            except (TypeError, ValueError):
+                entropy = 2.0
+        if support == 0 and all_target_counts.get(item_id, 0) < MAX_UNCOVERED_ATTEMPTS:
+            uncovered.append((item_id, entropy))
+    uncovered.sort(key=lambda pair: pair[1], reverse=True)
+    return [item_id for item_id, _ in uncovered]
 
 
 def _select_target_item(state: AgentState) -> tuple[int, float, str]:
@@ -102,7 +104,7 @@ def _select_target_item(state: AgentState) -> tuple[int, float, str]:
 
         ig = float(ig_estimates.get(parsed, entropy))
         risk_weight = 0.20 if parsed == 9 else 0.0
-        repetition_penalty = 0.35 * float(recent_counts.get(parsed, 0))
+        repetition_penalty = 0.60 * float(recent_counts.get(parsed, 0))
         score = ig + entropy + risk_weight - repetition_penalty
 
         if score > best_score:
@@ -116,8 +118,6 @@ def _select_target_item(state: AgentState) -> tuple[int, float, str]:
 def target_selector(state: AgentState) -> Dict:
     turn_index = int(state.get("turn_index", 0))
     has_new_persona_input = bool(state.get("has_new_persona_input", False))
-    force_risk_probe_turn = int(os.getenv("FORCE_RISK_PROBE_TURN", "3"))
-    force_somatic_probe_turn = int(os.getenv("FORCE_SOMATIC_PROBE_TURN", "4"))
     policy = "entropy_penalized"
 
     if turn_index == 0 and not has_new_persona_input:
@@ -125,24 +125,19 @@ def target_selector(state: AgentState) -> Dict:
         route = "cognitive"
         style = "opening"
         policy = "opening_bootstrap"
-    elif has_new_persona_input and turn_index >= max(1, force_risk_probe_turn) and not _has_observed_items(state, [9]):
-        target_item_id = 9
-        route = "risk"
-        expected_gain = 0.0
-        rationale = "coverage guard: force risk probe"
-        style = STYLE_CYCLE[turn_index % len(STYLE_CYCLE)]
-        policy = "coverage_guard_risk"
-    elif (
-        has_new_persona_input
-        and turn_index >= max(1, force_somatic_probe_turn)
-        and not _has_observed_items(state, SPECIALIST_ITEM_MAP["somatic"])
-    ):
-        target_item_id = _best_item_from_candidates(state, SPECIALIST_ITEM_MAP["somatic"], fallback=16)
-        route = "somatic"
-        expected_gain = 0.0
-        rationale = "coverage guard: force somatic probe"
-        style = STYLE_CYCLE[turn_index % len(STYLE_CYCLE)]
-        policy = "coverage_guard_somatic"
+    elif has_new_persona_input:
+        uncovered = _uncovered_items(state)
+        if uncovered:
+            target_item_id = uncovered[0]
+            route = _route_for_item(target_item_id)
+            expected_gain = 0.0
+            rationale = f"coverage rotation: {len(uncovered)} items uncovered"
+            style = STYLE_CYCLE[turn_index % len(STYLE_CYCLE)]
+            policy = "coverage_rotation"
+        else:
+            target_item_id, expected_gain, rationale = _select_target_item(state)
+            route = _route_for_item(target_item_id)
+            style = STYLE_CYCLE[turn_index % len(STYLE_CYCLE)]
     else:
         target_item_id, expected_gain, rationale = _select_target_item(state)
         route = _route_for_item(target_item_id)

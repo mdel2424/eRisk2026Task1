@@ -211,12 +211,18 @@ def run_eval(
             str(item_id): int(final_scores.get(item_id, final_scores.get(str(item_id), 0)) or 0)
             for item_id in range(1, 22)
         }
+        item_beliefs = final_state.get("item_beliefs", {})
+        item_support_map = {
+            str(item_id): int(getattr(item_beliefs.get(item_id), "support_count", 0) or 0)
+            for item_id in range(1, 22)
+        }
         results.append(
             PersonaResult(
                 LLM=profile.persona_id,
                 bdi_score=int(final_state.get("predicted_bdi_score") or 0),
                 key_symptoms=list(final_state.get("predicted_key_symptoms") or [])[:4],
                 item_scores=item_scores_map,
+                item_support_counts=item_support_map,
             )
         )
 
