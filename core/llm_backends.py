@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import random
+import socket
 import time
 from functools import lru_cache
 from typing import List, Sequence
@@ -147,8 +149,21 @@ class OpenRouterChatLLM:
                 )
         return normalized
 
+    # Keys that must never be treated as assistant content text.
+    _SKIP_KEYS = frozenset({
+        "role", "refusal", "tool_calls", "function_call", "name",
+        "reasoning", "reasoning_content", "reasoning_tokens",
+        "annotations", "audio", "logprobs",
+    })
+
     @staticmethod
-    def _collect_text(value: object) -> List[str]:
+    def _collect_text(value: object, *, _depth: int = 0) -> List[str]:
+        """Recursively extract human-readable text fragments from a value.
+
+        Skips keys known to carry reasoning traces, role labels, or
+        tool-call metadata so that only the actual assistant *content*
+        is returned.
+        """
         chunks: List[str] = []
         if value is None:
             return chunks
@@ -162,7 +177,7 @@ class OpenRouterChatLLM:
             return chunks
         if isinstance(value, list):
             for item in value:
-                chunks.extend(OpenRouterChatLLM._collect_text(item))
+                chunks.extend(OpenRouterChatLLM._collect_text(item, _depth=_depth + 1))
             return chunks
         if isinstance(value, dict):
             # Prefer common text-bearing keys first.
@@ -175,55 +190,100 @@ class OpenRouterChatLLM:
                 "final",
             )
             for key in preferred_keys:
-                if key in value:
-                    chunks.extend(OpenRouterChatLLM._collect_text(value.get(key)))
-            # Generic fallback: walk remaining keys.
+                if key in value and key not in OpenRouterChatLLM._SKIP_KEYS:
+                    chunks.extend(OpenRouterChatLLM._collect_text(value.get(key), _depth=_depth + 1))
+            # Generic fallback: walk remaining keys, skipping non-content fields.
             for key, nested in value.items():
-                if key in preferred_keys:
+                if key in preferred_keys or key in OpenRouterChatLLM._SKIP_KEYS:
                     continue
-                chunks.extend(OpenRouterChatLLM._collect_text(nested))
+                chunks.extend(OpenRouterChatLLM._collect_text(nested, _depth=_depth + 1))
             return chunks
         return chunks
 
     @staticmethod
     def _extract_content(payload: dict) -> str:
+        """Extract the assistant's content text from an OpenRouter/OpenAI response.
+
+        For chat completions the canonical path is
+        ``choices[0].message.content``.  We try that first so we never
+        accidentally include reasoning traces, role strings, or other
+        metadata that live as sibling keys on the ``message`` dict.
+        """
         if not isinstance(payload, dict):
             return ""
 
-        candidates: List[object] = []
+        # ── Fast path: choices[0].message.content ──────────────────────
         choices = payload.get("choices", [])
         if isinstance(choices, list) and choices:
             first = choices[0]
             if isinstance(first, dict):
-                # OpenAI/OpenRouter chat format
                 message = first.get("message")
-                if message is not None:
-                    candidates.append(message)
+                if isinstance(message, dict):
+                    # Direct content extraction — avoids walking into
+                    # reasoning / role / tool_calls siblings.
+                    content = message.get("content")
+                    if isinstance(content, str) and content.strip():
+                        return content.strip()
+                    # Some providers nest content in a list of parts.
+                    if isinstance(content, list):
+                        parts = OpenRouterChatLLM._collect_text(content)
+                        if parts:
+                            return " ".join(parts).strip()
+
                 # Legacy completion-style text fallback
                 if "text" in first:
-                    candidates.append(first.get("text"))
-                # Some providers return delta-like structures even in non-stream calls
+                    text_val = first.get("text")
+                    if isinstance(text_val, str) and text_val.strip():
+                        return text_val.strip()
+
+                # Delta fallback (some providers in non-stream mode)
                 if "delta" in first:
-                    candidates.append(first.get("delta"))
+                    delta = first.get("delta")
+                    if isinstance(delta, dict):
+                        dc = delta.get("content")
+                        if isinstance(dc, str) and dc.strip():
+                            return dc.strip()
 
-        # Responses-style / provider-specific fallbacks.
-        candidates.extend(
-            [
-                payload.get("output_text"),
-                payload.get("output"),
-                payload.get("response"),
-                payload.get("data"),
-                payload.get("message"),
-            ]
-        )
-
-        for candidate in candidates:
-            parts = OpenRouterChatLLM._collect_text(candidate)
-            if parts:
-                text = " ".join(part for part in parts if part).strip()
-                if text:
-                    return text
+        # ── Responses-style / provider-specific fallbacks ──────────────
+        for key in ("output_text", "output", "response", "data", "message"):
+            fallback = payload.get(key)
+            if fallback is not None:
+                parts = OpenRouterChatLLM._collect_text(fallback)
+                if parts:
+                    text = " ".join(parts).strip()
+                    if text:
+                        return text
         return ""
+
+    @staticmethod
+    def _is_retryable_http_status(status_code: int) -> bool:
+        return status_code in {408, 409, 425, 429, 500, 502, 503, 504}
+
+    @staticmethod
+    def _is_retryable_exception(exc: Exception) -> bool:
+        if isinstance(exc, (TimeoutError, socket.timeout, ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+            return True
+        if isinstance(exc, urllib_error.URLError):
+            reason = getattr(exc, "reason", None)
+            if isinstance(reason, (TimeoutError, socket.timeout)):
+                return True
+            reason_text = str(reason or "").lower()
+            if "timed out" in reason_text or "temporary" in reason_text or "unreachable" in reason_text:
+                return True
+        if isinstance(exc, OSError):
+            msg = str(exc).lower()
+            if "timed out" in msg or "temporary failure" in msg or "network is unreachable" in msg:
+                return True
+        return False
+
+    @staticmethod
+    def _sleep_before_retry(attempt_index: int, *, base_ms: int, jitter_ms: int) -> None:
+        # attempt_index is 1-based for retries (1, 2, 3...)
+        delay_ms = max(0, base_ms) * (2 ** max(0, attempt_index - 1))
+        if jitter_ms > 0:
+            delay_ms += random.randint(0, jitter_ms)
+        if delay_ms > 0:
+            time.sleep(delay_ms / 1000.0)
 
     def invoke(self, messages: Sequence[dict | tuple[str, str]]) -> LLMResponse:
         normalized = self._normalize_messages(messages)
@@ -233,13 +293,32 @@ class OpenRouterChatLLM:
         _reserve_llm_call()
         started = time.perf_counter()
 
-        payload = {
+        payload: dict = {
             "model": self.model_id,
             "messages": normalized,
             "temperature": max(0.0, self.temperature),
             "top_p": self.top_p,
             "max_tokens": self.max_new_tokens,
         }
+
+        # Reasoning-model budget control — cap reasoning effort so the
+        # model reserves enough of max_tokens for actual content.
+        reasoning_effort = os.getenv("OPENROUTER_REASONING_EFFORT", "").strip().lower()
+        if reasoning_effort in {"low", "medium", "high"}:
+            payload["reasoning"] = {"effort": reasoning_effort}
+
+        # Provider routing — read from env so callers can pin fast providers.
+        provider_order_raw = os.getenv("OPENROUTER_PROVIDER_ORDER", "").strip()
+        if provider_order_raw:
+            provider_cfg: dict = {
+                "order": [p.strip() for p in provider_order_raw.split(",") if p.strip()],
+            }
+            if os.getenv("OPENROUTER_REQUIRE_PROVIDER_ORDER", "0").strip() in {
+                "1", "true", "yes", "y", "on",
+            }:
+                provider_cfg["require_parameters"] = True
+            payload["provider"] = provider_cfg
+
         body = json.dumps(payload).encode("utf-8")
 
         headers = {
@@ -260,20 +339,43 @@ class OpenRouterChatLLM:
             method="POST",
         )
 
-        try:
-            with urllib_request.urlopen(req, timeout=self.timeout_sec) as resp:
-                raw = resp.read().decode("utf-8")
-        except urllib_error.HTTPError as exc:
-            _record_llm_error()
-            detail = ""
+        max_retries = max(0, int(os.getenv("OPENROUTER_MAX_RETRIES", "1")))
+        retry_base_ms = max(0, int(os.getenv("OPENROUTER_RETRY_BASE_MS", "400")))
+        retry_jitter_ms = max(0, int(os.getenv("OPENROUTER_RETRY_JITTER_MS", "250")))
+
+        raw = ""
+        for attempt in range(max_retries + 1):
             try:
-                detail = exc.read().decode("utf-8", errors="ignore")
-            except Exception:
-                detail = str(exc)
-            raise RuntimeError(f"OpenRouter HTTP {exc.code}: {detail}") from exc
-        except Exception as exc:
-            _record_llm_error()
-            raise RuntimeError(f"OpenRouter request failed: {exc}") from exc
+                with urllib_request.urlopen(req, timeout=self.timeout_sec) as resp:
+                    raw = resp.read().decode("utf-8")
+                break
+            except urllib_error.HTTPError as exc:
+                detail = ""
+                try:
+                    detail = exc.read().decode("utf-8", errors="ignore")
+                except Exception:
+                    detail = str(exc)
+                can_retry = self._is_retryable_http_status(int(exc.code)) and attempt < max_retries
+                if can_retry:
+                    self._sleep_before_retry(
+                        attempt + 1,
+                        base_ms=retry_base_ms,
+                        jitter_ms=retry_jitter_ms,
+                    )
+                    continue
+                _record_llm_error()
+                raise RuntimeError(f"OpenRouter HTTP {exc.code}: {detail}") from exc
+            except Exception as exc:
+                can_retry = self._is_retryable_exception(exc) and attempt < max_retries
+                if can_retry:
+                    self._sleep_before_retry(
+                        attempt + 1,
+                        base_ms=retry_base_ms,
+                        jitter_ms=retry_jitter_ms,
+                    )
+                    continue
+                _record_llm_error()
+                raise RuntimeError(f"OpenRouter request failed: {exc}") from exc
 
         try:
             parsed = json.loads(raw)

@@ -9,6 +9,8 @@ from persona.sim_templates import (
     HEDGE_PHRASES,
     ITEM_CONTEXT_HINTS,
     ITEM_SENTENCE_BANK,
+    NEUTRAL_CONTEXT_ANCHORS,
+    NEUTRAL_ITEM_CONTEXT_HINTS,
     NORMALIZATION_PHRASES,
     RISK_PROTECTIVE_FACTORS,
     RISK_RESPONSE_BANK,
@@ -91,10 +93,10 @@ def _item_sentence(item_id: int, score: int) -> str:
     clipped = max(0, min(3, int(score)))
     if clipped == 0:
         neutral_zero_bank = [
-            "that area has felt mostly stable lately",
-            "that has not stood out as a major issue recently",
-            "overall that part has been manageable without major change",
-            "I have not noticed strong symptoms in that area lately",
+            "that's been okay honestly, not really a problem",
+            "I haven't noticed anything different there",
+            "no, that side of things has been fine",
+            "that's one area that hasn't really been an issue",
         ]
         return neutral_zero_bank[(item_id - 1) % len(neutral_zero_bank)]
 
@@ -167,10 +169,13 @@ def _safe_join(chunks: List[str], limit_words: int = 38) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _maybe_context_anchor(item_id: int, context_anchor_rate: float, rng) -> str:
+def _maybe_context_anchor(item_id: int, score: int, context_anchor_rate: float, rng) -> str:
     if rng.random() >= context_anchor_rate:
         return ""
-    hints = ITEM_CONTEXT_HINTS.get(item_id, CONTEXT_ANCHORS)
+    if score <= 0:
+        hints = NEUTRAL_ITEM_CONTEXT_HINTS.get(item_id, NEUTRAL_CONTEXT_ANCHORS)
+    else:
+        hints = ITEM_CONTEXT_HINTS.get(item_id, CONTEXT_ANCHORS)
     return rng.choice(hints)
 
 
@@ -178,12 +183,20 @@ def _maybe_tail(hedge_rate: float, normalization_rate: float, rng) -> str:
     parts: List[str] = []
     if rng.random() < hedge_rate:
         hedge = rng.choice(HEDGE_PHRASES)
-        if hedge.lower() == "i don't know":
-            parts.append("I don't know, that is how it has felt")
-        elif hedge.lower() == "maybe":
-            parts.append("maybe that is why everything feels heavier")
-        else:
-            parts.append(f"{hedge.lower()}, that seems to be the pattern")
+        hedge_completions = {
+            "i guess": "I guess that's just how it is right now",
+            "maybe": "maybe that's why everything feels heavier",
+            "i don't know": "I don't know, that's just how it's been",
+            "i think": "I think that's what it comes down to",
+            "kind of": "kind of hard to explain but that's the feeling",
+            "to be fair": "to be fair I'm probably not the best judge right now",
+            "honestly": "honestly I don't really know what to do about it",
+            "if i am being real": "if I'm being real it's been getting to me",
+            "it is hard to say exactly": "it's hard to say exactly but that's how it feels",
+            "in a way": "in a way I've just gotten used to it",
+        }
+        completed = hedge_completions.get(hedge.lower(), f"{hedge.lower()}, that's just how it's been")
+        parts.append(completed)
     if rng.random() < normalization_rate:
         parts.append(rng.choice(NORMALIZATION_PHRASES))
     return _safe_join(parts, limit_words=24) if parts else ""
@@ -254,17 +267,34 @@ def build_deterministic_reply(
     if intent == "partial":
         softened = max(0, target_score - 1)
         direct = _item_sentence(target_item, softened)
-        context = _maybe_context_anchor(target_item, context_anchor_rate, rng)
-        tail = _maybe_tail(hedge_rate, normalization_rate, rng)
-        lead = f"{opener} it is a bit hard to pin down, but {direct}"
+        context = _maybe_context_anchor(target_item, softened, context_anchor_rate, rng)
+        tail = _maybe_tail(hedge_rate, normalization_rate, rng) if softened > 0 else ""
+        hedged_lead = rng.choice([
+            "it's a bit hard to pin down, but",
+            "I'm not sure how to put it, but",
+            "it's hard to say exactly, but",
+        ])
+        lead = f"{hedged_lead} {direct}"
         return _safe_join([lead, context, tail], limit_words=36)
 
     direct = _item_sentence(target_item, target_score)
-    context = _maybe_context_anchor(target_item, context_anchor_rate, rng)
-    tail = _maybe_tail(hedge_rate, normalization_rate, rng)
-    answer = _safe_join([f"{opener} {direct}", f"{bridge} {context}" if context else "", tail], limit_words=38)
-    if rng.random() < min(0.2, hedge_rate * 0.35):
-        return _safe_join(["I don't know, but", answer], limit_words=38)
+    context = _maybe_context_anchor(target_item, target_score, context_anchor_rate, rng)
+    tail = _maybe_tail(hedge_rate, normalization_rate, rng) if target_score > 0 else ""
+    # Vary structure: sometimes use opener, sometimes go direct; drop rigid bridge
+    parts = []
+    if rng.random() < 0.45:
+        parts.append(f"{opener} {direct}")
+    else:
+        parts.append(direct)
+    if context:
+        parts.append(context)
+    if tail:
+        parts.append(tail)
+    answer = _safe_join(parts, limit_words=38)
+    if rng.random() < min(0.2, hedge_rate * 0.35) and answer:
+        # Blend prefix naturally into the sentence
+        low = answer[0].lower() + answer[1:] if answer[0].isupper() else answer
+        return _safe_join([f"I don't know, but {low}"], limit_words=38)
     return answer
 
 

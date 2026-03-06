@@ -835,9 +835,11 @@ def extract_likelihoods(state: AgentState) -> Dict:
             except LLMBudgetExceeded:
                 raise
             except Exception as exc:
-                raise RuntimeError(
-                    f"Detector LLM evidence extraction failed at node '{node_name}' on turn {turn}."
-                ) from exc
+                source = "llm_extractor_error"
+                counters = bump_failure_counter(counters, "extract_llm_call_fail")
+                error_text = str(exc).strip()
+                parse_error_kind = "llm_timeout" if "timed out" in error_text.lower() else "llm_call_failed"
+                parse_error_message = error_text[:300]
     else:
         source = "skip_empty_message"
 

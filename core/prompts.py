@@ -11,18 +11,21 @@ OPENING_MESSAGE_FIXED = (
 PROMPT_REGISTRY: Dict[str, Dict[str, str | Dict[str, List[str]]]] = {
     "v1": {
         "specialist_question": """
-You are the {node_name} specialist in a supportive mental-health screening chat.
-Write exactly one short, empathetic, indirect follow-up question.
+You are a skilled clinical interviewer conducting a BDI-II-aligned depression screening.
+Write exactly one naturalistic, clinically grounded follow-up question.
 
 Hard constraints:
-- Do not ask direct diagnostic questions.
-- Keep it under 30 words.
-- Anchor to one concrete detail from the latest persona message.
-- Keep a two-week frame implicitly; do not repeat "past two weeks" formulaically.
+- Use a conversational but clinically purposeful tone, like a skilled therapist.
+- Keep it under 50 words.
+- Anchor to a concrete detail from the persona's latest message when possible.
+- Use a two-week timeframe when clinically relevant; vary the phrasing naturally.
 - Probe exactly one goal: {probe_goal} (frequency | duration | impact | exemplar).
-- Stay inside the selected module and target-item intent.
-- Avoid generic reassurance.
-- Avoid repeating the previous detector question.
+- When probing frequency or duration, offer concrete anchors the persona can choose from
+  (e.g., "hours or most of the day", "a few nights or most nights").
+- When useful, use comparison framing: "compared with usual", "from your normal baseline".
+- Stay inside the selected module and target-item domain.
+- Do not reassure, praise, or offer therapeutic advice.
+- Do not repeat or closely paraphrase the previous detector question.
 - Return only the question text.
 
 Target module:
@@ -65,6 +68,7 @@ Constraints:
 - item_id must be 1..21.
 - symptom_name must be the exact canonical BDI label for the given item_id (no alternative labels).
 - If symptom wording is non-canonical, map it to the closest canonical BDI label; do not invent new labels.
+- Map metaphorical language to symptoms: e.g. "running on fumes" → fatigue/energy, "going through the motions" → loss of pleasure, "cloud over my head" → sadness, "short fuse" → irritability.
 - intensity in [0, 3], confidence in [0, 1].
 - use only BDI-II symptom labels.
 - Do not default to item 1 (Sadness) when evidence is vague or unspecific.
@@ -90,44 +94,44 @@ Latest persona message:
 """,
         "fallback_questions": {
             "somatic": [
-                "How has your sleep changed from your usual pattern?",
-                "How has your energy shifted across a typical day recently?",
-                "Have meals or appetite felt different lately?",
-                "What part of your day has felt physically hardest to get through lately?",
+                "How has your sleep changed compared with your usual pattern, falling asleep, staying asleep, or waking early?",
+                "How has your energy shifted across a typical day recently, and when does it feel worst?",
+                "How has your appetite been compared with usual, increased, decreased, or unchanged?",
+                "On how many days in the past two weeks has fatigue interfered with getting things done?",
                 "When your body feels off, what does that usually look like for you?",
-                "How refreshed do you feel when you wake up most mornings recently?",
-                "Have you noticed changes in restlessness or feeling wound up lately?",
-                "How often have you felt worn out before the day is even over?",
+                "When you wake up most mornings recently, do you feel rested or still exhausted?",
+                "Have you noticed more restlessness or difficulty sitting still compared with usual?",
+                "How often have you felt completely worn out before the day is even halfway through?",
                 "What has your evening routine felt like compared with your normal?",
-                "How different has your concentration felt during routine tasks lately?",
-                "How has your pace or motivation for basic tasks shifted recently?",
-                "When you feel drained, what daily activities are most affected?",
+                "How different has your concentration felt when doing routine tasks like reading or following a conversation?",
+                "How has your pace or motivation for starting basic tasks shifted recently?",
+                "Have you noticed any weight change or your clothes fitting differently without trying?",
             ],
             "cognitive": [
-                "What thought has been loudest in your mind recently?",
-                "When things feel heavy lately, what do you tell yourself?",
-                "What feels hardest to believe about tomorrow right now?",
-                "What kind of self-talk tends to show up when things get difficult lately?",
-                "How has your sense of confidence in yourself changed recently?",
-                "What worries have been looping the most in the past little while?",
-                "When something goes wrong lately, where does your mind go first?",
-                "How has your ability to decide small things felt compared with usual?",
-                "What has felt most mentally exhausting in your day-to-day recently?",
-                "How often have guilt or self-blame thoughts shown up lately?",
-                "What has felt less meaningful or less rewarding than it used to?",
-                "What has your mind been preoccupied with when you try to rest?",
+                "What thought has been loudest or most repetitive in your mind recently?",
+                "When things feel heavy lately, what do you tend to tell yourself?",
+                "Thinking about the future, do you feel hopeful things will improve or does it feel unlikely?",
+                "When something goes wrong, do you tend toward frustration, self-blame, guilt, or something else?",
+                "How has your confidence in yourself changed compared with your usual level?",
+                "What worries or thoughts have been looping the most in the past couple of weeks?",
+                "When something doesn't go as planned, where does your mind go first?",
+                "When you face small decisions, do you decide and move on, or do you get stuck replaying options?",
+                "What has felt most mentally draining in your day-to-day recently?",
+                "How often have guilt or self-blame thoughts shown up over the past two weeks?",
+                "What activities or interests feel less meaningful or rewarding than they used to?",
+                "When you try to rest, what does your mind tend to do?",
             ],
             "risk": [
-                "When things felt very heavy recently, what helped you stay safe?",
+                "When things felt very heavy recently, what helped you get through it?",
                 "Who or what helped you through your hardest moments lately?",
-                "When thoughts feel overwhelming lately, what do you do first?",
+                "When thoughts feel overwhelming, what is usually the first thing you do?",
                 "When distress spikes, what signs tell you that you need extra support?",
                 "What has helped you get through moments that felt emotionally unsafe?",
-                "When you feel close to your limit, who can you contact quickly?",
-                "How have you been coping when thoughts feel darker than usual?",
+                "When you feel close to your limit, who can you reach out to quickly?",
+                "When things feel at their worst, what do you find yourself wishing for, relief, escape, shutting everything off?",
                 "What has made difficult moments feel even slightly safer recently?",
                 "When you feel like withdrawing completely, what keeps you grounded?",
-                "How often have you had to actively focus on staying safe lately?",
+                "Have there been moments where life felt not worth the effort, or you felt you would rather not be here?",
                 "What has stopped things from escalating on your hardest days?",
                 "What would be your first step if things felt unmanageable tonight?",
             ],

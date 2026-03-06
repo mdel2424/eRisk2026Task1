@@ -93,4 +93,5 @@ Debug mode (`--debug_outputs true`) additionally writes:
 Configuration:
 - Use `.env.example` as the full source of tunable parameters.
 - Most useful day-to-day knobs are `MIN_TURNS`, `MAX_TURNS`, `STOP_CONFIDENCE`, `max_api_calls`, and `--debug_outputs`.
+- For OpenRouter stability under occasional provider/network stalls, tune `OPENROUTER_MAX_RETRIES`, `OPENROUTER_RETRY_BASE_MS`, and `OPENROUTER_RETRY_JITTER_MS`.
 - If strict split lock is enabled and persona generation logic changes, bump `SIM_GENERATOR_VERSION` (or remove prior manifest files) before rerunning eval.
