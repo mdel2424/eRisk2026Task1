@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import random
-from dataclasses import replace
 from typing import Dict, List
 
 from persona.profiles import PersonaProfile
@@ -291,208 +290,17 @@ def generate_persona_pool(
         profiles.append(
             PersonaProfile(
                 persona_id=str(idx),
-                split="train",
+                split="eval",
                 family=family,
                 bdi_scores=scores,
                 depressed=bool(blueprint["depressed"]),
                 source="synthetic",
                 has_ground_truth=True,
                 behavior_params=behavior,
-                template_bank="train_bank_v1",
+                template_bank="default",
                 generation_seed=generation_seed,
                 generator_version=generator_version,
             )
         )
 
     return profiles
-
-
-def _split_counts(n: int, ratios: tuple[float, float, float]) -> tuple[int, int, int]:
-    train_ratio, val_ratio, _ = ratios
-    train_n = int(n * train_ratio)
-    val_n = int(n * val_ratio)
-    test_n = n - train_n - val_n
-    if n >= 3:
-        train_n = max(1, train_n)
-        val_n = max(1, val_n)
-        test_n = max(1, n - train_n - val_n)
-        while train_n + val_n + test_n > n:
-            if train_n >= val_n and train_n >= test_n and train_n > 1:
-                train_n -= 1
-            elif val_n >= test_n and val_n > 1:
-                val_n -= 1
-            elif test_n > 1:
-                test_n -= 1
-            else:
-                break
-        while train_n + val_n + test_n < n:
-            train_n += 1
-    return train_n, val_n, test_n
-
-
-def _take_with_class_targets(
-    depressed_pool: List[PersonaProfile],
-    control_pool: List[PersonaProfile],
-    target_total: int,
-    *,
-    require_both_classes: bool,
-) -> List[PersonaProfile]:
-    depressed_total = len(depressed_pool)
-    control_total = len(control_pool)
-
-    if target_total <= 0:
-        return []
-
-    if require_both_classes:
-        if depressed_total == 0 or control_total == 0:
-            raise ValueError(
-                "Stratified strict split failed: both depressed and control personas are required in the pool."
-            )
-        if target_total < 2:
-            raise ValueError(
-                "Stratified strict split failed: holdout size must be >=2 to include both classes."
-            )
-
-    depressed_target = int(round(target_total * (depressed_total / max(1, depressed_total + control_total))))
-    control_target = target_total - depressed_target
-
-    if require_both_classes:
-        depressed_target = max(1, depressed_target)
-        control_target = max(1, control_target)
-
-    depressed_target = min(depressed_target, depressed_total)
-    control_target = min(control_target, control_total)
-
-    while depressed_target + control_target < target_total:
-        can_take_depressed = depressed_target < depressed_total
-        can_take_control = control_target < control_total
-        if can_take_depressed and (not can_take_control or depressed_target <= control_target):
-            depressed_target += 1
-        elif can_take_control:
-            control_target += 1
-        else:
-            break
-
-    while depressed_target + control_target > target_total:
-        if depressed_target > control_target and depressed_target > (1 if require_both_classes else 0):
-            depressed_target -= 1
-        elif control_target > (1 if require_both_classes else 0):
-            control_target -= 1
-        else:
-            break
-
-    if require_both_classes and (depressed_target == 0 or control_target == 0):
-        raise ValueError(
-            "Stratified strict split failed: unable to satisfy both-class holdout with requested persona count."
-        )
-
-    selected = depressed_pool[:depressed_target] + control_pool[:control_target]
-    if len(selected) != target_total:
-        raise ValueError(
-            "Stratified strict split failed: insufficient personas to satisfy requested split sizes."
-        )
-    return selected
-
-
-def assign_splits(
-    pool: List[PersonaProfile],
-    seed: int,
-    ratios: tuple[float, float, float] = (0.6, 0.2, 0.2),
-) -> Dict[str, List[PersonaProfile]]:
-    rng = random.Random(seed + 17)
-    shuffled = pool[:]
-    rng.shuffle(shuffled)
-    train_n, val_n, test_n = _split_counts(len(shuffled), ratios)
-
-    strict = os.getenv("EVAL_STRATIFIED_STRICT", "1").strip().lower() in {"1", "true", "yes", "y", "on"}
-    holdout_n = val_n + test_n
-
-    depressed_pool = [profile for profile in shuffled if bool(profile.depressed)]
-    control_pool = [profile for profile in shuffled if not bool(profile.depressed)]
-
-    holdout = _take_with_class_targets(
-        depressed_pool,
-        control_pool,
-        holdout_n,
-        require_both_classes=strict and holdout_n > 0,
-    )
-    holdout_ids = {profile.persona_id for profile in holdout}
-    train_pool = [profile for profile in shuffled if profile.persona_id not in holdout_ids]
-
-    if len(train_pool) != train_n:
-        raise ValueError(
-            "Stratified strict split failed: train split size mismatch; increase persona count or adjust ratios."
-        )
-
-    holdout_shuffled = holdout[:]
-    rng.shuffle(holdout_shuffled)
-    val_split = holdout_shuffled[:val_n]
-    test_split = holdout_shuffled[val_n:]
-    if len(val_split) != val_n or len(test_split) != test_n:
-        raise ValueError("Stratified strict split failed: holdout allocation mismatch.")
-
-    split_map: Dict[str, List[PersonaProfile]] = {
-        "train": [replace(item, split="train", template_bank="train_bank_v1") for item in train_pool],
-        "val": [replace(item, split="val", template_bank="val_bank_v1") for item in val_split],
-        "test": [replace(item, split="test", template_bank="test_bank_v1") for item in test_split],
-    }
-    return split_map
-
-
-def build_split_profiles(
-    count: int,
-    seed: int,
-    split_seed: int | None = None,
-    ratios: tuple[float, float, float] = (0.6, 0.2, 0.2),
-) -> Dict[str, List[PersonaProfile]]:
-    generator_version = os.getenv("SIM_GENERATOR_VERSION", "sim_v3").strip() or "sim_v3"
-    pool = generate_persona_pool(count=count, seed=seed, generator_version=generator_version)
-    effective_split_seed = int(split_seed) if split_seed is not None else int(seed)
-    split_profiles = assign_splits(pool=pool, seed=effective_split_seed, ratios=ratios)
-
-    enforce_disjoint = os.getenv("SIM_TEMPLATE_DISJOINT_ENFORCE", "1").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "y",
-        "on",
-    }
-    if enforce_disjoint:
-        from persona.sim_behavior import validate_template_disjointness
-
-        report = validate_template_disjointness()
-        if not bool(report.get("strict_pass", False)):
-            raise ValueError(f"Split template banks are not disjoint: {report}")
-
-    return {
-        "synthetic_train": split_profiles["train"],
-        "synthetic_val": split_profiles["val"],
-        "synthetic_test": split_profiles["test"],
-    }
-
-
-def generate_persona_profiles(count: int, seed: int = 42) -> List[PersonaProfile]:
-    split_profiles = build_split_profiles(count=count, seed=seed)
-    return split_profiles["synthetic_train"] + split_profiles["synthetic_val"] + split_profiles["synthetic_test"]
-
-
-def split_synthetic_profiles(
-    profiles: List[PersonaProfile],
-    seed: int,
-    train_ratio: float = 0.6,
-    val_ratio: float = 0.2,
-) -> Dict[str, List[PersonaProfile]]:
-    if profiles and all(getattr(profile, "split", None) in {"train", "val", "test"} for profile in profiles):
-        return {
-            "synthetic_train": [profile for profile in profiles if profile.split == "train"],
-            "synthetic_val": [profile for profile in profiles if profile.split == "val"],
-            "synthetic_test": [profile for profile in profiles if profile.split == "test"],
-        }
-
-    ratios = (train_ratio, val_ratio, max(0.0, 1.0 - train_ratio - val_ratio))
-    assigned = assign_splits(pool=profiles, seed=seed, ratios=ratios)
-    return {
-        "synthetic_train": assigned["train"],
-        "synthetic_val": assigned["val"],
-        "synthetic_test": assigned["test"],
-    }

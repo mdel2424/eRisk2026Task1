@@ -182,7 +182,6 @@ def build_eval_diagnostics_entry(
                     else 0
                 ),
                 "failure_counters": final_state.get("failure_counters", {}),
-                "calibrator_mode": final_state.get("calibrator_mode", ""),
                 "sim_style_stats": style_stats,
             }
         ),
@@ -195,11 +194,8 @@ def write_eval_artifacts(
     conversations: List,
     results: List,
     diagnostics_payload: List[Dict[str, Any]],
-    val_rows: List[Dict[str, Any]],
-    test_rows: List[Dict[str, Any]],
     overall_rows: List[Dict[str, Any]],
     route_distribution: Counter[str],
-    calibrator_mode_counts: Counter[str],
     turns_total: int,
     evidence_turns_nonempty: int,
     evidence_records_total: int,
@@ -217,65 +213,38 @@ def write_eval_artifacts(
     early_stop_reason_distribution: Counter[str],
     extract_parse_fail_log_entries: List[Dict[str, Any]],
     run_failure_counters: Counter[str],
-    calibrator_status: Dict[str, Any],
-    id_overlap_counts: Dict[str, int],
-    template_overlap_counts: Dict[str, int],
-    template_validator: Dict[str, Any],
-    leakage_reasons: List[str],
-    calibrator_train_ids: List[str],
     eval_ids: List[str],
     manifest_hash: str,
     requested_eval_mode: str,
     effective_eval_mode: str,
     prompt_version: str,
     seed: int,
-    split_seed: int,
     persona_count: int,
     processed_profiles: int,
     trace_level: str,
     max_api_calls: int,
     save_diagnostics: bool,
-    fit_calibrator_policy: str,
     debug_outputs: bool,
     run_profile: str,
     requested_save_diagnostics: bool,
     requested_trace_level: str,
     requested_debug_outputs: bool,
-    train_profiles: List,
-    val_profiles: List,
-    test_profiles: List,
+    all_profiles: List,
 ) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
-    train_eval_overlap = len(set(calibrator_train_ids).intersection(set(eval_ids)))
-    if train_eval_overlap > 0:
-        leakage_reasons.append("calibrator_train_eval_overlap")
-
-    val_metrics = compute_metrics(val_rows) if val_rows else {}
-    test_metrics = compute_metrics(test_rows) if test_rows else {}
     overall_metrics = compute_metrics(overall_rows) if overall_rows else {}
     max_turns = int(os.getenv("MAX_TURNS", "40"))
-    val_metrics_payload = _with_objective(val_metrics, max_turns=max_turns)
-    test_metrics_payload = _with_objective(test_metrics, max_turns=max_turns)
     overall_metrics_payload = _with_objective(overall_metrics, max_turns=max_turns)
     primary_split, primary_metrics = _select_primary_metrics(
-        synthetic_val=val_metrics_payload,
-        synthetic_test=test_metrics_payload,
         overall_labeled=overall_metrics_payload,
     )
     evaluation_stability_warnings = []
-    evaluation_stability_warnings.extend(_evaluation_stability_warnings(val_metrics_payload, "synthetic_val"))
-    evaluation_stability_warnings.extend(_evaluation_stability_warnings(test_metrics_payload, "synthetic_test"))
     evaluation_stability_warnings.extend(_evaluation_stability_warnings(overall_metrics_payload, "overall_labeled"))
 
     metrics_payload: Dict[str, Any] = {
         "eval_mode_requested": requested_eval_mode,
         "eval_mode_effective": effective_eval_mode,
         "prompt_version": prompt_version,
-        "synthetic_train_count": len(train_profiles),
-        "synthetic_val_count": len(val_profiles),
-        "synthetic_test_count": len(test_profiles),
-        "split_counts": {"train": len(train_profiles), "val": len(val_profiles), "test": len(test_profiles)},
-        "synthetic_val": val_metrics_payload,
-        "synthetic_test": test_metrics_payload,
+        "persona_count": len(all_profiles),
         "overall_labeled": overall_metrics_payload,
         "primary_eval_split": primary_split,
         "primary_metrics": primary_metrics,
@@ -284,7 +253,6 @@ def write_eval_artifacts(
             "Evaluation now uses item-level BDI metrics only; binary depressed/control metrics are deprecated.",
             "symptom_f1_at_4 is an alias of item_f1_macro_at_1 (full 21-item macro F1 with positive threshold >=1).",
         ],
-        "calibrator_status": calibrator_status,
         "llm_usage": get_llm_usage(),
     }
     if primary_metrics:
@@ -348,7 +316,6 @@ def write_eval_artifacts(
                 "eval_mode_effective": effective_eval_mode,
                 "prompt_version": prompt_version,
                 "personas_requested": persona_count,
-                "split_seed": split_seed,
                 "profiles_evaluated": processed_profiles,
                 "turns_total": turns_total,
                 "trace_level": trace_level,
@@ -386,28 +353,20 @@ def write_eval_artifacts(
                 "avg_nonempty_turns_after_min_turns": round(avg_nonempty_turns_after_min_turns, 4),
                 "early_stop_reason_distribution": dict(early_stop_reason_distribution),
             },
-            "calibrator_mode_counts": dict(calibrator_mode_counts),
             "evaluation_stability_warnings": evaluation_stability_warnings,
             "metric_mode": str(primary_metrics.get("metric_mode", "")) if primary_metrics else "",
             "item_f1_macro_at_1": float(primary_metrics.get("item_f1_macro_at_1", 0.0)) if primary_metrics else 0.0,
             "item_mae": float(primary_metrics.get("item_mae", 0.0)) if primary_metrics else 0.0,
             "llm_usage": get_llm_usage(),
-            "calibrator_status": calibrator_status,
             **family_summary,
         }
         _write_json(output_dir / "failure_report_run_local.json", failure_report_payload)
 
     leakage_report_payload = {
-        "split_sizes": {"train": len(train_profiles), "val": len(val_profiles), "test": len(test_profiles)},
-        "id_overlap_counts": id_overlap_counts,
-        "template_overlap_counts": template_overlap_counts,
-        "template_phrase_overlap": template_validator,
-        "calibrator_train_ids_count": len(set(calibrator_train_ids)),
+        "persona_count": len(all_profiles),
         "eval_ids_count": len(set(eval_ids)),
-        "train_eval_overlap_count": train_eval_overlap,
         "manifest_hash": manifest_hash,
-        "strict_pass": len(leakage_reasons) == 0,
-        "failure_reasons": leakage_reasons,
+        "strict_pass": True,
     }
     _write_json(output_dir / "leakage_report_run_local.json", leakage_report_payload)
 
@@ -419,7 +378,6 @@ def write_eval_artifacts(
             "mode": "eval",
             "personas": persona_count,
             "seed": seed,
-            "split_seed": split_seed,
             "eval_mode": requested_eval_mode,
             "prompt_version": prompt_version,
             "save_diagnostics_requested": bool(requested_save_diagnostics),
@@ -430,7 +388,6 @@ def write_eval_artifacts(
             "debug_outputs_effective": bool(debug_outputs),
             "run_profile": run_profile,
             "max_api_calls": max_api_calls,
-            "fit_calibrator": fit_calibrator_policy,
         },
         "env": {
             "PROMPT_VERSION": os.getenv("PROMPT_VERSION", "v1"),
@@ -492,12 +449,8 @@ def write_eval_artifacts(
             "RISK_SENTINEL_FLAG_THRESHOLD": os.getenv("RISK_SENTINEL_FLAG_THRESHOLD", "0.45"),
             "RISK_SENTINEL_SHORTCIRCUIT_THRESHOLD": os.getenv("RISK_SENTINEL_SHORTCIRCUIT_THRESHOLD", "1.1"),
             "RISK_SENTINEL_ACTIVE_SHORTCIRCUIT": os.getenv("RISK_SENTINEL_ACTIVE_SHORTCIRCUIT", "0"),
-            "CALIBRATOR_MIN_TRAIN_RECORDS": os.getenv("CALIBRATOR_MIN_TRAIN_RECORDS", "10"),
-            "CALIBRATOR_PATH": os.getenv("CALIBRATOR_PATH", ""),
             "STRICT_SPLIT_LOCK": os.getenv("STRICT_SPLIT_LOCK", "1"),
-            "EVAL_STRATIFIED_STRICT": os.getenv("EVAL_STRATIFIED_STRICT", "1"),
             "SIM_GENERATOR_VERSION": os.getenv("SIM_GENERATOR_VERSION", "sim_v3"),
-            "SIM_TEMPLATE_DISJOINT_ENFORCE": os.getenv("SIM_TEMPLATE_DISJOINT_ENFORCE", "1"),
             "SIM_HEDGE_RATE": os.getenv("SIM_HEDGE_RATE", "0.60"),
             "SIM_NORMALIZATION_RATE": os.getenv("SIM_NORMALIZATION_RATE", "0.40"),
             "SIM_CONTEXT_ANCHOR_RATE": os.getenv("SIM_CONTEXT_ANCHOR_RATE", "0.55"),

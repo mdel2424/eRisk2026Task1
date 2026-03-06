@@ -274,10 +274,6 @@ class AgentState(TypedDict):
     route_debug: str
     specialist_debug: str
     stop_debug: str
-    latest_feature_vector: Dict[str, float]
-    calibrator_mode: str
-    positive_contributions: List[dict]
-    negative_contributions: List[dict]
 
 
 def coerce_item_belief(item_id: int, value: Any) -> ItemBelief:
@@ -374,10 +370,6 @@ def build_initial_state(persona_id: Optional[str] = None) -> AgentState:
         route_history=[],
         stop_history=[],
         global_confidence=0.0,
-        latest_feature_vector={},
-        calibrator_mode="deterministic_default",
-        positive_contributions=[],
-        negative_contributions=[],
     )
 
 
@@ -385,25 +377,10 @@ def symptom_name_from_item(item_id: int) -> str:
     return BDI_ITEM_NAMES.get(item_id, f"Item {item_id}")
 
 
-def top_symptoms_from_beliefs(item_beliefs: Dict[int, ItemBelief], limit: int = 4) -> List[str]:
-    ranked = sorted(
-        item_beliefs.items(),
-        key=lambda pair: pair[1].expected_score,
-        reverse=True,
-    )
-    top = [symptom_name_from_item(item_id) for item_id, belief in ranked if belief.expected_score > 0.25]
-    return top[:limit]
-
-
 def top_symptoms_from_scores(scores_by_item: Dict[int, int], limit: int = 4) -> List[str]:
     ranked = sorted(scores_by_item.items(), key=lambda pair: (-int(pair[1]), int(pair[0])))
     top = [symptom_name_from_item(item_id) for item_id, score in ranked if score > 0]
     return top[:limit]
-
-
-def top_item_ids_from_scores(scores_by_item: Dict[int, int], limit: int = 4) -> List[int]:
-    ranked = sorted(scores_by_item.items(), key=lambda pair: (-int(pair[1]), int(pair[0])))
-    return [int(item_id) for item_id, score in ranked if int(score) > 0][:limit]
 
 
 def bump_failure_counter(

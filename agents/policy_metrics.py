@@ -4,11 +4,6 @@ import math
 import os
 from typing import Dict, List
 
-from core.calibration import (
-    build_feature_vector,
-    get_calibrator_bundle,
-    predict_with_explanations,
-)
 from core.state import AgentState, ItemBelief, PolicyMetricsState, coerce_item_belief
 
 
@@ -45,17 +40,7 @@ def policy_metrics(state: AgentState) -> Dict:
         unresolved_bonus = 1.0 if int(belief.support_count) == 0 else 0.25
         ig_estimates[item_id] = round(float(belief.entropy) * unresolved_bonus, 6)
 
-    confidence_rows = []
-    for row in list(state.get("latest_turn_likelihoods", [])):
-        try:
-            confidence_rows.append(float(getattr(row, "extract_confidence", 0.0)))
-        except (TypeError, ValueError):
-            continue
-
     risk_flag = bool(state.get("risk_flag", False))
-    feature_vector = build_feature_vector(beliefs, confidence_rows, risk_flag)
-    bundle = get_calibrator_bundle()
-    prediction = predict_with_explanations(feature_vector, bundle)
 
     # Single clinician-style confidence: support + coverage saturation with near-monotonic smoothing.
     try:
@@ -140,7 +125,13 @@ def policy_metrics(state: AgentState) -> Dict:
     global_confidence = max(global_confidence, prev_confidence - conf_max_drop_per_turn)
     global_confidence = max(0.0, min(1.0, global_confidence))
 
-    label_prob = _sigmoid(float(prediction.raw_label_score))
+    # Simple sigmoid estimate for label probability (logging only).
+    bdi_threshold = float(os.getenv("DETERMINISTIC_BDI_LABEL_THRESHOLD", "14"))
+    label_prob = _sigmoid((total_expected_bdi - bdi_threshold) / 6.0)
+
+    predicted_bdi_score = max(0, min(63, int(round(total_expected_bdi))))
+    predicted_label = "depressed" if (predicted_bdi_score >= int(bdi_threshold) or risk_flag) else "control"
+
     metrics = PolicyMetricsState(
         total_expected_bdi=max(0.0, min(63.0, total_expected_bdi)),
         label_prob=max(0.0, min(1.0, label_prob)),
@@ -149,25 +140,6 @@ def policy_metrics(state: AgentState) -> Dict:
         top_uncertain_items=top_uncertain_items,
         last_ig_estimates=ig_estimates,
     )
-
-    positive = [
-        {
-            "feature": item.feature,
-            "value": item.value,
-            "weight": item.weight,
-            "impact": item.impact,
-        }
-        for item in prediction.positive_contributions
-    ]
-    negative = [
-        {
-            "feature": item.feature,
-            "value": item.value,
-            "weight": item.weight,
-            "impact": item.impact,
-        }
-        for item in prediction.negative_contributions
-    ]
 
     turn_trace = dict(state.get("turn_trace", {}))
     turn_trace["policy_metrics"] = {
@@ -194,7 +166,6 @@ def policy_metrics(state: AgentState) -> Dict:
             if int(beliefs[item_id].last_update_turn) == int(state.get("turn_index", 0))
         ],
         "risk_flag": risk_flag,
-        "calibrator_mode": prediction.mode,
         "global_confidence": round(global_confidence, 4),
         "target_confidence": round(target_confidence, 4),
         "depth_confidence": round(depth_confidence, 4),
@@ -202,18 +173,12 @@ def policy_metrics(state: AgentState) -> Dict:
         "empty_evidence_streak": empty_evidence_streak,
         "decay_applied": round(decay_applied, 6),
         "confidence_source": "support_coverage_saturation_smoothed",
-        "positive_features": [row["feature"] for row in positive[:3]],
-        "negative_features": [row["feature"] for row in negative[:3]],
     }
 
     return {
         "metrics": metrics,
-        "latest_feature_vector": feature_vector,
-        "calibrator_mode": prediction.mode,
-        "positive_contributions": positive,
-        "negative_contributions": negative,
         "global_confidence": float(global_confidence),
-        "raw_predicted_bdi_score": int(prediction.predicted_bdi_score),
-        "raw_predicted_label": str(prediction.predicted_label),
+        "raw_predicted_bdi_score": predicted_bdi_score,
+        "raw_predicted_label": predicted_label,
         "turn_trace": turn_trace,
     }

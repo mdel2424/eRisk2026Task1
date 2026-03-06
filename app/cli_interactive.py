@@ -4,7 +4,7 @@ from typing import Any, Dict, List
 
 from core.llm import LLMBudgetExceeded, get_llm_usage, reset_llm_usage, set_llm_call_budget
 from core.state import BDI_ITEM_NAMES, build_initial_state
-from persona import PersonaProfile, build_split_profiles, create_persona
+from persona import PersonaProfile, generate_persona_pool, create_persona
 
 from app.cli_runtime import _build_probe_intent
 from app.cli_runtime_helpers import _assert_openrouter_ready, _print_backend_info
@@ -16,8 +16,7 @@ PIPELINE_ORDER = (
 
 
 def _all_profiles(persona_count: int, seed: int) -> List[PersonaProfile]:
-    splits = build_split_profiles(count=persona_count, seed=seed)
-    rows = splits["synthetic_train"] + splits["synthetic_val"] + splits["synthetic_test"]
+    rows = generate_persona_pool(count=persona_count, seed=seed)
 
     def _sort_key(profile: PersonaProfile) -> tuple[int, str]:
         try:

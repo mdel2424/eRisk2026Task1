@@ -94,8 +94,6 @@ def run_eval_notebook(
     save_diagnostics: bool = False,
     max_api_calls: int = 500,
     trace_level: str = "off",
-    fit_calibrator_policy: str = "auto",
-    randomize_eval_split: bool = True,
     debug_outputs: bool = False,
     output_dir: str | Path = "outputs",
 ) -> Dict[str, Any]:
@@ -110,8 +108,6 @@ def run_eval_notebook(
         save_diagnostics=save_diagnostics,
         max_api_calls=max_api_calls,
         trace_level=trace_level,
-        fit_calibrator_policy=fit_calibrator_policy,
-        randomize_eval_split=randomize_eval_split,
         debug_outputs=debug_outputs,
         output_dir=resolved_output_dir,
     )

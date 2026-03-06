@@ -14,38 +14,8 @@ from persona.sim_templates import (
     NORMALIZATION_PHRASES,
     RISK_PROTECTIVE_FACTORS,
     RISK_RESPONSE_BANK,
-    SIM_TEMPLATE_BANKS,
+    SIM_TEMPLATE_BANK,
 )
-
-
-def _normalize(text: str) -> str:
-    return re.sub(r"\s+", " ", text.strip().lower())
-
-
-def validate_template_disjointness() -> Dict[str, object]:
-    details: Dict[str, Dict[str, int]] = {}
-    total_overlap = 0
-    split_names = list(SIM_TEMPLATE_BANKS.keys())
-
-    for category in ("openers", "bridges", "deflectors"):
-        cat_details: Dict[str, int] = {}
-        for idx in range(len(split_names)):
-            left = split_names[idx]
-            left_set = {_normalize(v) for v in SIM_TEMPLATE_BANKS[left][category]}
-            for jdx in range(idx + 1, len(split_names)):
-                right = split_names[jdx]
-                right_set = {_normalize(v) for v in SIM_TEMPLATE_BANKS[right][category]}
-                overlap = left_set.intersection(right_set)
-                key = f"{left}__{right}"
-                cat_details[key] = len(overlap)
-                total_overlap += len(overlap)
-        details[category] = cat_details
-
-    return {
-        "total_overlap": total_overlap,
-        "details": details,
-        "strict_pass": total_overlap == 0,
-    }
 
 
 def _coerce_probe_intent(probe_intent: Dict[str, object] | None) -> Dict[str, object]:
@@ -106,6 +76,10 @@ def _item_sentence(item_id: int, score: int) -> str:
 
     symptom = BDI_ITEM_NAMES.get(item_id, f"item {item_id}").lower()
     return f"{symptom} has been more noticeable lately"
+
+
+def _normalize(text: str) -> str:
+    return re.sub(r"[^\w\s]", "", text.lower()).strip()
 
 
 def response_style_flags(text: str) -> Dict[str, bool]:
@@ -221,10 +195,10 @@ def build_deterministic_reply(
     evasive: bool,
     rng,
 ) -> str:
-    split_key = split if split in SIM_TEMPLATE_BANKS else "test"
-    bank = SIM_TEMPLATE_BANKS[split_key]
+    bank = SIM_TEMPLATE_BANK
 
     _ = family  # retained for API compatibility; behavior is now intent-driven.
+    _ = split
     intent_payload = _coerce_probe_intent(probe_intent)
     target_item = int(intent_payload["target_item_id"])
     target_score = int(bdi_scores.get(target_item, 0))

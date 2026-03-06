@@ -6,7 +6,7 @@ Minimal PoC for eRisk 2026 Task 1:
 - Final-time module-weighted imputation for unobserved BDI items (interpretable item-sum BDI)
 - Detector backends: `local_hf` or `openrouter`
 - Persona runtime: deterministic simulator only (`openrouter_sim` path, no persona LLM calls)
-- Synthetic-only eval with leakage guards and traceability artifacts
+- Synthetic-only eval with traceability artifacts
 
 ## Setup
 
@@ -37,23 +37,20 @@ Simulator behavior defaults:
 
 ```bash
 python -m app.cli --mode interactive --personas 10 --seed 42 --interactive_persona_index 0
-python -m app.cli --mode eval --personas 10 --seed 42 --eval_mode mixed_holdout --prompt_version v1 --max_api_calls 500 --fit_calibrator auto
-python -m app.cli --mode eval --personas 10 --seed 42 --eval_mode mixed_holdout --prompt_version v1 --max_api_calls 500 --fit_calibrator auto --debug_outputs true --save_diagnostics true --trace_level compact
-python -m app.cli --mode eval_multi --personas 30 --multi_seeds 42,43,44 --eval_mode mixed_holdout --prompt_version v1 --max_api_calls 380 --fit_calibrator auto
-python -m app.cli --mode tune --tune_personas 30 --tune_seed 42 --tune_max_api_calls 800 --tune_trace_level off --fit_calibrator auto
+python -m app.cli --mode eval --personas 10 --seed 42 --max_api_calls 1200
+python -m app.cli --mode eval --personas 10 --seed 42 --max_api_calls 1200 --debug_outputs true --save_diagnostics true --trace_level compact
+python -m app.cli --mode eval_multi --personas 30 --multi_seeds 42,43,44 --max_api_calls 1200
+python -m app.cli --mode tune --tune_personas 30 --tune_seed 42 --tune_max_api_calls 800
 ```
 
 Notebook workflow:
-- `notebooks/eval_item_error_analysis.ipynb` is a run-first eval workbench around `run_eval(...)`.
-- By default, `Run All` executes a fresh eval into `outputs/`, then reloads the standard artifacts and renders summary/error analysis tables.
+- `notebooks/eval_item_error_analysis.ipynb` runs a fresh eval into `outputs/`, then renders summary/error analysis tables.
 
 `interactive` is a stepper:
 - press Enter to alternate `detector -> persona -> detector -> ...`
 - each step prints compact pipeline flow (ingest, risk, extraction, belief/policy, route, stop, usage)
-- transcript stays natural-language only; probe intent is shown from hidden handoff metadata
 
-`eval` randomizes holdout split membership per run (same generated pool, different val/test IDs) to improve persona coverage across repeated local runs.  
-`eval_multi`/`tune` remain deterministic by seed.
+`eval` evaluates all generated personas. `eval_multi`/`tune` remain deterministic by seed.
 
 By default, eval prints only:
 - `item_f1`
@@ -96,6 +93,4 @@ Debug mode (`--debug_outputs true`) additionally writes:
 
 Configuration:
 - Use `.env.example` as the full source of tunable parameters.
-- Most useful day-to-day knobs are `MIN_TURNS`, `MAX_TURNS`, `STOP_CONFIDENCE`, `max_api_calls`, and `--debug_outputs`.
-- For OpenRouter stability under occasional provider/network stalls, tune `OPENROUTER_MAX_RETRIES`, `OPENROUTER_RETRY_BASE_MS`, and `OPENROUTER_RETRY_JITTER_MS`.
-- If strict split lock is enabled and persona generation logic changes, bump `SIM_GENERATOR_VERSION` (or remove prior manifest files) before rerunning eval.
+- Most useful knobs: `MIN_TURNS`, `MAX_TURNS`, `STOP_CONFIDENCE`, `max_api_calls`, and `--debug_outputs`.

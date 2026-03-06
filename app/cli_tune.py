@@ -26,7 +26,6 @@ def run_tune(
     tune_trace_level: str,
     tune_prompt_version: str,
     tune_top_k: int,
-    fit_calibrator_policy: str,
     debug_outputs: bool = False,
 ) -> None:
     output_dir = Path("outputs/tuning")
@@ -88,7 +87,6 @@ def run_tune(
                 save_diagnostics=tune_save_diagnostics,
                 max_api_calls=tune_max_api_calls,
                 trace_level=tune_trace_level,
-                fit_calibrator_policy=fit_calibrator_policy,
                 output_dir=candidate_dir,
                 debug_outputs=debug_outputs,
             )
@@ -282,7 +280,6 @@ def run_tune(
             "tune_max_api_calls": tune_max_api_calls,
             "tune_prompt_version": tune_prompt_version,
             "tune_top_k": tune_top_k,
-            "fit_calibrator": fit_calibrator_policy,
             "debug_outputs": bool(debug_outputs),
         },
         "baseline": baseline_record,

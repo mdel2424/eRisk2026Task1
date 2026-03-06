@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from core.evaluation import compute_metrics
-from core.runtime_policy import resolve_detector_backend, resolve_persona_backend
 from persona import PersonaProfile
 
 from app.cli_common import _parse_bool
@@ -34,28 +33,11 @@ def _with_objective(metrics: Dict[str, Any], max_turns: int) -> Dict[str, Any]:
 
 
 def _select_primary_metrics(
-    synthetic_val: Dict[str, Any],
-    synthetic_test: Dict[str, Any],
     overall_labeled: Dict[str, Any],
 ) -> Tuple[str, Dict[str, Any]]:
     if overall_labeled:
         return "overall_labeled", overall_labeled
-    if synthetic_test:
-        return "synthetic_test", synthetic_test
-    if synthetic_val:
-        return "synthetic_val", synthetic_val
     return "overall_labeled", {}
-
-
-def _resolve_fit_calibrator_policy(policy: str) -> bool:
-    value = str(policy).strip().lower()
-    if value == "on":
-        return True
-    if value == "off":
-        return False
-    detector_backend = resolve_detector_backend()
-    persona_backend = resolve_persona_backend()
-    return not (detector_backend == "openrouter" or persona_backend == "openrouter_sim")
 
 
 def _strict_split_lock_enabled() -> bool:
@@ -66,11 +48,8 @@ def _manifest_payload(
     *,
     persona_count: int,
     seed: int,
-    split_seed: int,
     generator_version: str,
-    train_profiles: List[PersonaProfile],
-    val_profiles: List[PersonaProfile],
-    test_profiles: List[PersonaProfile],
+    profiles: List[PersonaProfile],
 ) -> Dict[str, Any]:
     def _profile_dict(profile: PersonaProfile) -> Dict[str, Any]:
         return {
@@ -90,22 +69,15 @@ def _manifest_payload(
             "generator_version": profile.generator_version,
         }
 
-    all_profiles = train_profiles + val_profiles + test_profiles
     return {
         "run_config": {
             "manifest_schema_version": MANIFEST_SCHEMA_VERSION,
             "persona_count": persona_count,
             "seed": seed,
-            "split_seed": split_seed,
             "generator_version": generator_version,
-            "split_ratios": {"train": 0.6, "val": 0.2, "test": 0.2},
         },
-        "split_counts": {
-            "train": len(train_profiles),
-            "val": len(val_profiles),
-            "test": len(test_profiles),
-        },
-        "profiles": [_profile_dict(profile) for profile in all_profiles],
+        "persona_count": len(profiles),
+        "profiles": [_profile_dict(profile) for profile in profiles],
     }
 
 
@@ -135,25 +107,6 @@ def _enforce_manifest_lock(manifest_path: Path, current_payload: Dict[str, Any],
             "If this is an intentional simulator update, bump SIM_GENERATOR_VERSION "
             "or remove outputs/persona_manifest_run_local.json."
         )
-
-
-def _split_overlap_count(a: List[str], b: List[str]) -> int:
-    return len(set(a).intersection(set(b)))
-
-
-def _template_overlap_counts(
-    train_profiles: List[PersonaProfile],
-    val_profiles: List[PersonaProfile],
-    test_profiles: List[PersonaProfile],
-) -> Dict[str, int]:
-    train_banks = [profile.template_bank for profile in train_profiles]
-    val_banks = [profile.template_bank for profile in val_profiles]
-    test_banks = [profile.template_bank for profile in test_profiles]
-    return {
-        "train_val": _split_overlap_count(train_banks, val_banks),
-        "train_test": _split_overlap_count(train_banks, test_banks),
-        "val_test": _split_overlap_count(val_banks, test_banks),
-    }
 
 
 def _family_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:

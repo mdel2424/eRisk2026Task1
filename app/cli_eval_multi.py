@@ -59,7 +59,6 @@ def run_eval_multi_seed(
     save_diagnostics: bool,
     max_api_calls: int,
     trace_level: str,
-    fit_calibrator_policy: str,
     output_dir: str | Path,
     debug_outputs: bool = False,
 ) -> Dict[str, Any]:
@@ -81,7 +80,6 @@ def run_eval_multi_seed(
             save_diagnostics=save_diagnostics,
             max_api_calls=max_api_calls,
             trace_level=trace_level,
-            fit_calibrator_policy=fit_calibrator_policy,
             output_dir=seed_output,
             debug_outputs=debug_outputs,
         )
@@ -126,7 +124,6 @@ def run_eval_multi_seed(
             "prompt_version": prompt_version,
             "max_api_calls_per_seed": max_api_calls,
             "trace_level": trace_level,
-            "fit_calibrator": fit_calibrator_policy,
             "save_diagnostics": bool(save_diagnostics),
             "debug_outputs": bool(debug_outputs),
         },
