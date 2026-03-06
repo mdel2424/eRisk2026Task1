@@ -7,11 +7,39 @@ from core.state import AgentState, ControlState, StopDecision
 
 
 
+def _items_attempted(state: AgentState) -> set[int]:
+    """Return the set of item_ids that have been targeted at least once."""
+    attempted: set[int] = set()
+    for row in state.get("route_history", []):
+        if isinstance(row, dict):
+            targets = row.get("target_items", []) or []
+        else:
+            targets = getattr(row, "target_items", []) or []
+        for item in targets:
+            try:
+                item_id = int(item)
+                if 1 <= item_id <= 21:
+                    attempted.add(item_id)
+            except (TypeError, ValueError):
+                continue
+    return attempted
+
+
 def _structural_stop_eligible(state: AgentState) -> Tuple[bool, float, float]:
-    """Check whether coverage and evidence depth are sufficient to stop."""
+    """Check whether coverage and evidence depth are sufficient to stop.
+
+    Coverage counts items that have been *attempted* (asked about at least
+    once), not just items with positive evidence.  This ensures low-BDI
+    personas — where most items legitimately score 0 — can still reach
+    the coverage threshold.
+    """
     min_coverage = float(os.getenv("STOP_MIN_COVERAGE", "0.714"))
     min_avg_support = float(os.getenv("STOP_MIN_AVG_SUPPORT", "1.0"))
 
+    attempted = _items_attempted(state)
+    coverage = len(attempted) / 21.0
+
+    # avg_support is computed over items that DO have evidence.
     beliefs = state.get("item_beliefs", {})
     observed_supports = []
     for item_id in range(1, 22):
@@ -25,9 +53,14 @@ def _structural_stop_eligible(state: AgentState) -> Tuple[bool, float, float]:
         if support > 0:
             observed_supports.append(support)
 
-    coverage = len(observed_supports) / 21.0
     avg_support = (sum(observed_supports) / len(observed_supports)) if observed_supports else 0.0
-    eligible = coverage >= min_coverage and avg_support >= min_avg_support
+
+    # For low-BDI personas most items have no evidence.  Require avg_support
+    # only when there IS evidence; otherwise coverage alone is sufficient.
+    if observed_supports:
+        eligible = coverage >= min_coverage and avg_support >= min_avg_support
+    else:
+        eligible = coverage >= min_coverage
     return eligible, coverage, avg_support
 
 
@@ -107,7 +140,7 @@ def stop_decider(state: AgentState) -> Dict:
         "min_turns": int(os.getenv("MIN_TURNS", "20")),
         "max_turns": int(os.getenv("MAX_TURNS", "40")),
         "stop_min_coverage": float(os.getenv("STOP_MIN_COVERAGE", "0.714")),
-        "stop_min_avg_support": float(os.getenv("STOP_MIN_AVG_SUPPORT", "1.5")),
+        "stop_min_avg_support": float(os.getenv("STOP_MIN_AVG_SUPPORT", "1.0")),
     }
     turn_trace["stop_decider"] = stop_trace
     turn_trace["stop"] = stop_trace

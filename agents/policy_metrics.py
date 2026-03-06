@@ -67,13 +67,37 @@ def policy_metrics(state: AgentState) -> Dict:
         conf_depth_weight = conf_depth_weight / weight_sum
         conf_coverage_weight = conf_coverage_weight / weight_sum
 
+    # Build set of items attempted (asked about) from route_history.
+    items_attempted: set[int] = set()
+    for row in state.get("route_history", []):
+        if isinstance(row, dict):
+            targets = row.get("target_items", []) or []
+        else:
+            targets = getattr(row, "target_items", []) or []
+        for item in targets:
+            try:
+                item_id_parsed = int(item)
+                if 1 <= item_id_parsed <= 21:
+                    items_attempted.add(item_id_parsed)
+            except (TypeError, ValueError):
+                continue
+
     item_confidences = []
     for item_id in range(1, 22):
         support_i = max(0.0, float(getattr(beliefs[item_id], "support_count", 0)))
-        item_conf = 1.0 - math.exp(-support_i / conf_support_tau)
+        if support_i > 0:
+            # Evidence found: confidence from support saturation.
+            item_conf = 1.0 - math.exp(-support_i / conf_support_tau)
+        elif item_id in items_attempted:
+            # Attempted but no evidence: "absence of evidence" gives
+            # moderate confidence (the item is likely score 0).
+            item_conf = 0.50
+        else:
+            # Not yet attempted: no confidence.
+            item_conf = 0.0
         item_confidences.append(max(0.0, min(1.0, item_conf)))
     depth_confidence = sum(item_confidences) / float(len(item_confidences)) if item_confidences else 0.0
-    coverage_confidence = max(0.0, min(1.0, coverage))
+    coverage_confidence = max(0.0, min(1.0, len(items_attempted) / 21.0))
     target_confidence = max(
         0.0,
         min(1.0, (conf_depth_weight * depth_confidence) + (conf_coverage_weight * coverage_confidence)),
