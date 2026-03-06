@@ -18,7 +18,7 @@ Hard constraints:
 - Use a conversational but clinically purposeful tone, like a skilled therapist.
 - Keep it under 50 words.
 - Anchor to a concrete detail from the persona's latest message when possible.
-- Use a two-week timeframe when clinically relevant; vary the phrasing naturally.
+- Focus on a two-week timeframe when clinically relevant; vary the phrasing naturally.
 - Probe exactly one goal: {probe_goal} (frequency | duration | impact | exemplar).
 - When probing frequency or duration, offer concrete anchors the persona can choose from
   (e.g., "hours or most of the day", "a few nights or most nights").

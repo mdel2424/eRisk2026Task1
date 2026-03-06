@@ -172,7 +172,7 @@ def _safe_join(chunks: List[str], limit_words: int = 38) -> str:
 def _maybe_context_anchor(item_id: int, score: int, context_anchor_rate: float, rng) -> str:
     if rng.random() >= context_anchor_rate:
         return ""
-    if score <= 0:
+    if score <= 1:
         hints = NEUTRAL_ITEM_CONTEXT_HINTS.get(item_id, NEUTRAL_CONTEXT_ANCHORS)
     else:
         hints = ITEM_CONTEXT_HINTS.get(item_id, CONTEXT_ANCHORS)
