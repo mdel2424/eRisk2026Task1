@@ -43,6 +43,10 @@ python -m app.cli --mode eval_multi --personas 30 --multi_seeds 42,43,44 --eval_
 python -m app.cli --mode tune --tune_personas 30 --tune_seed 42 --tune_max_api_calls 800 --tune_trace_level off --fit_calibrator auto
 ```
 
+Notebook workflow:
+- `notebooks/eval_item_error_analysis.ipynb` is a run-first eval workbench around `run_eval(...)`.
+- By default, `Run All` executes a fresh eval into `outputs/`, then reloads the standard artifacts and renders summary/error analysis tables.
+
 `interactive` is a stepper:
 - press Enter to alternate `detector -> persona -> detector -> ...`
 - each step prints compact pipeline flow (ingest, risk, extraction, belief/policy, route, stop, usage)
