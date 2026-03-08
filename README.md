@@ -4,7 +4,7 @@ Minimal PoC for eRisk 2026 Task 1:
 - LangGraph detector (`ingest_turn -> risk_sentinel -> extract_likelihoods -> belief_update -> policy_metrics -> stop_decider -> target_selector -> question_generator -> finalize_outputs`)
 - BDI-SSI module-aware probing (deterministic target item/module selection)
 - Final-time module-weighted imputation for unobserved BDI items (interpretable item-sum BDI)
-- Detector backends: `local_hf` or `openrouter`
+- Detector backends: `local_hf`, `openrouter`, or explicit local `ollama`
 - Persona runtime: deterministic simulator only (`openrouter_sim` path, no persona LLM calls)
 - Synthetic-only eval with traceability artifacts
 
@@ -22,6 +22,14 @@ Default behavior is automatic:
 - if CUDA VRAM >= `MIN_CUDA_VRAM_GB`, use `local_hf`
 - otherwise, use `openrouter`
 `OPENROUTER_API_KEY` is required only when detector resolves to `openrouter`.
+
+To use Ollama explicitly for local inference:
+- install and start Ollama outside the repo
+- run `ollama pull qwen3.5:4b`
+- set `AUTO_BACKEND_SWITCH=0`
+- set `DETECTOR_BACKEND=ollama`
+- optionally set `OLLAMA_BASE_URL` and `OLLAMA_TIMEOUT_SEC`
+- `OLLAMA_THINK_MODE=auto` keeps thinking on when CUDA is available and turns it off on CPU-only runs
 
 Persona generation is always deterministic and consumes hidden probe intent (`target_item_id`, `route`, `style`, `mode`, `directness`, `priority`) from detector state.
 Probe intent is stored only in `turn_trace`/diagnostics; transcripts remain natural-language only.

@@ -5,7 +5,7 @@ from functools import lru_cache
 
 from dotenv import load_dotenv
 
-from core.llm_backends import LocalHFChatLLM, OpenRouterChatLLM
+from core.llm_backends import LocalHFChatLLM, OllamaChatLLM, OpenRouterChatLLM
 from core.llm_types import LLMBudgetExceeded, LLMResponse
 from core.llm_usage import get_llm_usage, reset_llm_usage, set_llm_call_budget
 from core.runtime_policy import resolve_detector_backend
@@ -13,13 +13,17 @@ from core.runtime_policy import resolve_detector_backend
 load_dotenv()
 
 
+DetectorLLM = LocalHFChatLLM | OpenRouterChatLLM | OllamaChatLLM
+
+
 def _build_detector_llm(
     *,
     max_new_tokens: int,
     temperature: float,
     top_p: float,
-) -> LocalHFChatLLM | OpenRouterChatLLM:
-    if resolve_detector_backend() == "openrouter":
+) -> DetectorLLM:
+    backend = resolve_detector_backend()
+    if backend == "openrouter":
         model_id = os.getenv("OPENROUTER_DETECTOR_MODEL", "openrouter/auto").strip()
         return OpenRouterChatLLM(
             model_id=model_id,
@@ -29,6 +33,15 @@ def _build_detector_llm(
             top_p=top_p,
             base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip(),
             timeout_sec=int(os.getenv("OPENROUTER_TIMEOUT_SEC", "120")),
+        )
+    if backend == "ollama":
+        return OllamaChatLLM(
+            model_id=os.getenv("OLLAMA_DETECTOR_MODEL", "qwen3.5:4b").strip(),
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip(),
+            timeout_sec=int(os.getenv("OLLAMA_TIMEOUT_SEC", "120")),
         )
 
     model_id = os.getenv("DETECTOR_MODEL", "meta-llama/Meta-Llama-3-8B-Instruct").strip()
@@ -46,7 +59,7 @@ def _build_detector_llm(
 
 
 @lru_cache(maxsize=1)
-def get_llm() -> LocalHFChatLLM | OpenRouterChatLLM:
+def get_llm() -> DetectorLLM:
     return _build_detector_llm(
         max_new_tokens=int(os.getenv("DETECTOR_MAX_NEW_TOKENS", "96")),
         temperature=float(os.getenv("DETECTOR_TEMPERATURE", "0.2")),
@@ -55,7 +68,7 @@ def get_llm() -> LocalHFChatLLM | OpenRouterChatLLM:
 
 
 @lru_cache(maxsize=1)
-def get_extractor_llm() -> LocalHFChatLLM | OpenRouterChatLLM:
+def get_extractor_llm() -> DetectorLLM:
     return _build_detector_llm(
         max_new_tokens=int(os.getenv("DETECTOR_EXTRACTOR_MAX_NEW_TOKENS", os.getenv("DETECTOR_MAX_NEW_TOKENS", "96"))),
         temperature=float(os.getenv("DETECTOR_EXTRACTOR_TEMPERATURE", "0.0")),

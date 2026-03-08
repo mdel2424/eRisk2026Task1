@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List
 
+from core.llm_backends import list_ollama_models, normalize_ollama_base_url
 from core.io_schema import Turn
 from core.llm import get_llm_usage
 from core.runtime_policy import (
@@ -14,6 +15,15 @@ from core.runtime_policy import (
 )
 
 from app.cli_common import _serialize
+
+
+def _detector_target() -> str:
+    detector_backend = resolve_detector_backend()
+    if detector_backend == "openrouter":
+        return os.getenv("OPENROUTER_DETECTOR_MODEL", "openrouter/auto")
+    if detector_backend == "ollama":
+        return os.getenv("OLLAMA_DETECTOR_MODEL", "qwen3.5:4b")
+    return os.getenv("DETECTOR_MODEL", "")
 
 
 def _print_progress(label: str, current: int, total: int, width: int = 24) -> None:
@@ -33,11 +43,7 @@ def _print_backend_info(max_api_calls: int | None = None, trace_level: str = "co
     cuda_available, vram_gb = cuda_runtime()
     min_vram = min_cuda_vram_gb()
     cuda_gate = "pass" if (cuda_available and vram_gb >= min_vram) else "fail"
-
-    if detector_backend == "openrouter":
-        detector_target = os.getenv("OPENROUTER_DETECTOR_MODEL", "openrouter/auto")
-    else:
-        detector_target = os.getenv("DETECTOR_MODEL", "")
+    detector_target = _detector_target()
 
     persona_target = "deterministic_sim"
 
@@ -56,7 +62,7 @@ def _print_backend_info(max_api_calls: int | None = None, trace_level: str = "co
     print(f"Runtime controls: trace_level={trace_level} | max_api_calls={call_budget_text}")
 
 
-def _assert_openrouter_ready() -> None:
+def _assert_detector_backend_ready() -> None:
     detector_backend = resolve_detector_backend()
     resolve_persona_backend()
     if detector_backend == "openrouter":
@@ -64,6 +70,31 @@ def _assert_openrouter_ready() -> None:
             raise ValueError(
                 "OPENROUTER_API_KEY is required because the resolved detector backend uses OpenRouter."
             )
+        return
+
+    if detector_backend == "ollama":
+        base_url = normalize_ollama_base_url(os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"))
+        model_id = os.getenv("OLLAMA_DETECTOR_MODEL", "qwen3.5:4b").strip()
+        timeout_sec = int(os.getenv("OLLAMA_TIMEOUT_SEC", "120"))
+        if not model_id:
+            raise ValueError("OLLAMA_DETECTOR_MODEL is required because the resolved detector backend uses Ollama.")
+        try:
+            available_models = list_ollama_models(base_url, timeout_sec=timeout_sec)
+        except Exception as exc:
+            raise ValueError(
+                "Ollama backend selected but the local Ollama service is not reachable at "
+                f"{base_url}. Start Ollama and run `ollama pull {model_id}`. Details: {exc}"
+            ) from exc
+        if model_id not in available_models:
+            available_preview = ", ".join(sorted(available_models)[:8]) if available_models else "none"
+            raise ValueError(
+                f"Ollama model '{model_id}' is not available locally at {base_url}. "
+                f"Available models: {available_preview}. Run `ollama pull {model_id}`."
+            )
+
+
+def _assert_openrouter_ready() -> None:
+    _assert_detector_backend_ready()
 
 
 def _to_turns(messages: List[dict]) -> List[Turn]:

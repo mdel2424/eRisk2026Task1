@@ -41,12 +41,12 @@ def auto_backend_switch_enabled() -> bool:
     return _env_flag("AUTO_BACKEND_SWITCH", default=True)
 
 
-def resolve_detector_backend() -> Literal["local_hf", "openrouter"]:
+def resolve_detector_backend() -> Literal["local_hf", "openrouter", "ollama"]:
     if auto_backend_switch_enabled():
         return "local_hf" if has_cuda_with_min_vram() else "openrouter"
 
     backend = os.getenv("DETECTOR_BACKEND", "local_hf").strip().lower()
-    if backend in {"local_hf", "openrouter"}:
+    if backend in {"local_hf", "openrouter", "ollama"}:
         return backend  # type: ignore[return-value]
     return "local_hf"
 

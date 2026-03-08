@@ -18,7 +18,13 @@ from app.cli_eval_helpers import (
     _strict_split_lock_enabled,
 )
 from app.cli_runtime import _run_profile
-from app.cli_runtime_helpers import _assert_openrouter_ready, _print_backend_info, _print_progress, _to_turns, _usage_snippet
+from app.cli_runtime_helpers import (
+    _assert_detector_backend_ready,
+    _print_backend_info,
+    _print_progress,
+    _to_turns,
+    _usage_snippet,
+)
 from app.eval_artifacts import build_eval_diagnostics_entry, write_eval_artifacts
 
 
@@ -66,7 +72,7 @@ def run_eval(
         live_status = False
 
     os.environ["PROMPT_VERSION"] = prompt_version
-    _assert_openrouter_ready()
+    _assert_detector_backend_ready()
     set_llm_call_budget(max_api_calls if max_api_calls > 0 else None)
     reset_llm_usage()
 

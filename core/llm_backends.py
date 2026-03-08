@@ -12,7 +12,67 @@ from urllib import request as urllib_request
 
 from core.llm_types import LLMResponse
 from core.llm_usage import _record_llm_error, _record_token_usage, _reserve_llm_call
-from core.runtime_policy import min_cuda_vram_gb
+from core.runtime_policy import cuda_runtime, min_cuda_vram_gb
+
+
+def normalize_ollama_base_url(base_url: str) -> str:
+    normalized = (base_url or "http://127.0.0.1:11434").strip().rstrip("/")
+    if normalized.endswith("/api"):
+        normalized = normalized[:-4].rstrip("/")
+    return normalized or "http://127.0.0.1:11434"
+
+
+def _load_json_response(req: urllib_request.Request | str, *, timeout_sec: int) -> dict:
+    with urllib_request.urlopen(req, timeout=timeout_sec) as resp:
+        raw = resp.read().decode("utf-8")
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Received invalid JSON payload: {raw[:200]}") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError("Received non-object JSON payload")
+    return parsed
+
+
+def list_ollama_models(base_url: str, *, timeout_sec: int) -> list[str]:
+    normalized_base_url = normalize_ollama_base_url(base_url)
+    req = urllib_request.Request(
+        url=f"{normalized_base_url}/api/tags",
+        method="GET",
+    )
+    try:
+        parsed = _load_json_response(req, timeout_sec=timeout_sec)
+    except urllib_error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", errors="ignore")
+        except Exception:
+            detail = str(exc)
+        raise RuntimeError(f"Ollama HTTP {exc.code}: {detail}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"Ollama request failed: {exc}") from exc
+
+    names: list[str] = []
+    models = parsed.get("models", [])
+    if isinstance(models, list):
+        for model in models:
+            if not isinstance(model, dict):
+                continue
+            for key in ("name", "model"):
+                raw_name = str(model.get(key, "") or "").strip()
+                if raw_name and raw_name not in names:
+                    names.append(raw_name)
+    return names
+
+
+def resolve_ollama_think_value() -> bool:
+    raw = os.getenv("OLLAMA_THINK_MODE", "auto").strip().lower()
+    if raw in {"1", "true", "yes", "y", "on"}:
+        return True
+    if raw in {"0", "false", "no", "n", "off"}:
+        return False
+    cuda_available, _ = cuda_runtime()
+    return bool(cuda_available)
 
 
 def _assert_cuda_ready(min_vram_gb: float) -> None:
@@ -112,6 +172,109 @@ class LocalHFChatLLM:
             backend="local_hf",
             model_id=self.model_id,
             latency_ms=latency_ms,
+        )
+
+
+class OllamaChatLLM:
+    def __init__(
+        self,
+        model_id: str,
+        max_new_tokens: int,
+        temperature: float,
+        top_p: float,
+        base_url: str = "http://127.0.0.1:11434",
+        timeout_sec: int = 120,
+    ) -> None:
+        if not model_id:
+            raise ValueError("OLLAMA_DETECTOR_MODEL is required for ollama backend")
+        self.model_id = model_id
+        self.max_new_tokens = max_new_tokens
+        self.temperature = temperature
+        self.top_p = top_p
+        self.base_url = normalize_ollama_base_url(base_url)
+        self.timeout_sec = timeout_sec
+
+    @staticmethod
+    def _normalize_messages(messages: Sequence[dict | tuple[str, str]]) -> List[dict]:
+        normalized: List[dict] = []
+        for msg in messages:
+            if isinstance(msg, tuple):
+                role, content = msg
+                normalized.append({"role": str(role), "content": str(content)})
+            else:
+                normalized.append(
+                    {"role": str(msg.get("role", "user")), "content": str(msg.get("content", ""))}
+                )
+        return normalized
+
+    def invoke(self, messages: Sequence[dict | tuple[str, str]]) -> LLMResponse:
+        normalized = self._normalize_messages(messages)
+        if not normalized:
+            return LLMResponse(content="", backend="ollama", model_id=self.model_id, latency_ms=0.0)
+
+        _reserve_llm_call()
+        started = time.perf_counter()
+
+        payload = {
+            "model": self.model_id,
+            "messages": normalized,
+            "stream": False,
+            "think": resolve_ollama_think_value(),
+            "options": {
+                "num_predict": self.max_new_tokens,
+                "temperature": max(0.0, self.temperature),
+                "top_p": self.top_p,
+            },
+        }
+        req = urllib_request.Request(
+            url=f"{self.base_url}/api/chat",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            parsed = _load_json_response(req, timeout_sec=self.timeout_sec)
+        except urllib_error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", errors="ignore")
+            except Exception:
+                detail = str(exc)
+            _record_llm_error()
+            raise RuntimeError(f"Ollama HTTP {exc.code}: {detail}") from exc
+        except Exception as exc:
+            _record_llm_error()
+            raise RuntimeError(
+                f"Ollama request failed for model '{self.model_id}' at {self.base_url}: {exc}"
+            ) from exc
+
+        prompt_tokens = 0
+        completion_tokens = 0
+        try:
+            prompt_tokens = int(parsed.get("prompt_eval_count", 0) or 0)
+        except (TypeError, ValueError):
+            prompt_tokens = 0
+        try:
+            completion_tokens = int(parsed.get("eval_count", 0) or 0)
+        except (TypeError, ValueError):
+            completion_tokens = 0
+        total_tokens = max(0, prompt_tokens) + max(0, completion_tokens)
+        _record_token_usage(prompt_tokens, completion_tokens, total_tokens)
+
+        message = parsed.get("message", {})
+        content = ""
+        if isinstance(message, dict):
+            content = str(message.get("content", "") or "").strip()
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        return LLMResponse(
+            content=content,
+            backend="ollama",
+            model_id=self.model_id,
+            latency_ms=latency_ms,
+            prompt_tokens=max(0, prompt_tokens),
+            completion_tokens=max(0, completion_tokens),
+            total_tokens=max(0, total_tokens),
         )
 
 

@@ -58,7 +58,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tune_top_k", type=int, default=1)
     return parser.parse_args()
 
-
 def main() -> None:
     args = parse_args()
     if args.mode == "interactive":

@@ -7,7 +7,7 @@ from core.state import BDI_ITEM_NAMES, build_initial_state
 from persona import PersonaProfile, generate_persona_pool, create_persona
 
 from app.cli_runtime import _build_probe_intent
-from app.cli_runtime_helpers import _assert_openrouter_ready, _print_backend_info
+from app.cli_runtime_helpers import _assert_detector_backend_ready, _print_backend_info
 
 PIPELINE_ORDER = (
     "ingest_turn -> risk_sentinel -> extract_likelihoods -> belief_update -> "
@@ -186,7 +186,7 @@ def run_interactive(
 ) -> None:
     from graph import app as graph_app
 
-    _assert_openrouter_ready()
+    _assert_detector_backend_ready()
     set_llm_call_budget(max_api_calls if max_api_calls > 0 else None)
     reset_llm_usage()
     _print_backend_info(max_api_calls=max_api_calls if max_api_calls > 0 else None, trace_level="compact")
