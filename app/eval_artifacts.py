@@ -7,10 +7,10 @@ from typing import Any, Dict, List, Tuple
 
 from core.evaluation import compute_metrics
 from core.llm import get_llm_usage
-from core.runtime_policy import auto_backend_switch_enabled, resolve_detector_backend, resolve_persona_backend
+from core.runtime_policy import resolve_detector_backend
 from core.state import symptom_name_from_item
 
-from app.cli_common import _current_git_hash, _serialize, _write_json
+from app.cli_common import _current_git_hash, _git_is_dirty, _serialize, _write_json
 from app.cli_eval_helpers import _family_summary, _profile_meta, _select_primary_metrics, _with_objective
 
 
@@ -186,6 +186,169 @@ def build_eval_diagnostics_entry(
     }
 
 
+def _detector_target() -> str:
+    detector_backend = resolve_detector_backend()
+    if detector_backend == "ollama":
+        return os.getenv("OLLAMA_DETECTOR_MODEL", "qwen3.5:4b")
+    return os.getenv("OPENROUTER_DETECTOR_MODEL", "openrouter/auto")
+
+
+def _persona_ids_from_results(results: List[Any]) -> List[str]:
+    persona_ids: List[str] = []
+    for result in results:
+        raw_id = getattr(result, "LLM", None)
+        if raw_id is None and isinstance(result, dict):
+            raw_id = result.get("LLM")
+        persona_id = str(raw_id or "").strip()
+        if persona_id:
+            persona_ids.append(persona_id)
+    return persona_ids
+
+
+def _duplicate_ids(values: List[str]) -> List[str]:
+    counts = Counter(value for value in values if value)
+    return sorted([value for value, count in counts.items() if count > 1])
+
+
+def _build_benchmark_integrity(
+    *,
+    manifest_payload: Dict[str, Any],
+    results: List[Any],
+    eval_ids: List[str],
+    manifest_hash: str,
+    prior_manifest_info: Dict[str, Any],
+    prompt_version: str,
+) -> Dict[str, Any]:
+    profiles = list(manifest_payload.get("profiles", []) or [])
+    manifest_persona_ids = [str(profile.get("persona_id", "")).strip() for profile in profiles if str(profile.get("persona_id", "")).strip()]
+    result_persona_ids = _persona_ids_from_results(results)
+    eval_loop_ids = [str(persona_id).strip() for persona_id in eval_ids if str(persona_id).strip()]
+
+    manifest_duplicates = _duplicate_ids(manifest_persona_ids)
+    result_duplicates = _duplicate_ids(result_persona_ids)
+    eval_duplicates = _duplicate_ids(eval_loop_ids)
+
+    manifest_id_set = set(manifest_persona_ids)
+    result_id_set = set(result_persona_ids)
+    eval_id_set = set(eval_loop_ids)
+
+    alignment_missing_results = sorted(manifest_id_set - result_id_set)
+    alignment_unexpected_results = sorted(result_id_set - manifest_id_set)
+    alignment_missing_eval = sorted(manifest_id_set - eval_id_set)
+    alignment_unexpected_eval = sorted(eval_id_set - manifest_id_set)
+    results_alignment_pass = not (
+        manifest_duplicates
+        or result_duplicates
+        or eval_duplicates
+        or alignment_missing_results
+        or alignment_unexpected_results
+        or alignment_missing_eval
+        or alignment_unexpected_eval
+    )
+
+    non_synthetic_ids: List[str] = []
+    missing_ground_truth_ids: List[str] = []
+    inconsistent_total_ids: List[str] = []
+    unexpected_split_ids: List[str] = []
+    manifest_issues: List[str] = []
+
+    for profile in profiles:
+        persona_id = str(profile.get("persona_id", "")).strip()
+        if str(profile.get("source", "")).strip().lower() != "synthetic":
+            non_synthetic_ids.append(persona_id)
+        if not bool(profile.get("has_ground_truth", False)):
+            missing_ground_truth_ids.append(persona_id)
+        if str(profile.get("split", "")).strip() != "eval":
+            unexpected_split_ids.append(persona_id)
+        if "generator_version" in profile:
+            manifest_issues.append(f"{persona_id}:legacy_generator_version_present")
+        raw_scores = dict(profile.get("bdi_scores", {}) or {})
+        computed_total = sum(int(raw_scores.get(str(item_id), raw_scores.get(item_id, 0)) or 0) for item_id in range(1, 22))
+        stored_total = int(profile.get("bdi_total", 0) or 0)
+        if stored_total != min(computed_total, 63):
+            inconsistent_total_ids.append(persona_id)
+
+    run_config = dict(manifest_payload.get("run_config", {}) or {})
+    if manifest_payload.get("persona_count") != len(profiles):
+        manifest_issues.append("persona_count_mismatch")
+    if run_config.get("persona_count") != len(profiles):
+        manifest_issues.append("run_config_persona_count_mismatch")
+    if "generator_version" in run_config:
+        manifest_issues.append("legacy_run_config_generator_version_present")
+    if "generator_version" in manifest_payload:
+        manifest_issues.append("legacy_manifest_generator_version_present")
+    if manifest_duplicates:
+        manifest_issues.append("duplicate_manifest_persona_ids")
+    if inconsistent_total_ids:
+        manifest_issues.append("bdi_total_mismatch")
+    if unexpected_split_ids:
+        manifest_issues.append("unexpected_profile_split")
+
+    synthetic_ground_truth_pass = not non_synthetic_ids and not missing_ground_truth_ids
+    manifest_consistency_pass = not manifest_issues
+    git_dirty = _git_is_dirty()
+    prior_hash = prior_manifest_info.get("hash")
+    prior_read_error = prior_manifest_info.get("read_error")
+
+    issues: List[str] = []
+    if not results_alignment_pass:
+        issues.append("results_alignment_failed")
+    if not synthetic_ground_truth_pass:
+        issues.append("synthetic_ground_truth_check_failed")
+    if not manifest_consistency_pass:
+        issues.append("manifest_consistency_failed")
+
+    return {
+        "pass": results_alignment_pass and synthetic_ground_truth_pass and manifest_consistency_pass,
+        "evaluation_mode": "synthetic",
+        "persona_regeneration_policy": "always_regenerate",
+        "manifest_hash": manifest_hash,
+        "prompt_version": prompt_version,
+        "detector": {
+            "backend": resolve_detector_backend(),
+            "target": _detector_target(),
+        },
+        "git": {
+            "commit": _current_git_hash(),
+            "dirty": git_dirty,
+        },
+        "prior_manifest": {
+            "exists": bool(prior_manifest_info.get("exists", False)),
+            "hash": prior_hash,
+            "profile_count": int(prior_manifest_info.get("profile_count", 0) or 0),
+            "matches_current": (prior_hash == manifest_hash) if prior_hash else None,
+            "read_error": prior_read_error,
+        },
+        "results_alignment": {
+            "pass": results_alignment_pass,
+            "manifest_persona_count": len(manifest_persona_ids),
+            "result_persona_count": len(result_persona_ids),
+            "eval_loop_persona_count": len(eval_loop_ids),
+            "duplicate_manifest_persona_ids": manifest_duplicates,
+            "duplicate_result_persona_ids": result_duplicates,
+            "duplicate_eval_loop_persona_ids": eval_duplicates,
+            "missing_in_results": alignment_missing_results,
+            "unexpected_in_results": alignment_unexpected_results,
+            "missing_in_eval_loop": alignment_missing_eval,
+            "unexpected_in_eval_loop": alignment_unexpected_eval,
+        },
+        "synthetic_ground_truth": {
+            "pass": synthetic_ground_truth_pass,
+            "all_synthetic": not non_synthetic_ids,
+            "all_have_ground_truth": not missing_ground_truth_ids,
+            "non_synthetic_ids": non_synthetic_ids,
+            "missing_ground_truth_ids": missing_ground_truth_ids,
+        },
+        "manifest_consistency": {
+            "pass": manifest_consistency_pass,
+            "issues": manifest_issues,
+            "inconsistent_bdi_total_ids": inconsistent_total_ids,
+            "unexpected_split_ids": unexpected_split_ids,
+        },
+        "issues": issues,
+    }
+
+
 def write_eval_artifacts(
     *,
     output_dir: Path,
@@ -213,8 +376,8 @@ def write_eval_artifacts(
     run_failure_counters: Counter[str],
     eval_ids: List[str],
     manifest_hash: str,
-    requested_eval_mode: str,
-    effective_eval_mode: str,
+    manifest_payload: Dict[str, Any],
+    prior_manifest_info: Dict[str, Any],
     prompt_version: str,
     seed: int,
     persona_count: int,
@@ -239,8 +402,7 @@ def write_eval_artifacts(
     evaluation_stability_warnings.extend(_evaluation_stability_warnings(overall_metrics_payload, "overall_labeled"))
 
     metrics_payload: Dict[str, Any] = {
-        "eval_mode_requested": requested_eval_mode,
-        "eval_mode_effective": effective_eval_mode,
+        "evaluation_mode": "synthetic",
         "prompt_version": prompt_version,
         "persona_count": len(all_profiles),
         "overall_labeled": overall_metrics_payload,
@@ -248,7 +410,7 @@ def write_eval_artifacts(
         "primary_metrics": primary_metrics,
         "evaluation_stability_warnings": evaluation_stability_warnings,
         "metric_semantics_warnings": [
-            "Evaluation now uses item-level BDI metrics only; binary depressed/control metrics are deprecated.",
+            "Evaluation uses item-level BDI metrics only; binary depressed/control metrics are deprecated.",
             "symptom_f1_at_4 is an alias of item_f1_macro_at_1 (full 21-item macro F1 with positive threshold >=1).",
         ],
         "llm_usage": get_llm_usage(),
@@ -311,8 +473,7 @@ def write_eval_artifacts(
         family_summary = _family_summary(overall_rows)
         failure_report_payload = {
             "run_summary": {
-                "eval_mode_requested": requested_eval_mode,
-                "eval_mode_effective": effective_eval_mode,
+                "evaluation_mode": "synthetic",
                 "prompt_version": prompt_version,
                 "personas_requested": persona_count,
                 "profiles_evaluated": processed_profiles,
@@ -360,13 +521,15 @@ def write_eval_artifacts(
         }
         _write_json(output_dir / "failure_report_run_local.json", failure_report_payload)
 
-    leakage_report_payload = {
-        "persona_count": len(all_profiles),
-        "eval_ids_count": len(set(eval_ids)),
-        "manifest_hash": manifest_hash,
-        "strict_pass": True,
-    }
-    _write_json(output_dir / "leakage_report_run_local.json", leakage_report_payload)
+    benchmark_integrity_payload = _build_benchmark_integrity(
+        manifest_payload=manifest_payload,
+        results=results,
+        eval_ids=eval_ids,
+        manifest_hash=manifest_hash,
+        prior_manifest_info=prior_manifest_info,
+        prompt_version=prompt_version,
+    )
+    _write_json(output_dir / "benchmark_integrity_run_local.json", benchmark_integrity_payload)
 
     if debug_outputs and save_diagnostics:
         _write_json(output_dir / "diagnostics_run_local.json", diagnostics_payload)
@@ -376,7 +539,6 @@ def write_eval_artifacts(
             "mode": "eval",
             "personas": persona_count,
             "seed": seed,
-            "eval_mode": requested_eval_mode,
             "prompt_version": prompt_version,
             "save_diagnostics_requested": bool(requested_save_diagnostics),
             "save_diagnostics_effective": bool(save_diagnostics),
@@ -387,94 +549,66 @@ def write_eval_artifacts(
             "run_profile": run_profile,
             "max_api_calls": max_api_calls,
         },
+        "runtime": {
+            "evaluation_mode": "synthetic",
+            "persona_runtime": "deterministic_simulator",
+        },
         "env": {
-            "PROMPT_VERSION": os.getenv("PROMPT_VERSION", "v1"),
-            "AUTO_BACKEND_SWITCH": os.getenv("AUTO_BACKEND_SWITCH", "1"),
-            "DETECTOR_BACKEND": os.getenv("DETECTOR_BACKEND", "local_hf"),
-            "DETECTOR_MODEL": os.getenv("DETECTOR_MODEL", ""),
+            "DETECTOR_BACKEND": os.getenv("DETECTOR_BACKEND", "openrouter"),
             "OPENROUTER_DETECTOR_MODEL": os.getenv("OPENROUTER_DETECTOR_MODEL", ""),
+            "OPENROUTER_PROVIDER_ORDER": os.getenv("OPENROUTER_PROVIDER_ORDER", ""),
+            "OPENROUTER_REQUIRE_PROVIDER_ORDER": os.getenv("OPENROUTER_REQUIRE_PROVIDER_ORDER", "0"),
+            "OPENROUTER_REASONING_EFFORT": os.getenv("OPENROUTER_REASONING_EFFORT", ""),
             "OLLAMA_BASE_URL": os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
             "OLLAMA_DETECTOR_MODEL": os.getenv("OLLAMA_DETECTOR_MODEL", "qwen3.5:4b"),
-            "OLLAMA_TIMEOUT_SEC": os.getenv("OLLAMA_TIMEOUT_SEC", "120"),
             "OLLAMA_THINK_MODE": os.getenv("OLLAMA_THINK_MODE", "auto"),
             "DETECTOR_MAX_NEW_TOKENS": os.getenv("DETECTOR_MAX_NEW_TOKENS", "96"),
             "DETECTOR_TEMPERATURE": os.getenv("DETECTOR_TEMPERATURE", "0.2"),
-            "DETECTOR_TOP_P": os.getenv("DETECTOR_TOP_P", "0.9"),
             "DETECTOR_EXTRACTOR_MAX_NEW_TOKENS": os.getenv(
                 "DETECTOR_EXTRACTOR_MAX_NEW_TOKENS",
                 os.getenv("DETECTOR_MAX_NEW_TOKENS", "96"),
             ),
-            "DETECTOR_EXTRACTOR_TEMPERATURE": os.getenv("DETECTOR_EXTRACTOR_TEMPERATURE", "0.0"),
-            "DETECTOR_EXTRACTOR_TOP_P": os.getenv("DETECTOR_EXTRACTOR_TOP_P", "1.0"),
-            "PERSONA_BACKEND": os.getenv("PERSONA_BACKEND", "openrouter_sim"),
-            "PERSONA_RUNTIME_MODE": "deterministic_sim_only",
-            "PROBE_INTENT_REQUIRED": "1",
-            "MIN_CUDA_VRAM_GB": os.getenv("MIN_CUDA_VRAM_GB", "8"),
             "MIN_TURNS": os.getenv("MIN_TURNS", "20"),
             "MAX_TURNS": os.getenv("MAX_TURNS", "40"),
             "STOP_CONFIDENCE": os.getenv("STOP_CONFIDENCE", "0.66"),
-            "STOP_MIN_COVERAGE": os.getenv("STOP_MIN_COVERAGE", "0.714"),
-            "STOP_MIN_AVG_SUPPORT": os.getenv("STOP_MIN_AVG_SUPPORT", "1.0"),
             "CONF_SUPPORT_TAU": os.getenv("CONF_SUPPORT_TAU", "1.25"),
             "CONF_DEPTH_WEIGHT": os.getenv("CONF_DEPTH_WEIGHT", "0.70"),
-            "CONF_COVERAGE_WEIGHT": os.getenv("CONF_COVERAGE_WEIGHT", "0.30"),
             "CONF_UP_ALPHA": os.getenv("CONF_UP_ALPHA", "0.55"),
-            "CONF_DECAY_STREAK_START": os.getenv("CONF_DECAY_STREAK_START", "6"),
-            "CONF_DECAY_PER_TURN": os.getenv("CONF_DECAY_PER_TURN", "0.002"),
-            "CONF_DECAY_MAX": os.getenv("CONF_DECAY_MAX", "0.01"),
-            "CONF_MAX_DROP_PER_TURN": os.getenv("CONF_MAX_DROP_PER_TURN", "0.01"),
-            "DETERMINISTIC_BDI_LABEL_THRESHOLD": os.getenv("DETERMINISTIC_BDI_LABEL_THRESHOLD", "14"),
-            "DETERMINISTIC_CORE_ITEM_MEAN_THRESHOLD": os.getenv("DETERMINISTIC_CORE_ITEM_MEAN_THRESHOLD", "0.6"),
-            "DETERMINISTIC_CORE_ITEM_MIN_HITS": os.getenv("DETERMINISTIC_CORE_ITEM_MIN_HITS", "4"),
-            "EVIDENCE_LLM_ON_LEXICAL_HIT": os.getenv("EVIDENCE_LLM_ON_LEXICAL_HIT", "0"),
-            "EXTRACTOR_JSON_KEY_ALIASES": os.getenv("EXTRACTOR_JSON_KEY_ALIASES", "1"),
-            "EXTRACTOR_STRICT_SCHEMA_COERCE": os.getenv("EXTRACTOR_STRICT_SCHEMA_COERCE", "1"),
-            "EXTRACTOR_MIN_RECORDS_TARGET": os.getenv("EXTRACTOR_MIN_RECORDS_TARGET", "1"),
-            "EXTRACT_ITEM1_STRICT_GATE": os.getenv("EXTRACT_ITEM1_STRICT_GATE", "1"),
-            "EXTRACT_ITEM1_WEAK_MAX_CONF": os.getenv("EXTRACT_ITEM1_WEAK_MAX_CONF", "0.55"),
-            "EXTRACT_ITEM1_WEAK_MAX_INTENSITY": os.getenv("EXTRACT_ITEM1_WEAK_MAX_INTENSITY", "1.5"),
-            "BELIEF_WEIGHT_LLM_EXTRACTOR": os.getenv("BELIEF_WEIGHT_LLM_EXTRACTOR", "1.00"),
-            "BELIEF_WEIGHT_LLM_SALVAGE": os.getenv("BELIEF_WEIGHT_LLM_SALVAGE", "0.60"),
-            "BELIEF_WEIGHT_LEXICAL_FALLBACK": os.getenv("BELIEF_WEIGHT_LEXICAL_FALLBACK", "0.45"),
-            "BELIEF_WEIGHT_LEXICAL_PREFILTER": os.getenv("BELIEF_WEIGHT_LEXICAL_PREFILTER", "0.40"),
-            "BELIEF_WEIGHT_DEFAULT": os.getenv("BELIEF_WEIGHT_DEFAULT", "0.50"),
-            "BELIEF_DUPLICATE_WEIGHT": os.getenv("BELIEF_DUPLICATE_WEIGHT", "0.15"),
-            "BELIEF_DECAY_START_SUPPORT": os.getenv("BELIEF_DECAY_START_SUPPORT", "2"),
-            "BELIEF_DECAY_TAU": os.getenv("BELIEF_DECAY_TAU", "2.0"),
-            "BELIEF_CONTRADICTION_WEIGHT": os.getenv("BELIEF_CONTRADICTION_WEIGHT", "0.50"),
-            "BELIEF_CONTRADICTION_NEUTRAL_BLEND": os.getenv("BELIEF_CONTRADICTION_NEUTRAL_BLEND", "0.35"),
-            "BELIEF_SUPPORT_MIN_WEIGHT": os.getenv("BELIEF_SUPPORT_MIN_WEIGHT", "0.45"),
-            "BELIEF_MEMORY_PER_ITEM": os.getenv("BELIEF_MEMORY_PER_ITEM", "24"),
             "SUPERVISOR_EVIDENCE_MIN_SCORE": os.getenv("SUPERVISOR_EVIDENCE_MIN_SCORE", "0.30"),
             "SUPERVISOR_EVIDENCE_RISK_THRESHOLD": os.getenv("SUPERVISOR_EVIDENCE_RISK_THRESHOLD", "0.22"),
             "SUPERVISOR_ESCAPE_EMPTY_STREAK": os.getenv("SUPERVISOR_ESCAPE_EMPTY_STREAK", "2"),
             "RISK_SENTINEL_FLAG_THRESHOLD": os.getenv("RISK_SENTINEL_FLAG_THRESHOLD", "0.45"),
             "RISK_SENTINEL_SHORTCIRCUIT_THRESHOLD": os.getenv("RISK_SENTINEL_SHORTCIRCUIT_THRESHOLD", "1.1"),
-            "RISK_SENTINEL_ACTIVE_SHORTCIRCUIT": os.getenv("RISK_SENTINEL_ACTIVE_SHORTCIRCUIT", "0"),
-            "STRICT_SPLIT_LOCK": os.getenv("STRICT_SPLIT_LOCK", "1"),
-            "SIM_GENERATOR_VERSION": os.getenv("SIM_GENERATOR_VERSION", "sim_v4"),
             "SIM_HEDGE_RATE": os.getenv("SIM_HEDGE_RATE", "0.60"),
             "SIM_NORMALIZATION_RATE": os.getenv("SIM_NORMALIZATION_RATE", "0.40"),
             "SIM_CONTEXT_ANCHOR_RATE": os.getenv("SIM_CONTEXT_ANCHOR_RATE", "0.55"),
             "SIM_DIRECT_ANSWER_RATE": os.getenv("SIM_DIRECT_ANSWER_RATE", "0.82"),
-            "SIM_DEPRESSED_TARGET_BDI": os.getenv("SIM_DEPRESSED_TARGET_BDI", "30"),
-            "SIM_DEPRESSED_TARGET_JITTER": os.getenv("SIM_DEPRESSED_TARGET_JITTER", "4"),
-            "SIM_DEPRESSED_TARGET_BLEND": os.getenv("SIM_DEPRESSED_TARGET_BLEND", "0.85"),
-            "FINAL_OBS_BLEND_ENABLED": os.getenv("FINAL_OBS_BLEND_ENABLED", "1"),
-            "FINAL_OBS_BLEND_CONF_THRESHOLD": os.getenv("FINAL_OBS_BLEND_CONF_THRESHOLD", "0.60"),
-            "FINAL_OBS_BLEND_SUPPORT_MAX": os.getenv("FINAL_OBS_BLEND_SUPPORT_MAX", "2"),
-            "FINAL_OBS_BLEND_MODULE_CONF_MIN": os.getenv("FINAL_OBS_BLEND_MODULE_CONF_MIN", "0.50"),
-            "FINAL_OBS_BLEND_MAX_ALPHA": os.getenv("FINAL_OBS_BLEND_MAX_ALPHA", "0.35"),
         },
         "resolved_backends": {
-            "auto_enabled": auto_backend_switch_enabled(),
             "detector_backend": resolve_detector_backend(),
-            "persona_backend": resolve_persona_backend(),
+            "detector_target": _detector_target(),
+            "persona_runtime": "deterministic_simulator",
         },
         "llm_usage": get_llm_usage(),
         "manifest_hash": manifest_hash,
         "git_commit": _current_git_hash(),
+        "git_dirty": _git_is_dirty(),
+        "benchmark_provenance": {
+            "evaluation_mode": "synthetic",
+            "persona_regeneration_policy": "always_regenerate",
+            "prior_manifest_exists": bool(prior_manifest_info.get("exists", False)),
+            "prior_manifest_matches_current": (
+                prior_manifest_info.get("hash") == manifest_hash if prior_manifest_info.get("hash") else None
+            ),
+        },
     }
     _write_json(output_dir / "config_used.json", config_snapshot)
 
-    return metrics_payload, failure_report_payload, leakage_report_payload, config_snapshot, primary_metrics, error_report_payload
+    return (
+        metrics_payload,
+        failure_report_payload,
+        benchmark_integrity_payload,
+        config_snapshot,
+        primary_metrics,
+        error_report_payload,
+    )

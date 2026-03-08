@@ -82,7 +82,6 @@ def run_tune(
             result = run_eval(
                 persona_count=tune_personas,
                 seed=seed,
-                eval_mode="mixed_holdout",
                 prompt_version=tune_prompt_version,
                 save_diagnostics=tune_save_diagnostics,
                 max_api_calls=tune_max_api_calls,

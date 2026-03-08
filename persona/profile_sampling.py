@@ -7,8 +7,6 @@ from typing import Dict, List
 from core.bdi_modules import ITEM_TO_MODULES, MODULE_TO_ITEMS
 from persona.profiles import PersonaProfile
 
-DEFAULT_SIM_GENERATOR_VERSION = "sim_v4"
-
 FAMILY_BLUEPRINTS: Dict[str, Dict[str, object]] = {
     "somatic_evasive": {
         "depressed": True,
@@ -542,7 +540,6 @@ def _sample_bdi_scores_for_family(family: str, rng: random.Random, severity: str
 def generate_persona_pool(
     count: int,
     seed: int,
-    generator_version: str = DEFAULT_SIM_GENERATOR_VERSION,
 ) -> List[PersonaProfile]:
     rng = random.Random(seed)
     count = max(1, int(count))
@@ -579,7 +576,6 @@ def generate_persona_pool(
                 behavior_params=behavior,
                 template_bank="default",
                 generation_seed=generation_seed,
-                generator_version=generator_version,
             )
         )
 

@@ -2,11 +2,11 @@
 
 Minimal PoC for eRisk 2026 Task 1:
 - LangGraph detector (`ingest_turn -> risk_sentinel -> extract_likelihoods -> belief_update -> policy_metrics -> stop_decider -> target_selector -> question_generator -> finalize_outputs`)
-- BDI-SSI module-aware probing (deterministic target item/module selection)
-- Final-time module-weighted imputation for unobserved BDI items (interpretable item-sum BDI)
-- Detector backends: `local_hf`, `openrouter`, or explicit local `ollama`
-- Persona runtime: deterministic simulator only (`openrouter_sim` path, no persona LLM calls)
-- Synthetic-only eval with traceability artifacts
+- BDI-SSI module-aware probing
+- Final-time module-weighted imputation for unobserved BDI items
+- Detector backends: `openrouter` or explicit local `ollama`
+- Persona runtime: deterministic local simulator only
+- Synthetic-only evaluation with provenance and benchmark-integrity artifacts
 
 ## Setup
 
@@ -14,32 +14,19 @@ Minimal PoC for eRisk 2026 Task 1:
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-hf auth login
 cp .env.example .env
 ```
 
-Default behavior is automatic:
-- if CUDA VRAM >= `MIN_CUDA_VRAM_GB`, use `local_hf`
-- otherwise, use `openrouter`
-`OPENROUTER_API_KEY` is required only when detector resolves to `openrouter`.
+Default detector behavior uses OpenRouter. `OPENROUTER_API_KEY` is required unless you explicitly switch to Ollama.
 
-To use Ollama explicitly for local inference:
+To use Ollama for local inference:
 - install and start Ollama outside the repo
 - run `ollama pull qwen3.5:4b`
-- set `AUTO_BACKEND_SWITCH=0`
 - set `DETECTOR_BACKEND=ollama`
-- optionally set `OLLAMA_BASE_URL` and `OLLAMA_TIMEOUT_SEC`
+- optionally set `OLLAMA_BASE_URL`
 - `OLLAMA_THINK_MODE=auto` keeps thinking on when CUDA is available and turns it off on CPU-only runs
 
-Persona generation is always deterministic and consumes hidden probe intent (`target_item_id`, `route`, `style`, `mode`, `directness`, `priority`) from detector state.
-Probe intent is stored only in `turn_trace`/diagnostics; transcripts remain natural-language only.
-First detector message is fixed:
-`Thank you for coming in today. What changes in your life or routine recently made you feel it was time to talk to someone?`
-
-Simulator behavior defaults:
-- cooperative-but-hedged replies (answer-first, uncertainty-second)
-- concrete day-to-day anchors (work/family/routine/messages)
-- passive-distress risk language by default; explicit intent language only for high latent risk
+Persona generation is always deterministic and synthetic. Probe intent is stored only in diagnostics; transcripts remain natural-language only.
 
 ## Run CLI
 
@@ -52,43 +39,35 @@ python -m app.cli --mode tune --tune_personas 30 --tune_seed 42 --tune_max_api_c
 ```
 
 Notebook workflow:
-- `notebooks/eval_item_error_analysis.ipynb` runs a fresh eval into `outputs/`, then renders summary/error analysis tables.
+- `notebooks/eval_item_error_analysis.ipynb` runs a fresh synthetic eval into `outputs/`, then renders summary, benchmark-integrity, persona-error, and item-bias tables.
 
 `interactive` is a stepper:
 - press Enter to alternate `detector -> persona -> detector -> ...`
 - each step prints compact pipeline flow (ingest, risk, extraction, belief/policy, route, stop, usage)
 
-`eval` evaluates all generated personas. `eval_multi`/`tune` remain deterministic by seed.
+`eval`, `eval_multi`, and `tune` all benchmark synthetic personas generated for the current seed.
 
 By default, eval prints only:
 - `item_f1`
 - `objective`
-(`objective` is computed from `headline_f1` with turn penalty)
 
 Logging profiles:
-- Lean (default): `--debug_outputs false` (default) keeps outputs simple.
-- Debug (opt-in): `--debug_outputs true` enables heavy diagnostics artifacts.
-- Backward compatibility: passing `--save_diagnostics true` or `--trace_level compact` also enables debug profile.
-
-Tune mode now logs:
-- planned total candidate runs
-- per-candidate stage/id/seed
-- threshold deltas from baseline for that run
-
-Set `CLI_VERBOSE=1` to print full backend/run summaries to stdout.
+- Lean (default): `--debug_outputs false`
+- Debug (opt-in): `--debug_outputs true`
+- Backward compatibility: passing `--save_diagnostics true` or `--trace_level compact` also enables debug profile
 
 ## Outputs
 
 Lean mode (default):
-- `outputs/persona_manifest_run_local.json` (persona metadata + ground truth)
+- `outputs/persona_manifest_run_local.json`
 - `outputs/persona_manifest_hash_run_local.txt`
-- `outputs/leakage_report_run_local.json`
+- `outputs/benchmark_integrity_run_local.json`
 - `outputs/interactions_run_local.json`
 - `outputs/results_run_local.json`
 - `outputs/metrics_run_local.json`
 - `outputs/config_used.json`
 - `outputs/multi_seed/multi_seed_summary.json` (from `--mode eval_multi`)
-- `outputs/tuning/tuning_runs.jsonl` (all threshold candidates + validity/guardrail status)
+- `outputs/tuning/tuning_runs.jsonl`
 - `outputs/tuning/tuning_summary.json`
 - `outputs/tuning/best_thresholds.env`
 - `outputs/tuning/best_vs_baseline.json`
@@ -100,5 +79,6 @@ Debug mode (`--debug_outputs true`) additionally writes:
 - `outputs/diagnostics_run_local.json` (if `--save_diagnostics true`)
 
 Configuration:
-- Use `.env.example` as the full source of tunable parameters.
-- Most useful knobs: `MIN_TURNS`, `MAX_TURNS`, `STOP_CONFIDENCE`, `max_api_calls`, and `--debug_outputs`.
+- Use `.env.example` as the supported minimal config surface
+- The env files keep only backend/model selection, simulator style, and the main benchmark knobs
+- Advanced detector and extraction overrides still exist as code defaults; add them to `.env` manually only when you are intentionally doing expert tuning

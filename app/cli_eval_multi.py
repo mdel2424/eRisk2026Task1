@@ -54,7 +54,6 @@ def run_eval_multi_seed(
     persona_count: int,
     seeds_raw: str,
     fallback_seed: int,
-    eval_mode: str,
     prompt_version: str,
     save_diagnostics: bool,
     max_api_calls: int,
@@ -66,7 +65,7 @@ def run_eval_multi_seed(
     root_output = Path(output_dir)
     root_output.mkdir(parents=True, exist_ok=True)
 
-    print(f"Running multi-seed eval: seeds={seeds}, personas={persona_count}, eval_mode={eval_mode}")
+    print(f"Running multi-seed synthetic eval: seeds={seeds}, personas={persona_count}")
     per_seed: List[Dict[str, Any]] = []
 
     for index, seed in enumerate(seeds, start=1):
@@ -75,7 +74,6 @@ def run_eval_multi_seed(
         result = run_eval(
             persona_count=persona_count,
             seed=seed,
-            eval_mode=eval_mode,
             prompt_version=prompt_version,
             save_diagnostics=save_diagnostics,
             max_api_calls=max_api_calls,
@@ -120,7 +118,7 @@ def run_eval_multi_seed(
         "config": {
             "personas": persona_count,
             "seeds": seeds,
-            "eval_mode": eval_mode,
+            "evaluation_mode": "synthetic",
             "prompt_version": prompt_version,
             "max_api_calls_per_seed": max_api_calls,
             "trace_level": trace_level,

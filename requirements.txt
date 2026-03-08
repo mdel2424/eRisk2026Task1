@@ -2,8 +2,3 @@ langgraph
 pandas
 pydantic>=2
 python-dotenv
-transformers
-peft
-accelerate
-bitsandbytes
-sentencepiece

@@ -8,17 +8,16 @@ from persona.sim_behavior import build_deterministic_reply, normalize_response, 
 
 
 @dataclass
-class OpenRouterSimPersona:
+class SimulatedPersona:
     persona_id: str
     bdi_scores: Dict[int, int]
     evasive: bool = True
     context_window: int = 8
     rng_seed: int = 31
     family: str = "mixed_moderate"
-    split: str = "test"
+    split: str = "eval"
     behavior_params: Dict[str, float | str] = field(default_factory=dict)
-    template_bank: str = "test_bank_v1"
-    generator_version: str = "sim_v4"
+    template_bank: str = "default"
     last_response: str = field(default="", init=False)
     recent_responses: List[str] = field(default_factory=list, init=False)
     responses_total: int = field(default=0, init=False)

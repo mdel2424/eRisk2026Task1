@@ -6,24 +6,16 @@ from typing import Any, Dict, List
 from core.llm_backends import list_ollama_models, normalize_ollama_base_url
 from core.io_schema import Turn
 from core.llm import get_llm_usage
-from core.runtime_policy import (
-    auto_backend_switch_enabled,
-    cuda_runtime,
-    min_cuda_vram_gb,
-    resolve_detector_backend,
-    resolve_persona_backend,
-)
+from core.runtime_policy import cuda_runtime, resolve_detector_backend
 
 from app.cli_common import _serialize
 
 
 def _detector_target() -> str:
     detector_backend = resolve_detector_backend()
-    if detector_backend == "openrouter":
-        return os.getenv("OPENROUTER_DETECTOR_MODEL", "openrouter/auto")
     if detector_backend == "ollama":
         return os.getenv("OLLAMA_DETECTOR_MODEL", "qwen3.5:4b")
-    return os.getenv("DETECTOR_MODEL", "")
+    return os.getenv("OPENROUTER_DETECTOR_MODEL", "openrouter/auto")
 
 
 def _print_progress(label: str, current: int, total: int, width: int = 24) -> None:
@@ -37,26 +29,19 @@ def _print_progress(label: str, current: int, total: int, width: int = 24) -> No
 
 
 def _print_backend_info(max_api_calls: int | None = None, trace_level: str = "compact") -> None:
-    auto_on = auto_backend_switch_enabled()
     detector_backend = resolve_detector_backend()
-    persona_backend = resolve_persona_backend()
     cuda_available, vram_gb = cuda_runtime()
-    min_vram = min_cuda_vram_gb()
-    cuda_gate = "pass" if (cuda_available and vram_gb >= min_vram) else "fail"
     detector_target = _detector_target()
-
-    persona_target = "deterministic_sim"
 
     print(
         "Backend info: "
-        f"auto_switch={'on' if auto_on else 'off'} | "
-        f"cuda_available={cuda_available} | vram_gb={vram_gb:.2f} | "
-        f"min_vram_gb={min_vram:.2f} | cuda_gate={cuda_gate}"
+        f"cuda_available={cuda_available} | "
+        f"vram_gb={vram_gb:.2f}"
     )
     print(
         "Resolved backends: "
         f"detector={detector_backend} [{detector_target}] | "
-        f"persona={persona_backend} [{persona_target}]"
+        "persona=simulator [deterministic_local]"
     )
     call_budget_text = "none" if max_api_calls is None or max_api_calls <= 0 else str(max_api_calls)
     print(f"Runtime controls: trace_level={trace_level} | max_api_calls={call_budget_text}")
@@ -64,20 +49,12 @@ def _print_backend_info(max_api_calls: int | None = None, trace_level: str = "co
 
 def _assert_detector_backend_ready() -> None:
     detector_backend = resolve_detector_backend()
-    resolve_persona_backend()
-    if detector_backend == "openrouter":
-        if not os.getenv("OPENROUTER_API_KEY", "").strip():
-            raise ValueError(
-                "OPENROUTER_API_KEY is required because the resolved detector backend uses OpenRouter."
-            )
-        return
-
     if detector_backend == "ollama":
         base_url = normalize_ollama_base_url(os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"))
         model_id = os.getenv("OLLAMA_DETECTOR_MODEL", "qwen3.5:4b").strip()
         timeout_sec = int(os.getenv("OLLAMA_TIMEOUT_SEC", "120"))
         if not model_id:
-            raise ValueError("OLLAMA_DETECTOR_MODEL is required because the resolved detector backend uses Ollama.")
+            raise ValueError("OLLAMA_DETECTOR_MODEL is required because the detector backend uses Ollama.")
         try:
             available_models = list_ollama_models(base_url, timeout_sec=timeout_sec)
         except Exception as exc:
@@ -91,10 +68,12 @@ def _assert_detector_backend_ready() -> None:
                 f"Ollama model '{model_id}' is not available locally at {base_url}. "
                 f"Available models: {available_preview}. Run `ollama pull {model_id}`."
             )
+        return
 
-
-def _assert_openrouter_ready() -> None:
-    _assert_detector_backend_ready()
+    if not os.getenv("OPENROUTER_API_KEY", "").strip():
+        raise ValueError(
+            "OPENROUTER_API_KEY is required because the detector backend uses OpenRouter."
+        )
 
 
 def _to_turns(messages: List[dict]) -> List[Turn]:

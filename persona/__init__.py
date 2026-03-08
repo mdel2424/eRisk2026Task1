@@ -1,10 +1,10 @@
 from .factory import create_persona
-from .openrouter_persona import OpenRouterSimPersona
 from .profile_sampling import generate_persona_pool
 from .profiles import PersonaProfile
+from .simulated_persona import SimulatedPersona
 
 __all__ = [
-    "OpenRouterSimPersona",
+    "SimulatedPersona",
     "PersonaProfile",
     "generate_persona_pool",
     "create_persona",

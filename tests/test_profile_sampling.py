@@ -8,7 +8,6 @@ from unittest.mock import patch
 from agents.finalize_outputs import finalize_outputs
 from core.state import ControlState, ItemBelief, build_initial_state, posterior_from_expected_score
 from persona.profile_sampling import (
-    DEFAULT_SIM_GENERATOR_VERSION,
     FAMILY_BLUEPRINTS,
     SEVERITY_TIERS,
     _family_module_emphasis,
@@ -101,7 +100,6 @@ class ProfileSamplingTests(unittest.TestCase):
             [(profile.persona_id, profile.family, profile.bdi_scores) for profile in left],
             [(profile.persona_id, profile.family, profile.bdi_scores) for profile in right],
         )
-        self.assertTrue(all(profile.generator_version == DEFAULT_SIM_GENERATOR_VERSION for profile in left))
 
     def test_generate_persona_pool_does_not_read_eval_artifacts(self) -> None:
         with patch.object(builtins, "open", side_effect=AssertionError("unexpected file read")):

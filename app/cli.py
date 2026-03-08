@@ -29,11 +29,6 @@ def parse_args() -> argparse.Namespace:
         default="false",
         help="Show hidden synthetic BDI metadata at interactive startup",
     )
-    parser.add_argument(
-        "--eval_mode",
-        choices=["mixed_holdout", "synthetic_only"],
-        default="mixed_holdout",
-    )
     parser.add_argument("--prompt_version", default="v1")
     parser.add_argument("--save_diagnostics", default="false")
     parser.add_argument("--debug_outputs", default="false")
@@ -72,7 +67,6 @@ def main() -> None:
         run_eval(
             persona_count=args.personas,
             seed=args.seed,
-            eval_mode=args.eval_mode,
             prompt_version=args.prompt_version,
             save_diagnostics=_parse_bool(args.save_diagnostics),
             max_api_calls=args.max_api_calls,
@@ -84,7 +78,6 @@ def main() -> None:
             persona_count=args.personas,
             seeds_raw=args.multi_seeds,
             fallback_seed=args.seed,
-            eval_mode=args.eval_mode,
             prompt_version=args.prompt_version,
             save_diagnostics=_parse_bool(args.save_diagnostics),
             max_api_calls=args.max_api_calls,

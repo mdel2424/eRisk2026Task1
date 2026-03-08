@@ -54,22 +54,18 @@ class OllamaBackendTests(unittest.TestCase):
         get_llm.cache_clear()
         get_extractor_llm.cache_clear()
 
+    def test_resolve_detector_backend_defaults_to_openrouter(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(resolve_detector_backend(), "openrouter")
+
     def test_resolve_detector_backend_allows_explicit_ollama(self) -> None:
-        with patch.dict(
-            "os.environ",
-            {
-                "AUTO_BACKEND_SWITCH": "0",
-                "DETECTOR_BACKEND": "ollama",
-            },
-            clear=False,
-        ):
+        with patch.dict("os.environ", {"DETECTOR_BACKEND": "ollama"}, clear=False):
             self.assertEqual(resolve_detector_backend(), "ollama")
 
     def test_llm_builders_select_ollama(self) -> None:
         with patch.dict(
             "os.environ",
             {
-                "AUTO_BACKEND_SWITCH": "0",
                 "DETECTOR_BACKEND": "ollama",
                 "OLLAMA_BASE_URL": "http://127.0.0.1:11434",
                 "OLLAMA_DETECTOR_MODEL": "qwen3.5:4b",
@@ -155,7 +151,6 @@ class OllamaBackendTests(unittest.TestCase):
         with patch.dict(
             "os.environ",
             {
-                "AUTO_BACKEND_SWITCH": "0",
                 "DETECTOR_BACKEND": "ollama",
                 "OLLAMA_BASE_URL": "http://127.0.0.1:11434",
                 "OLLAMA_DETECTOR_MODEL": "qwen3.5:4b",
@@ -171,7 +166,6 @@ class OllamaBackendTests(unittest.TestCase):
         with patch.dict(
             "os.environ",
             {
-                "AUTO_BACKEND_SWITCH": "0",
                 "DETECTOR_BACKEND": "ollama",
                 "OLLAMA_BASE_URL": "http://127.0.0.1:11434",
                 "OLLAMA_DETECTOR_MODEL": "qwen3.5:4b",
@@ -187,7 +181,6 @@ class OllamaBackendTests(unittest.TestCase):
         with patch.dict(
             "os.environ",
             {
-                "AUTO_BACKEND_SWITCH": "0",
                 "DETECTOR_BACKEND": "ollama",
                 "OLLAMA_BASE_URL": "http://127.0.0.1:11434",
                 "OLLAMA_DETECTOR_MODEL": "qwen3.5:4b",
@@ -203,26 +196,45 @@ class OllamaBackendTests(unittest.TestCase):
         with patch.dict(
             "os.environ",
             {
-                "AUTO_BACKEND_SWITCH": "0",
                 "DETECTOR_BACKEND": "ollama",
                 "OLLAMA_DETECTOR_MODEL": "qwen3.5:4b",
             },
             clear=False,
-        ), patch("app.cli_runtime_helpers.cuda_runtime", return_value=(False, 0.0)), patch(
-            "app.cli_runtime_helpers.min_cuda_vram_gb", return_value=8.0
-        ), redirect_stdout(buffer):
+        ), patch("app.cli_runtime_helpers.cuda_runtime", return_value=(False, 0.0)), redirect_stdout(buffer):
             _print_backend_info(max_api_calls=100, trace_level="compact")
 
         output = buffer.getvalue()
         self.assertIn("detector=ollama [qwen3.5:4b]", output)
+        self.assertIn("persona=simulator [deterministic_local]", output)
 
-    def test_write_eval_artifacts_records_ollama_env(self) -> None:
+    def test_write_eval_artifacts_records_integrity_and_live_env(self) -> None:
         from app.eval_artifacts import write_eval_artifacts
+
+        manifest_payload = {
+            "run_config": {"manifest_schema_version": 3, "persona_count": 1, "seed": 42},
+            "persona_count": 1,
+            "profiles": [
+                {
+                    "persona_id": "alpha",
+                    "split": "eval",
+                    "family": "control_neutral",
+                    "source": "synthetic",
+                    "has_ground_truth": True,
+                    "depressed": False,
+                    "bdi_scores": {"1": 0},
+                    "bdi_total": 0,
+                    "key_symptoms": [],
+                    "risk_signal": False,
+                    "behavior_params": {},
+                    "template_bank": "default",
+                    "generation_seed": 42001,
+                }
+            ],
+        }
 
         with tempfile.TemporaryDirectory() as tmp_dir, patch.dict(
             "os.environ",
             {
-                "AUTO_BACKEND_SWITCH": "0",
                 "DETECTOR_BACKEND": "ollama",
                 "OLLAMA_BASE_URL": "http://127.0.0.1:11434",
                 "OLLAMA_DETECTOR_MODEL": "qwen3.5:4b",
@@ -231,7 +243,7 @@ class OllamaBackendTests(unittest.TestCase):
             clear=False,
         ):
             output_dir = Path(tmp_dir)
-            metrics_payload, _, _, config_snapshot, _, _ = write_eval_artifacts(
+            metrics_payload, _, integrity_payload, config_snapshot, _, _ = write_eval_artifacts(
                 output_dir=output_dir,
                 conversations=[],
                 results=[],
@@ -257,11 +269,11 @@ class OllamaBackendTests(unittest.TestCase):
                 run_failure_counters=Counter(),
                 eval_ids=[],
                 manifest_hash="abc123",
-                requested_eval_mode="mixed_holdout",
-                effective_eval_mode="mixed_holdout",
+                manifest_payload=manifest_payload,
+                prior_manifest_info={"exists": True, "hash": "oldhash", "profile_count": 1, "read_error": None},
                 prompt_version="v1",
                 seed=42,
-                persona_count=0,
+                persona_count=1,
                 processed_profiles=0,
                 trace_level="off",
                 max_api_calls=100,
@@ -274,10 +286,14 @@ class OllamaBackendTests(unittest.TestCase):
                 all_profiles=[],
             )
 
-        self.assertEqual(metrics_payload["eval_mode_effective"], "mixed_holdout")
+        self.assertEqual(metrics_payload["evaluation_mode"], "synthetic")
         self.assertEqual(config_snapshot["env"]["OLLAMA_BASE_URL"], "http://127.0.0.1:11434")
         self.assertEqual(config_snapshot["env"]["OLLAMA_DETECTOR_MODEL"], "qwen3.5:4b")
         self.assertEqual(config_snapshot["env"]["OLLAMA_THINK_MODE"], "auto")
+        self.assertEqual(config_snapshot["resolved_backends"]["detector_backend"], "ollama")
+        self.assertEqual(integrity_payload["evaluation_mode"], "synthetic")
+        self.assertEqual(integrity_payload["persona_regeneration_policy"], "always_regenerate")
+        self.assertFalse(integrity_payload["prior_manifest"]["matches_current"])
 
 
 if __name__ == "__main__":

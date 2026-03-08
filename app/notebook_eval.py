@@ -91,7 +91,6 @@ def run_eval_notebook(
     *,
     persona_count: int = 10,
     seed: int = 42,
-    eval_mode: str = "mixed_holdout",
     prompt_version: str = "v1",
     save_diagnostics: bool = False,
     max_api_calls: int = 500,
@@ -105,7 +104,6 @@ def run_eval_notebook(
     result = run_eval(
         persona_count=persona_count,
         seed=seed,
-        eval_mode=eval_mode,
         prompt_version=prompt_version,
         save_diagnostics=save_diagnostics,
         max_api_calls=max_api_calls,
@@ -124,6 +122,15 @@ def load_eval_metrics(output_dir: str | Path) -> Dict[str, Any]:
     payload = _load_json(metrics_path)
     if not isinstance(payload, dict):
         raise TypeError(f"Expected metrics payload to be a JSON object: {metrics_path}")
+    return payload
+
+
+def load_benchmark_integrity(output_dir: str | Path) -> Dict[str, Any]:
+    artifact_dir = Path(output_dir)
+    integrity_path = artifact_dir / "benchmark_integrity_run_local.json"
+    payload = _load_json(integrity_path)
+    if not isinstance(payload, dict):
+        raise TypeError(f"Expected integrity payload to be a JSON object: {integrity_path}")
     return payload
 
 

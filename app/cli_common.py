@@ -58,3 +58,16 @@ def _current_git_hash() -> str:
         return result.stdout.strip()
     except Exception:
         return "unknown"
+
+
+def _git_is_dirty() -> bool | None:
+    try:
+        result = subprocess.run(
+            ["git", "status", "--short"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return bool(result.stdout.strip())
+    except Exception:
+        return None

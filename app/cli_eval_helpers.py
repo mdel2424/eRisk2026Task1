@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -10,9 +9,7 @@ from typing import Any, Dict, List, Tuple
 from core.evaluation import compute_metrics
 from persona import PersonaProfile
 
-from app.cli_common import _parse_bool
-
-MANIFEST_SCHEMA_VERSION = 2
+MANIFEST_SCHEMA_VERSION = 3
 
 
 def _objective(metrics: Dict[str, Any], max_turns: int, latency_lambda: float = 0.15) -> float:
@@ -40,15 +37,10 @@ def _select_primary_metrics(
     return "overall_labeled", {}
 
 
-def _strict_split_lock_enabled() -> bool:
-    return _parse_bool(os.getenv("STRICT_SPLIT_LOCK", "1"))
-
-
 def _manifest_payload(
     *,
     persona_count: int,
     seed: int,
-    generator_version: str,
     profiles: List[PersonaProfile],
 ) -> Dict[str, Any]:
     def _profile_dict(profile: PersonaProfile) -> Dict[str, Any]:
@@ -66,7 +58,6 @@ def _manifest_payload(
             "behavior_params": dict(profile.behavior_params),
             "template_bank": profile.template_bank,
             "generation_seed": profile.generation_seed,
-            "generator_version": profile.generator_version,
         }
 
     return {
@@ -74,7 +65,6 @@ def _manifest_payload(
             "manifest_schema_version": MANIFEST_SCHEMA_VERSION,
             "persona_count": persona_count,
             "seed": seed,
-            "generator_version": generator_version,
         },
         "persona_count": len(profiles),
         "profiles": [_profile_dict(profile) for profile in profiles],
@@ -86,27 +76,33 @@ def _manifest_hash(payload: Dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _enforce_manifest_lock(manifest_path: Path, current_payload: Dict[str, Any], current_hash: str) -> None:
+def _load_previous_manifest_info(manifest_path: Path) -> Dict[str, Any]:
     if not manifest_path.exists():
-        return
+        return {
+            "exists": False,
+            "hash": None,
+            "profile_count": 0,
+            "read_error": None,
+        }
+
     try:
-        previous_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except Exception:
-        return
-
-    prev_config = previous_payload.get("run_config", {})
-    curr_config = current_payload.get("run_config", {})
-    if prev_config != curr_config:
-        return
-
-    previous_hash = _manifest_hash(previous_payload)
-    if previous_hash != current_hash:
-        raise ValueError(
-            "STRICT_SPLIT_LOCK failed: split manifest hash mismatch for identical run_config. "
-            "Possible leakage/non-deterministic generation detected. "
-            "If this is an intentional simulator update, bump SIM_GENERATOR_VERSION "
-            "or remove outputs/persona_manifest_run_local.json."
-        )
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise TypeError("manifest payload is not a JSON object")
+        profiles = list(payload.get("profiles", []) or [])
+        return {
+            "exists": True,
+            "hash": _manifest_hash(payload),
+            "profile_count": len(profiles),
+            "read_error": None,
+        }
+    except Exception as exc:
+        return {
+            "exists": True,
+            "hash": None,
+            "profile_count": 0,
+            "read_error": str(exc),
+        }
 
 
 def _family_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -128,18 +124,10 @@ def _family_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def _resolve_effective_eval_mode(eval_mode: str) -> tuple[str, str]:
-    requested = str(eval_mode).strip().lower()
-    if requested in {"mixed_holdout", "synthetic_only"}:
-        return requested, "synthetic_holdout"
-    return requested, "synthetic_holdout"
-
-
 def _profile_meta(profile: PersonaProfile) -> Dict[str, Any]:
     return {
         "split": profile.split,
         "family": profile.family,
-        "generator_version": profile.generator_version,
         "generation_seed": profile.generation_seed,
         "template_bank": profile.template_bank,
         "behavior_params": dict(profile.behavior_params),

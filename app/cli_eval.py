@@ -9,13 +9,11 @@ from core.io_schema import PersonaConversation, PersonaResult
 from core.llm import get_llm_usage, reset_llm_usage, set_llm_call_budget
 from persona import PersonaProfile, generate_persona_pool
 
-from app.cli_common import _parse_bool, _parse_int, _write_json
+from app.cli_common import _parse_bool, _write_json
 from app.cli_eval_helpers import (
-    _enforce_manifest_lock,
     _manifest_hash,
     _manifest_payload,
-    _resolve_effective_eval_mode,
-    _strict_split_lock_enabled,
+    _load_previous_manifest_info,
 )
 from app.cli_runtime import _run_profile
 from app.cli_runtime_helpers import (
@@ -55,7 +53,6 @@ def _result_record(profile: PersonaProfile, state: Dict) -> Dict:
 def run_eval(
     persona_count: int,
     seed: int,
-    eval_mode: str,
     prompt_version: str,
     save_diagnostics: bool,
     max_api_calls: int,
@@ -76,8 +73,6 @@ def run_eval(
     set_llm_call_budget(max_api_calls if max_api_calls > 0 else None)
     reset_llm_usage()
 
-    strict_split_lock = _strict_split_lock_enabled()
-    generator_version = os.getenv("SIM_GENERATOR_VERSION", "sim_v4").strip() or "sim_v4"
     stop_policy = {
         "MIN_TURNS": os.getenv("MIN_TURNS", "20"),
         "MAX_TURNS": os.getenv("MAX_TURNS", "40"),
@@ -100,7 +95,6 @@ def run_eval(
         "EXTRACTOR_MIN_RECORDS_TARGET": os.getenv("EXTRACTOR_MIN_RECORDS_TARGET", "1"),
     }
 
-    requested_eval_mode, effective_eval_mode = _resolve_effective_eval_mode(eval_mode)
     requested_trace_level = str(trace_level).strip().lower()
     requested_save_diagnostics = bool(save_diagnostics)
     effective_debug_outputs = bool(debug_outputs) or requested_save_diagnostics or (requested_trace_level == "compact")
@@ -110,12 +104,9 @@ def run_eval(
 
     if verbose_console and effective_debug_outputs:
         print(
-            f"--- Eval Mode: {requested_eval_mode} | personas={persona_count} | seed={seed} | prompts={prompt_version} ---"
+            f"--- Synthetic Eval | personas={persona_count} | seed={seed} | prompts={prompt_version} ---"
         )
         _print_backend_info(max_api_calls=max_api_calls if max_api_calls > 0 else None, trace_level=trace_level_effective)
-        print(
-            f"Synthetic generator: version={generator_version}"
-        )
         print(
             "Stop policy: "
             + " | ".join(f"{key}={value}" for key, value in stop_policy.items())
@@ -130,7 +121,7 @@ def run_eval(
         )
     elif live_status:
         print(
-            f"Running eval: mode={requested_eval_mode}, personas={persona_count}, "
+            f"Running synthetic eval: personas={persona_count}, "
             f"prompt={prompt_version}, live_status=on"
         )
         if effective_debug_outputs:
@@ -152,7 +143,6 @@ def run_eval(
     manifest_payload = _manifest_payload(
         persona_count=persona_count,
         seed=seed,
-        generator_version=generator_version,
         profiles=all_profiles,
     )
     manifest_hash = _manifest_hash(manifest_payload)
@@ -161,9 +151,7 @@ def run_eval(
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = output_dir / "persona_manifest_run_local.json"
     manifest_hash_path = output_dir / "persona_manifest_hash_run_local.txt"
-
-    if strict_split_lock:
-        _enforce_manifest_lock(manifest_path, manifest_payload, manifest_hash)
+    prior_manifest_info = _load_previous_manifest_info(manifest_path)
 
     _write_json(manifest_path, manifest_payload)
     manifest_hash_path.write_text(manifest_hash + "\n", encoding="utf-8")
@@ -385,7 +373,7 @@ def run_eval(
                 print("\nStopping eval early: API call budget reached.")
             break
 
-    metrics_payload, failure_report_payload, leakage_report_payload, config_snapshot, primary_metrics, error_report_payload = (
+    metrics_payload, failure_report_payload, benchmark_integrity_payload, config_snapshot, primary_metrics, error_report_payload = (
         write_eval_artifacts(
             output_dir=output_dir,
             conversations=conversations,
@@ -412,8 +400,8 @@ def run_eval(
             run_failure_counters=run_failure_counters,
             eval_ids=eval_ids,
             manifest_hash=manifest_hash,
-            requested_eval_mode=requested_eval_mode,
-            effective_eval_mode=effective_eval_mode,
+            manifest_payload=manifest_payload,
+            prior_manifest_info=prior_manifest_info,
             prompt_version=prompt_version,
             seed=seed,
             persona_count=persona_count,
@@ -441,8 +429,8 @@ def run_eval(
     if verbose_console:
         print("\n--- Evaluation Summary ---")
         print(metrics_payload)
-        print("\nLeakage report:")
-        print(leakage_report_payload)
+        print("\nBenchmark integrity:")
+        print(benchmark_integrity_payload)
         print("\nWrote:")
         print(f" - {output_dir / 'persona_manifest_run_local.json'}")
         print(f" - {output_dir / 'persona_manifest_hash_run_local.txt'}")
@@ -453,7 +441,7 @@ def run_eval(
             print(f" - {output_dir / 'error_report_run_local.json'}")
             print(f" - {output_dir / 'extract_parse_fail_log_run_local.json'}")
             print(f" - {output_dir / 'failure_report_run_local.json'}")
-        print(f" - {output_dir / 'leakage_report_run_local.json'}")
+        print(f" - {output_dir / 'benchmark_integrity_run_local.json'}")
         if save_diagnostics_effective:
             print(f" - {output_dir / 'diagnostics_run_local.json'}")
         print(f" - {output_dir / 'config_used.json'}")
@@ -462,7 +450,7 @@ def run_eval(
         "metrics": metrics_payload,
         "failure_report": failure_report_payload,
         "error_report": error_report_payload,
-        "leakage_report": leakage_report_payload,
+        "benchmark_integrity": benchmark_integrity_payload,
         "config": config_snapshot,
         "output_dir": str(output_dir),
         "profiles_evaluated": processed_profiles,

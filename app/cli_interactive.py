@@ -209,8 +209,7 @@ def run_interactive(
     )
     print(f"Pipeline: {PIPELINE_ORDER}")
     print(
-        f"Selected persona: id={profile.persona_id} split={profile.split} family={profile.family} "
-        f"generator={profile.generator_version}"
+        f"Selected persona: id={profile.persona_id} split={profile.split} family={profile.family}"
     )
     if show_ground_truth:
         print(
