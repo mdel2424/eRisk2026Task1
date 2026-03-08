@@ -77,7 +77,7 @@ def run_eval(
     reset_llm_usage()
 
     strict_split_lock = _strict_split_lock_enabled()
-    generator_version = os.getenv("SIM_GENERATOR_VERSION", "sim_v3").strip() or "sim_v3"
+    generator_version = os.getenv("SIM_GENERATOR_VERSION", "sim_v4").strip() or "sim_v4"
     stop_policy = {
         "MIN_TURNS": os.getenv("MIN_TURNS", "20"),
         "MAX_TURNS": os.getenv("MAX_TURNS", "40"),

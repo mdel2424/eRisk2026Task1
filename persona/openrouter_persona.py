@@ -18,7 +18,7 @@ class OpenRouterSimPersona:
     split: str = "test"
     behavior_params: Dict[str, float | str] = field(default_factory=dict)
     template_bank: str = "test_bank_v1"
-    generator_version: str = "sim_v3"
+    generator_version: str = "sim_v4"
     last_response: str = field(default="", init=False)
     recent_responses: List[str] = field(default_factory=list, init=False)
     responses_total: int = field(default=0, init=False)

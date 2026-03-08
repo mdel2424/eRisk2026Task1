@@ -28,7 +28,7 @@ class PersonaProfile:
     behavior_params: Dict[str, float | str] = None  # type: ignore[assignment]
     template_bank: str = "train_bank_v1"
     generation_seed: int = 0
-    generator_version: str = "sim_v3"
+    generator_version: str = "sim_v4"
 
     def __post_init__(self) -> None:
         if self.behavior_params is None:
