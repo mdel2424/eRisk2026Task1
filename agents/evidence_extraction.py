@@ -65,6 +65,55 @@ ITEM1_WEAK_PATTERNS = (
     re.compile(r"\bfeeling\s+empty\b"),
 )
 
+PRECISION_GUARD_METHODS = {"lexical_fallback", "llm_salvage"}
+PRECISION_GUARD_ITEM9 = {9}
+PRECISION_GUARD_MODULE1 = {4, 10, 12, 17}
+PRECISION_GUARD_MODULE3 = {3, 5, 6, 7, 8, 14}
+PRECISION_GUARD_MODULE4 = {13, 19}
+
+ITEM9_DIRECT_PATTERNS = (
+    re.compile(r"\bbetter\s+off\s+dead\b"),
+    re.compile(r"\bkill\s+myself\b"),
+    re.compile(r"\bself[\s\-]?harm\b"),
+    re.compile(r"\bhurt\s+myself\b"),
+    re.compile(r"\bwish\s+i\s+wasn'?t\s+here\b"),
+    re.compile(r"\bdon'?t\s+want\s+to\s+wake\s+up\b"),
+    re.compile(r"\bnot\s+wake\s+up\b"),
+)
+
+MODULE1_STRONG_PATTERNS = (
+    re.compile(r"\b(?:enjoy|enjoying|enjoyed|pleasure|reward(?:ing)?|fun|look\s+forward)\b"),
+    re.compile(r"\b(?:withdrawing|keeping\s+to\s+myself|avoid(?:ing)?\s+people|pulling\s+away|ignoring\s+messages|cancel(?:ing)?\s+plans)\b"),
+    re.compile(r"\b(?:tearful|cr(?:y|ies|ied|ying))\b"),
+    re.compile(r"\b(?:irritable|irritability|short\s+fuse|snapp(?:y|ish)|easily\s+annoyed)\b"),
+)
+
+MODULE1_WEAK_PATTERNS = (
+    re.compile(r"\b(?:going\s+through\s+the\s+motions|feel(?:s|ing)?\s+like\s+a\s+chore)\b"),
+    re.compile(r"\b(?:autopilot|disconnected|checked\s+out|not\s+really\s+being\s+present|hollow)\b"),
+)
+
+MODULE3_STRONG_PATTERNS = (
+    re.compile(r"\b(?:guilty|guilt|ashamed|shame|my\s+fault|blame\s+myself|regret)\b"),
+    re.compile(r"\b(?:worthless|useless|burden|not\s+enough|not\s+good\s+enough)\b"),
+    re.compile(r"\b(?:failure|failed|hate\s+myself|dislike\s+myself|self[\s\-]?critical|beat\s+myself\s+up)\b"),
+)
+
+MODULE3_WEAK_PATTERNS = (
+    re.compile(r"\b(?:stress(?:ed)?|pressure|frustrat(?:ed|ing)|behind|catch[\s\-]?up|overwhelmed)\b"),
+    re.compile(r"\b(?:second[\s\-]?guess(?:ing)?|self[\s\-]?doubt)\b"),
+)
+
+MODULE4_STRONG_PATTERNS = (
+    re.compile(r"\b(?:can'?t\s+focus|lose\s+focus|concentrat(?:e|ing|ion)|can'?t\s+think\s+clearly)\b"),
+    re.compile(r"\b(?:indecisive|indecision|can'?t\s+decide|hard\s+to\s+decide|stuck\s+choosing|decision(?:s)?\s+feel\s+hard)\b"),
+)
+
+MODULE4_WEAK_PATTERNS = (
+    re.compile(r"\b(?:brain\s+fog|foggy|mind\s+(?:was\s+)?racing|overwhelmed|scattered|all\s+over\s+the\s+place)\b"),
+    re.compile(r"\b(?:zoning\s+out|mind\s+is\s+always\s+elsewhere)\b"),
+)
+
 
 def _env_bool(name: str, default: str = "0") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "y", "on"}
@@ -397,6 +446,144 @@ def _apply_item1_gate(
     return record, "kept"
 
 
+def _precision_gate_bucket(item_id: int) -> str:
+    if item_id in PRECISION_GUARD_ITEM9:
+        return "item9"
+    if item_id in PRECISION_GUARD_MODULE1:
+        return "module1"
+    if item_id in PRECISION_GUARD_MODULE3:
+        return "module3"
+    if item_id in PRECISION_GUARD_MODULE4:
+        return "module4"
+    return "none"
+
+
+def _has_any_pattern(text: str, patterns: Tuple[re.Pattern[str], ...]) -> bool:
+    normalized = " ".join(str(text or "").lower().split())
+    if not normalized:
+        return False
+    return any(pattern.search(normalized) for pattern in patterns)
+
+
+def _precision_signal_strength(
+    text: str,
+    *,
+    strong_patterns: Tuple[re.Pattern[str], ...],
+    weak_patterns: Tuple[re.Pattern[str], ...],
+) -> str:
+    normalized = " ".join(str(text or "").lower().split())
+    if not normalized:
+        return "none"
+    if any(pattern.search(normalized) for pattern in strong_patterns):
+        return "strong"
+    if any(pattern.search(normalized) for pattern in weak_patterns):
+        return "weak"
+    return "none"
+
+
+def _apply_precision_gate(
+    record: EvidenceRecord,
+    *,
+    latest_message: str,
+) -> tuple[EvidenceRecord | None, str]:
+    method = str(record.method or "").strip().lower()
+    if method not in PRECISION_GUARD_METHODS:
+        return record, "kept"
+
+    item_id = int(record.item_id)
+    bucket = _precision_gate_bucket(item_id)
+    if bucket == "none":
+        return record, "kept"
+
+    combined_text = f"{record.evidence_text}\n{latest_message}"
+    if bucket == "item9":
+        if _has_any_pattern(combined_text, ITEM9_DIRECT_PATTERNS):
+            return record.model_copy(update={"precision_gate_action": "kept"}), "kept"
+        return None, "dropped"
+
+    if bucket == "module1":
+        signal = _precision_signal_strength(
+            combined_text,
+            strong_patterns=MODULE1_STRONG_PATTERNS,
+            weak_patterns=MODULE1_WEAK_PATTERNS,
+        )
+    elif bucket == "module3":
+        signal = _precision_signal_strength(
+            combined_text,
+            strong_patterns=MODULE3_STRONG_PATTERNS,
+            weak_patterns=MODULE3_WEAK_PATTERNS,
+        )
+    else:
+        signal = _precision_signal_strength(
+            combined_text,
+            strong_patterns=MODULE4_STRONG_PATTERNS,
+            weak_patterns=MODULE4_WEAK_PATTERNS,
+        )
+
+    if signal == "strong":
+        return record.model_copy(update={"precision_gate_action": "kept"}), "kept"
+    if signal == "weak":
+        clamped = record.model_copy(
+            update={
+                "confidence": min(float(record.confidence), 0.35),
+                "intensity": min(float(record.intensity), 1.0),
+                "precision_gate_action": "soft_clamped",
+                "support_increment_blocked": True,
+            }
+        )
+        return clamped, "soft_clamped"
+    return None, "dropped"
+
+
+def _merge_precision_gate_counts(
+    target: Dict[str, Dict[str, int]],
+    *,
+    item_id: int,
+    action: str,
+) -> None:
+    if action not in {"soft_clamped", "dropped"}:
+        return
+    key = str(int(item_id))
+    if key not in target:
+        target[key] = {"soft_clamped": 0, "dropped": 0}
+    target[key][action] = int(target[key].get(action, 0) or 0) + 1
+
+
+def _merge_precision_gate_item_counts(
+    target: Dict[str, Dict[str, int]],
+    updates: Dict[str, Dict[str, int]],
+) -> None:
+    for item_id, counts in updates.items():
+        if item_id not in target:
+            target[item_id] = {"soft_clamped": 0, "dropped": 0}
+        target[item_id]["soft_clamped"] += int(counts.get("soft_clamped", 0) or 0)
+        target[item_id]["dropped"] += int(counts.get("dropped", 0) or 0)
+
+
+def _apply_precision_gate_batch(
+    records: List[EvidenceRecord],
+    *,
+    latest_message: str,
+) -> tuple[List[EvidenceRecord], int, int, Dict[str, Dict[str, int]]]:
+    kept_records: List[EvidenceRecord] = []
+    dropped_count = 0
+    soft_clamped_count = 0
+    item_counts: Dict[str, Dict[str, int]] = {}
+
+    for record in records:
+        gated_record, action = _apply_precision_gate(record, latest_message=latest_message)
+        if action == "dropped":
+            dropped_count += 1
+            _merge_precision_gate_counts(item_counts, item_id=int(record.item_id), action=action)
+            continue
+        if action == "soft_clamped":
+            soft_clamped_count += 1
+            _merge_precision_gate_counts(item_counts, item_id=int(record.item_id), action=action)
+        kept_records.append(gated_record if gated_record is not None else record)
+
+    return kept_records, dropped_count, soft_clamped_count, item_counts
+
+
 def _cue_direction(sentence: str, cue: str) -> str:
     lowered_sentence = str(sentence or "").lower()
     lowered_cue = str(cue or "").lower().strip()
@@ -703,6 +890,9 @@ def extract_likelihoods(state: AgentState) -> Dict:
     item1_gate_kept_count = 0
     item1_gate_dropped_count = 0
     item1_gate_soft_clamped_count = 0
+    precision_gate_dropped_count = 0
+    precision_gate_soft_clamped_count = 0
+    precision_gate_item_counts: Dict[str, Dict[str, int]] = {}
     parse_error_kind = ""
     parse_error_message = ""
     parse_error_line = 0
@@ -722,6 +912,13 @@ def extract_likelihoods(state: AgentState) -> Dict:
 
     if latest_message.strip():
         lexical_prefilter = _fallback_evidence_from_text(node_name, turn, latest_message)
+        lexical_prefilter, dropped_count, soft_clamped_count, item_counts = _apply_precision_gate_batch(
+            lexical_prefilter,
+            latest_message=latest_message,
+        )
+        precision_gate_dropped_count += int(dropped_count)
+        precision_gate_soft_clamped_count += int(soft_clamped_count)
+        _merge_precision_gate_item_counts(precision_gate_item_counts, item_counts)
         should_skip_llm = len(lexical_prefilter) >= extractor_min_records_target and not llm_on_lexical_hit
         if should_skip_llm:
             evidence_records = lexical_prefilter
@@ -835,6 +1032,27 @@ def extract_likelihoods(state: AgentState) -> Dict:
                                 else:
                                     item1_gate_kept_count += 1
                                 record = gated_record
+                            if record is not None:
+                                gated_record, precision_action = _apply_precision_gate(
+                                    record,
+                                    latest_message=latest_message,
+                                )
+                                if precision_action == "dropped":
+                                    precision_gate_dropped_count += 1
+                                    _merge_precision_gate_counts(
+                                        precision_gate_item_counts,
+                                        item_id=int(record.item_id),
+                                        action=precision_action,
+                                    )
+                                    continue
+                                if precision_action == "soft_clamped":
+                                    precision_gate_soft_clamped_count += 1
+                                    _merge_precision_gate_counts(
+                                        precision_gate_item_counts,
+                                        item_id=int(record.item_id),
+                                        action=precision_action,
+                                    )
+                                record = gated_record
                             evidence_records.append(record)
                 else:
                     source = "llm_extractor_non_list_payload"
@@ -856,6 +1074,13 @@ def extract_likelihoods(state: AgentState) -> Dict:
     fallback_records: List[EvidenceRecord] = []
     if not evidence_records and latest_message.strip():
         fallback_records = _fallback_evidence_from_text(node_name, turn, latest_message)
+        fallback_records, dropped_count, soft_clamped_count, item_counts = _apply_precision_gate_batch(
+            fallback_records,
+            latest_message=latest_message,
+        )
+        precision_gate_dropped_count += int(dropped_count)
+        precision_gate_soft_clamped_count += int(soft_clamped_count)
+        _merge_precision_gate_item_counts(precision_gate_item_counts, item_counts)
         if fallback_records:
             evidence_records = fallback_records
             source = "lexical_fallback"
@@ -879,11 +1104,14 @@ def extract_likelihoods(state: AgentState) -> Dict:
                 likelihood=_likelihood_from_record(record),
                 spans=[record.evidence_text],
                 extract_confidence=float(record.confidence),
+                extract_intensity=float(record.intensity),
                 evidence_type=method,
                 symptom_name=str(record.symptom_name),
                 direction=str(record.direction),
                 evidence_id=_evidence_id(record),
                 method_weight_hint=float(METHOD_WEIGHT_HINTS.get(method, 0.50)),
+                precision_gate_action=str(getattr(record, "precision_gate_action", "kept") or "kept"),
+                support_increment_blocked=bool(getattr(record, "support_increment_blocked", False)),
             )
         )
 
@@ -912,6 +1140,9 @@ def extract_likelihoods(state: AgentState) -> Dict:
         "item1_gate_kept_count": item1_gate_kept_count,
         "item1_gate_dropped_count": item1_gate_dropped_count,
         "item1_gate_soft_clamped_count": item1_gate_soft_clamped_count,
+        "precision_gate_dropped_count": precision_gate_dropped_count,
+        "precision_gate_soft_clamped_count": precision_gate_soft_clamped_count,
+        "precision_gate_item_counts": precision_gate_item_counts,
         "fallback_used": bool(fallback_records),
         "salvage_used": salvage_used,
         "salvage_items_count": salvage_items_count,

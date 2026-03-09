@@ -6,7 +6,10 @@ import re
 from collections import Counter, defaultdict
 from typing import Dict, List
 
+from core.bdi_modules import MODULE_TO_ITEMS
 from core.state import AgentState, BeliefState, ItemBelief, coerce_item_belief
+
+GUARDED_ITEM_IDS = {9, *MODULE_TO_ITEMS[1], *MODULE_TO_ITEMS[3], *MODULE_TO_ITEMS[4]}
 
 
 
@@ -112,6 +115,34 @@ def _method_weight(evidence_type: str) -> float:
     return _env_float("BELIEF_WEIGHT_DEFAULT", 0.50)
 
 
+def _support_increment_allowed(
+    *,
+    item_id: int,
+    evidence_type: str,
+    extract_confidence: float,
+    extract_intensity: float,
+    support_increment_blocked: bool,
+) -> tuple[bool, str]:
+    if bool(support_increment_blocked):
+        return False, "precision_gate_blocked"
+
+    if int(item_id) not in GUARDED_ITEM_IDS:
+        return True, "non_guarded_item"
+
+    method_key = str(evidence_type or "").strip().lower()
+    if method_key == "llm_extractor":
+        return True, "llm_extractor_allowed"
+    if method_key == "llm_salvage":
+        if float(extract_confidence) >= 0.55 and float(extract_intensity) >= 1.5:
+            return True, "salvage_threshold_met"
+        return False, "salvage_threshold_blocked"
+    if method_key in {"lexical_fallback", "lexical_prefilter"}:
+        if float(extract_confidence) >= 0.65 and float(extract_intensity) >= 1.75:
+            return True, "lexical_threshold_met"
+        return False, "lexical_threshold_blocked"
+    return True, "unrecognized_method_allowed"
+
+
 
 def update_beliefs(state: AgentState) -> Dict:
     turn = int(state.get("turn_index", 0))
@@ -131,6 +162,8 @@ def update_beliefs(state: AgentState) -> Dict:
     contradiction_rows_count = 0
     unique_rows_count = 0
     support_increments_count = 0
+    support_rejected_by_method_count = 0
+    support_rejected_guarded_item_count = 0
 
     duplicate_weight = _clamp(_env_float("BELIEF_DUPLICATE_WEIGHT", 0.15), 0.01, 1.0)
     decay_start_support = max(0, _env_int("BELIEF_DECAY_START_SUPPORT", 2))
@@ -189,6 +222,9 @@ def update_beliefs(state: AgentState) -> Dict:
 
         evidence_type = str(getattr(row, "evidence_type", "llm_extractor") or "llm_extractor")
         method_counts[evidence_type] += 1
+        extract_confidence = float(getattr(row, "extract_confidence", 0.0) or 0.0)
+        extract_intensity = float(getattr(row, "extract_intensity", 0.0) or 0.0)
+        support_increment_blocked = bool(getattr(row, "support_increment_blocked", False))
         row_direction = _normalize_direction(str(getattr(row, "direction", "neutral") or "neutral"))
         evidence_id = str(getattr(row, "evidence_id", "") or "").strip()
         spans = [str(v) for v in list(getattr(row, "spans", [])) if str(v).strip()]
@@ -248,12 +284,24 @@ def update_beliefs(state: AgentState) -> Dict:
         per_item_stats[item_id]["rows"] += 1
         per_item_stats[item_id]["weight_sum"] += float(effective_weight)
 
-        if (not is_duplicate) and effective_weight >= support_min_weight:
+        allow_support_increment, support_reject_reason = _support_increment_allowed(
+            item_id=item_id,
+            evidence_type=evidence_type,
+            extract_confidence=extract_confidence,
+            extract_intensity=extract_intensity,
+            support_increment_blocked=support_increment_blocked,
+        )
+
+        if (not is_duplicate) and effective_weight >= support_min_weight and allow_support_increment:
             support_increments_by_item[item_id] = int(support_increments_by_item.get(item_id, 0)) + 1
             support_increments_count += 1
             per_item_stats[item_id]["support_increments"] += 1
             direction_counts[row_direction] = int(direction_counts.get(row_direction, 0)) + 1
             item_direction_tally[item_id] = direction_counts
+        elif (not is_duplicate) and effective_weight >= support_min_weight and not allow_support_increment:
+            support_rejected_guarded_item_count += 1
+            if support_reject_reason != "non_guarded_item":
+                support_rejected_by_method_count += 1
 
         if (not is_duplicate) and evidence_id:
             existing_ids.append(evidence_id)
@@ -303,6 +351,8 @@ def update_beliefs(state: AgentState) -> Dict:
         "duplicate_rows_count": int(duplicate_rows_count),
         "contradiction_rows_count": int(contradiction_rows_count),
         "support_increments_count": int(support_increments_count),
+        "support_rejected_by_method_count": int(support_rejected_by_method_count),
+        "support_rejected_guarded_item_count": int(support_rejected_guarded_item_count),
         "method_counts": {str(key): int(value) for key, value in method_counts.items()},
         "per_item_stats": [
             {

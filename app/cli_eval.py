@@ -15,6 +15,7 @@ from app.cli_eval_helpers import (
     _manifest_payload,
     _load_previous_manifest_info,
 )
+from app.finalizer_summary import compact_finalizer_summary
 from app.cli_runtime import _run_profile
 from app.cli_runtime_helpers import (
     _assert_detector_backend_ready,
@@ -217,6 +218,7 @@ def run_eval(
                 key_symptoms=list(final_state.get("predicted_key_symptoms") or [])[:4],
                 item_scores=item_scores_map,
                 item_support_counts=item_support_map,
+                finalizer_summary=compact_finalizer_summary(final_state.get("module_imputation")),
             )
         )
 

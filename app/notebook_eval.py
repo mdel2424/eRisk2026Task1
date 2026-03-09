@@ -6,7 +6,19 @@ from typing import Any, Dict, List
 
 import pandas as pd
 
+from app.finalizer_summary import (
+    FINALIZER_GUARDRAIL_FIELDS,
+    FINALIZER_SEVERE_AMPLITUDE_FIELDS,
+    FINALIZER_SEVERE_RECOVERY_FIELDS,
+    default_finalizer_summary_value,
+)
 from core.state import symptom_name_from_item
+
+FINALIZER_GROUPED_COLUMNS = (
+    [f"finalizer_{field}" for field in FINALIZER_GUARDRAIL_FIELDS]
+    + [f"finalizer_{field}" for field in FINALIZER_SEVERE_RECOVERY_FIELDS]
+    + [f"finalizer_{field}" for field in FINALIZER_SEVERE_AMPLITUDE_FIELDS]
+)
 
 RECORD_BASE_COLUMNS = [
     "persona_id",
@@ -19,6 +31,9 @@ RECORD_BASE_COLUMNS = [
     "key_symptoms_pred",
     "item_scores_true",
     "item_scores_pred",
+    "finalizer_summary",
+    *FINALIZER_GROUPED_COLUMNS,
+    "finalizer_guardrail_consistency_ok",
 ]
 
 ITEM_ERROR_COLUMNS = [
@@ -85,6 +100,23 @@ def _scores_from_row(row: pd.Series, key: str) -> Dict[str, int]:
     if isinstance(scores, dict):
         return _normalize_item_scores(scores)
     return _normalize_item_scores({})
+
+
+def _flatten_finalizer_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
+    flattened: Dict[str, Any] = {}
+    for field in FINALIZER_GUARDRAIL_FIELDS + FINALIZER_SEVERE_RECOVERY_FIELDS + FINALIZER_SEVERE_AMPLITUDE_FIELDS:
+        default_value = default_finalizer_summary_value(field)
+        raw_value = summary.get(field, default_value)
+        if isinstance(default_value, bool):
+            value = bool(raw_value)
+        elif isinstance(default_value, int):
+            value = int(raw_value or 0)
+        elif isinstance(default_value, list):
+            value = list(raw_value or [])
+        else:
+            value = str(raw_value or "")
+        flattened[f"finalizer_{field}"] = value
+    return flattened
 
 
 def run_eval_notebook(
@@ -158,6 +190,7 @@ def load_eval_records(output_dir: str | Path) -> pd.DataFrame:
 
         true_scores = _normalize_item_scores(profile.get("bdi_scores", {}))
         pred_scores = _normalize_item_scores(result.get("item-scores", {}))
+        finalizer_summary = dict(result.get("finalizer_summary", {}) or {})
         row: Dict[str, Any] = {
             "persona_id": persona_id,
             "split": str(profile.get("split", "")),
@@ -169,6 +202,13 @@ def load_eval_records(output_dir: str | Path) -> pd.DataFrame:
             "key_symptoms_pred": list(result.get("key-symptoms", []) or []),
             "item_scores_true": true_scores,
             "item_scores_pred": pred_scores,
+            "finalizer_summary": finalizer_summary,
+            **_flatten_finalizer_summary(finalizer_summary),
+            "finalizer_guardrail_consistency_ok": (
+                not finalizer_summary
+                or bool(finalizer_summary.get("low_signal_guardrail_active", False))
+                or bool(finalizer_summary.get("severe_recovery_mode_active", False))
+            ),
         }
         for item_id in range(1, 22):
             key = str(item_id)

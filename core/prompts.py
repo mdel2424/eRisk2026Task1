@@ -76,6 +76,10 @@ Constraints:
 - Do not default to item 1 (Sadness) when evidence is vague or unspecific.
 - Item 1 increase requires explicit mood-affect language (sad/down/low mood/tearful/crying/numb or emotionally flat).
 - Fatigue/sleep/concentration-only evidence should map to their specific items, not item 1.
+- Do not map generic overwhelm, escape metaphors, or safety-planning language to item 9 without direct passive-death or self-harm semantics.
+- Do not map dissociation, autopilot, or disconnection alone to item 4 without explicit loss of enjoyment, reward, or interest.
+- Do not map generic stress, pressure, or being behind to self-evaluation items without explicit self-judgment, guilt, shame, failure, or worthlessness language.
+- Do not map racing thoughts or fogginess alone to item 19 without explicit concentration or decision-making impairment.
 - Output MUST start with "{{" and end with "}}".
 - Do not wrap output in markdown fences.
 - Do not add commentary, notes, explanations, headings, or trailing text.

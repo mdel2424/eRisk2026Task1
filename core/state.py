@@ -90,11 +90,14 @@ class LikelihoodEvidence(BaseModel):
     likelihood: List[float] = Field(default_factory=lambda: [1.0, 1.0, 1.0, 1.0], min_length=4, max_length=4)
     spans: List[str] = Field(default_factory=list)
     extract_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    extract_intensity: float = Field(default=0.0, ge=0.0, le=3.0)
     evidence_type: str = "llm_extractor"
     symptom_name: str = ""
     direction: Literal["increase", "decrease", "neutral"] = "neutral"
     evidence_id: str = ""
     method_weight_hint: float = Field(default=0.0, ge=0.0, le=2.0)
+    precision_gate_action: str = "kept"
+    support_increment_blocked: bool = False
 
     @field_validator("likelihood")
     @classmethod
@@ -116,6 +119,8 @@ class EvidenceRecord(BaseModel):
     evidence_text: str
     reason: str
     method: str = "llm_extractor"
+    precision_gate_action: str = "kept"
+    support_increment_blocked: bool = False
 
 
 class ItemBelief(BaseModel):

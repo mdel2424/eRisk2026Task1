@@ -38,7 +38,9 @@ class ProfileSamplingTests(unittest.TestCase):
         module_imputation = result["module_imputation"]
         self.assertIn(6, module_imputation["module_stats"])
         self.assertEqual(module_imputation["item_details"]["18"]["source"], "imputed")
-        self.assertGreaterEqual(int(module_imputation["imputed_item_count"]), 1)
+        self.assertGreaterEqual(int(module_imputation["imputed_points_before_guardrail"]), 1)
+        self.assertEqual(int(module_imputation["imputed_points_after_guardrail"]), 0)
+        self.assertIn(18, module_imputation["suppressed_imputed_item_ids"])
 
     def test_module_six_items_stay_soft_coupled(self) -> None:
         for seed in range(1, 121):
