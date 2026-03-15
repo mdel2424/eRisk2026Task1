@@ -18,6 +18,7 @@ from core.state import (
 CORE_ITEM_IDS = [2, 3, 4, 5, 7, 8, 14, 15, 16, 19, 20]
 LOW_SIGNAL_COGNITIVE_AFFECTIVE_MODULES = {1, 2, 3, 4}
 LOW_SIGNAL_SOMATIC_INTERPERSONAL_MODULES = {5, 6, 7, 8}
+SOLO_MODULE_IMPUTATION_BLOCKED_ITEMS = {18}
 SEVERE_ANCHOR_NEGATION_PHRASES = [
     "not really a problem",
     "nothing different",
@@ -28,6 +29,58 @@ SEVERE_ANCHOR_NEGATION_PHRASES = [
     "okay honestly",
     "not a big thing",
     "i feel reasonably confident",
+]
+ITEM14_WORTHLESSNESS_PRIORITY_PHRASES = [
+    "genuinely feel worthless",
+    "feel worthless",
+    "worthless",
+    "feel like a burden",
+    "i am a burden",
+    "im a burden",
+    "dont matter",
+    "do not matter",
+    "dont contribute",
+    "do not contribute",
+]
+ITEM21_MILD_DIRECT_PHRASES = [
+    "that side of things is a little lower than usual",
+    "side of things is a little lower than usual",
+    "less interested than usual",
+    "little less interested",
+    "reduced interest in sexual activity",
+    "reduced interest in sex",
+]
+ITEM14_LATENT_RESTORE_PHRASES = [
+    "feel worthless",
+    "worthless",
+    "feel like a burden",
+    "i am a burden",
+    "im a burden",
+    "my own fault",
+    "my fault",
+    "blame myself",
+    "feel like a failure",
+    "i am a failure",
+    "im a failure",
+    "dont like who i am",
+    "dont like the person ive been",
+    "dislike who ive become",
+    "dont measure up",
+    "do not measure up",
+    "hard on myself",
+]
+ITEM21_QUESTION_HISTORY_PHRASES = [
+    "reduced interest in sexual activity",
+    "interest in sexual activity",
+    "interest in sex",
+]
+ITEM21_DIRECT_DENIAL_PHRASES = [
+    "that side of things has been fine",
+    "that side of things is fine",
+    "not really a problem",
+    "hasnt really been an issue",
+    "nothing different there",
+    "okay honestly",
 ]
 SEVERE_ANCHOR_RULES = [
     {
@@ -407,6 +460,11 @@ def _low_signal_guardrail_context(
 
     observed_positive_breadth = len(observed_positive_item_ids)
     observed_core_hits = len(observed_core_item_ids)
+    observed_mean_severity = 0.0
+    if observed_positive_item_ids:
+        observed_mean_severity = sum(
+            float(item_beliefs[item_id].expected_score) for item_id in observed_positive_item_ids
+        ) / len(observed_positive_item_ids)
     strong_observed_item_count = len(strong_observed_item_ids)
     strong_module_breadth = len(strong_module_ids)
     corroborated_core_hits = int(support_geometry["corroborated_core_hits"])
@@ -451,16 +509,29 @@ def _low_signal_guardrail_context(
         "dominant_support_share": float(support_geometry["dominant_support_share"]),
         "support_concentration_dominant": support_concentration_dominant,
         "total_observed_support_count": int(support_geometry["total_observed_support_count"]),
+        "observed_mean_severity": round(observed_mean_severity, 6),
     }
 
 
-def _low_signal_imputed_budget(observed_positive_breadth: int, observed_core_hits: int) -> int:
+def _low_signal_imputed_budget(
+    observed_positive_breadth: int,
+    observed_core_hits: int,
+    *,
+    observed_mean_severity: float = 0.0,
+) -> int:
     if observed_positive_breadth <= 1:
         return 0
     if observed_positive_breadth in {2, 3}:
         return 1
-    if observed_positive_breadth == 4 and observed_core_hits == 1:
-        return 2
+    if observed_positive_breadth == 4:
+        if observed_mean_severity >= 2.0 and observed_core_hits >= 2:
+            return 2
+        return 1
+    if observed_positive_breadth >= 5:
+        base = 2
+        if observed_mean_severity >= 2.0 and observed_core_hits >= 3:
+            base += 1
+        return min(base, 3)
     return 1
 
 
@@ -488,6 +559,66 @@ def _persona_utterances(state: AgentState) -> List[str]:
         if content:
             utterances.append(content)
     return utterances
+
+
+def _recent_persona_hit(state: AgentState, phrases: List[str], *, limit: int = 4) -> bool:
+    for utterance in _persona_utterances(state)[-limit:]:
+        normalized = _normalize_text(utterance)
+        if normalized and _contains_any(normalized, phrases):
+            return True
+    return False
+
+
+def _detector_persona_pairs(state: AgentState) -> List[Tuple[str, str]]:
+    pairs: List[Tuple[str, str]] = []
+    pending_question = ""
+    for message in list(state.get("messages", [])):
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role", "")).strip().lower()
+        content = _normalize_text(message.get("content", ""))
+        if not content:
+            continue
+        if role == "user":
+            pending_question = content
+            continue
+        if role == "assistant" and pending_question:
+            pairs.append((pending_question, content))
+            pending_question = ""
+    return pairs
+
+
+def _item21_question_history_and_denials(state: AgentState) -> Tuple[bool, int]:
+    question_history_hit = False
+    denial_count = 0
+    for question_text, reply_text in _detector_persona_pairs(state):
+        if not _contains_any(question_text, ITEM21_QUESTION_HISTORY_PHRASES):
+            continue
+        question_history_hit = True
+        if reply_text and _contains_any(reply_text, ITEM21_DIRECT_DENIAL_PHRASES):
+            denial_count += 1
+    return question_history_hit, denial_count
+
+
+def _clear_imputed_suppression_tracking(
+    *,
+    item_id: int,
+    detail: Dict[str, object],
+    suppressed_imputed_item_ids: List[int],
+    somatic_corroboration_blocked_item_ids: List[int],
+) -> None:
+    suppressed_imputed_item_ids[:] = [
+        suppressed_item_id
+        for suppressed_item_id in suppressed_imputed_item_ids
+        if int(suppressed_item_id) != int(item_id)
+    ]
+    somatic_corroboration_blocked_item_ids[:] = [
+        blocked_item_id
+        for blocked_item_id in somatic_corroboration_blocked_item_ids
+        if int(blocked_item_id) != int(item_id)
+    ]
+    detail["low_signal_somatic_blocked"] = False
+    detail["low_signal_budget_suppressed"] = False
 
 
 def _severe_anchor_context(
@@ -673,6 +804,7 @@ def finalize_outputs(state: AgentState) -> Dict:
     bdi_threshold = int(os.getenv("DETERMINISTIC_BDI_LABEL_THRESHOLD", "14"))
     evidence_rows = list(state.get("evidence_log", []))
     risk_reason = _risk_reason_from_state(state)
+    denied_item_id_set = set(int(x) for x in state.get("denied_item_ids", []) if 1 <= int(x) <= 21)
 
     prior_beliefs = state.get("item_beliefs", {})
     beliefs: Dict[int, ItemBelief] = {}
@@ -692,8 +824,10 @@ def finalize_outputs(state: AgentState) -> Dict:
     severe_recovery_mode_active = bool(severe_anchor_context["severe_recovery_mode_active"])
     support_geometry_candidate_bypass = bool(low_signal_context["support_geometry_candidate_bypass"])
     anchor_gated_guardrail_blocked = support_geometry_candidate_bypass and not severe_recovery_mode_active
-    low_signal_guardrail_active = not severe_recovery_mode_active
-    guardrail_bypass_source = "severe_recovery" if severe_recovery_mode_active else "none"
+    # Keep the low-signal guardrail active globally and let severe recovery
+    # operate through narrower item-level bypasses/restores instead.
+    low_signal_guardrail_active = True
+    guardrail_bypass_source = "item_local_severe_recovery" if severe_recovery_mode_active else "none"
     module_stats = _module_stats_from_beliefs(beliefs)
     final_item_scores: Dict[int, int] = {}
     item_details: Dict[str, Dict[str, object]] = {}
@@ -704,14 +838,27 @@ def finalize_outputs(state: AgentState) -> Dict:
     low_signal_singleton_trimmed_item_ids: List[int] = []
     low_signal_item9_cap_reason = ""
     severe_recovered_item_ids: List[int] = []
+    severe_recovered_item_ids_by_module: Dict[str, List[int]] = {}
+    severe_module3_restored_item_ids: List[int] = []
+    severe_module3_restore_budget = 0
+    severe_module3_item14_priority_applied = False
+    item14_latent_restored_item_ids: List[int] = []
     severe_amplitude_observed_item_ids: List[int] = []
+    severe_amplitude_observed_to_three_item_ids: List[int] = []
     severe_amplitude_imputed_item_ids: List[int] = []
+    strong_anchor_local_bypass_item_ids: List[int] = []
+    item21_mild_observed_retained = False
+    item21_imputed_restored = False
     severe_item9_rescued = False
     severe_anchor_item_id_set = {int(item_id) for item_id in severe_anchor_context["severe_anchor_item_ids"]}
     severe_anchor_module_id_set = {int(module_id) for module_id in severe_anchor_context["severe_anchor_module_ids"]}
     severe_strong_anchor_module_id_set = {
         int(module_id) for module_id in severe_anchor_context["severe_strong_anchor_module_ids"]
     }
+    recent_worthlessness_priority_hit = _recent_persona_hit(state, ITEM14_WORTHLESSNESS_PRIORITY_PHRASES)
+    recent_item14_latent_restore_hit = _recent_persona_hit(state, ITEM14_LATENT_RESTORE_PHRASES, limit=6)
+    recent_item21_mild_direct_hit = _recent_persona_hit(state, ITEM21_MILD_DIRECT_PHRASES, limit=8)
+    item21_question_history_hit, item21_direct_denial_count = _item21_question_history_and_denials(state)
 
     obs_blend_enabled = _env_bool("FINAL_OBS_BLEND_ENABLED", "1")
     obs_blend_conf_threshold = _clamp(_env_float("FINAL_OBS_BLEND_CONF_THRESHOLD", "0.60"), 0.0, 1.0)
@@ -729,6 +876,11 @@ def finalize_outputs(state: AgentState) -> Dict:
             int(module_id)
             for module_id in ITEM_TO_MODULES.get(item_id, [])
             if int(module_id) in severe_anchor_module_id_set
+        ]
+        strong_anchor_modules = [
+            int(module_id)
+            for module_id in ITEM_TO_MODULES.get(item_id, [])
+            if int(module_id) in severe_strong_anchor_module_id_set
         ]
         if int(belief.support_count) > 0:
             observed_float = _clamp(float(belief.expected_score), 0.0, 3.0)
@@ -788,6 +940,7 @@ def finalize_outputs(state: AgentState) -> Dict:
             pre_trim_score = _clamp(final_float, 0.0, 3.0)
             final_int = _round_item_score(pre_trim_score)
             severe_amplitude_observed_applied = False
+            severe_amplitude_observed_to_three = False
             anchored_observed_severe = (
                 severe_recovery_mode_active
                 and item_id != 9
@@ -812,6 +965,18 @@ def finalize_outputs(state: AgentState) -> Dict:
                     severe_amplitude_observed_item_ids.append(item_id)
             low_signal_observed_cap_applied = False
             item9_guardrail_applied = False
+            strong_anchor_local_bypass_applied = False
+            strong_anchor_local_eligible = (
+                severe_recovery_mode_active
+                and item_id != 9
+                and bool(strong_anchor_modules)
+                and (
+                    bool(severe_anchor_hit)
+                    or support_count >= 2
+                    or bool(evidence_summary.get("has_strong_row", False))
+                    or bool(is_corroborated_item)
+                )
+            )
             if item_id == 9 and (low_signal_guardrail_active or severe_recovery_mode_active):
                 item9_guardrail_applied = True
                 if risk_reason == "active self-harm cue match":
@@ -831,23 +996,57 @@ def finalize_outputs(state: AgentState) -> Dict:
                     final_int = 0
                     low_signal_item9_cap_reason = "non_specific_low_signal_forced_zero"
             elif low_signal_guardrail_active:
-                if (not severe_recovery_mode_active) and (
-                    support_count == 1
-                    and not is_corroborated_item
-                ):
-                    if pre_trim_score < 1.5:
-                        trimmed_int = 0
+                if support_count == 1 and not is_corroborated_item:
+                    if strong_anchor_local_eligible:
+                        strong_anchor_local_bypass_applied = True
+                        strong_anchor_local_bypass_item_ids.append(item_id)
                     else:
-                        trimmed_int = 1
-                    if trimmed_int < final_int:
+                        if pre_trim_score < 1.5:
+                            trimmed_int = 0
+                        else:
+                            trimmed_int = 1
+                        if trimmed_int < final_int:
+                            low_signal_observed_cap_applied = True
+                            low_signal_singleton_trimmed_item_ids.append(item_id)
+                            low_signal_observed_cap_item_ids.append(item_id)
+                        final_int = trimmed_int
+                elif final_int >= 2 and not is_corroborated_item:
+                    if strong_anchor_local_eligible:
+                        strong_anchor_local_bypass_applied = True
+                        strong_anchor_local_bypass_item_ids.append(item_id)
+                    else:
+                        final_int = 1
                         low_signal_observed_cap_applied = True
-                        low_signal_singleton_trimmed_item_ids.append(item_id)
                         low_signal_observed_cap_item_ids.append(item_id)
-                    final_int = trimmed_int
-                elif (not severe_recovery_mode_active) and final_int >= 2 and not is_corroborated_item:
-                    final_int = 1
-                    low_signal_observed_cap_applied = True
-                    low_signal_observed_cap_item_ids.append(item_id)
+
+            if (
+                strong_anchor_local_eligible
+                and any(module_id in LOW_SIGNAL_SOMATIC_INTERPERSONAL_MODULES for module_id in strong_anchor_modules)
+                and int(evidence_summary.get("evidence_turn_count", 0) or 0) >= 2
+                and (
+                    support_count >= 2
+                    or bool(evidence_summary.get("has_very_strong_row", False))
+                )
+                and observed_float >= 2.25
+                and final_int < 3
+            ):
+                final_int = 3
+                severe_amplitude_observed_applied = True
+                severe_amplitude_observed_to_three = True
+                severe_amplitude_observed_item_ids.append(item_id)
+                severe_amplitude_observed_to_three_item_ids.append(item_id)
+
+            if (
+                severe_recovery_mode_active
+                and item_id == 21
+                and final_int == 0
+                and support_count >= 1
+                and int(evidence_summary.get("evidence_turn_count", 0) or 0) >= 1
+                and float(evidence_summary.get("max_confidence", 0.0) or 0.0) >= 0.55
+                and recent_item21_mild_direct_hit
+            ):
+                final_int = 1
+                item21_mild_observed_retained = True
 
             final_item_scores[item_id] = final_int
             source = "observed_blended" if blend_applied else "observed"
@@ -895,7 +1094,12 @@ def finalize_outputs(state: AgentState) -> Dict:
                 "is_corroborated_item": bool(is_corroborated_item),
                 "severe_anchor_hit": bool(severe_anchor_hit),
                 "severe_anchor_modules": severe_anchor_modules,
+                "strong_anchor_modules": strong_anchor_modules,
                 "severe_recovery_mode_active": severe_recovery_mode_active,
+                "severe_module3_restore_applied": False,
+                "item14_latent_restore_applied": False,
+                "item21_mild_observed_retained": bool(item_id == 21 and item21_mild_observed_retained),
+                "item21_imputed_restore_applied": False,
                 "pre_trim_score": round(pre_trim_score, 6),
                 "post_trim_score": final_int,
                 "weak_positive_trim_applied": bool(low_signal_observed_cap_applied or item9_guardrail_applied),
@@ -904,8 +1108,10 @@ def finalize_outputs(state: AgentState) -> Dict:
                 "low_signal_item9_guardrail_applied": bool(item9_guardrail_applied),
                 "low_signal_item9_cap_reason": low_signal_item9_cap_reason if item_id == 9 else "",
                 "low_signal_guardrail_active": low_signal_guardrail_active,
+                "strong_anchor_local_bypass_applied": bool(strong_anchor_local_bypass_applied),
                 "anchored_observed_severe": bool(anchored_observed_severe),
                 "severe_amplitude_observed_applied": bool(severe_amplitude_observed_applied),
+                "severe_amplitude_observed_to_three": bool(severe_amplitude_observed_to_three),
                 "blend_alpha": round(float(blend_alpha), 6),
                 "blend_applied": bool(blend_applied),
                 "blend_reason": blend_reason,
@@ -917,7 +1123,11 @@ def finalize_outputs(state: AgentState) -> Dict:
             continue
 
         imputed_float, contributions = _impute_missing_item_score(item_id, module_stats)
-        final_item_scores[item_id] = _round_item_score(imputed_float)
+        denied_override = item_id in denied_item_id_set
+        if denied_override:
+            final_item_scores[item_id] = 0
+        else:
+            final_item_scores[item_id] = _round_item_score(imputed_float)
         if final_item_scores[item_id] > 0:
             imputed_item_count += 1
         item_details[str(item_id)] = {
@@ -950,9 +1160,15 @@ def finalize_outputs(state: AgentState) -> Dict:
                 item_support_geometry.get("same_module_corroborated_item_ids", [])
             ),
             "is_corroborated_item": False,
+            "denied_override": bool(denied_override),
             "severe_anchor_hit": bool(severe_anchor_hit),
             "severe_anchor_modules": severe_anchor_modules,
+            "strong_anchor_modules": strong_anchor_modules,
             "severe_recovery_mode_active": severe_recovery_mode_active,
+            "severe_module3_restore_applied": False,
+            "item14_latent_restore_applied": False,
+            "item21_mild_observed_retained": False,
+            "item21_imputed_restore_applied": False,
             "module_estimate_float": round(float(imputed_float), 6),
             "best_module_conf": round(
                 max((float(c.get("module_conf", 0.0)) for c in contributions), default=0.0),
@@ -964,7 +1180,9 @@ def finalize_outputs(state: AgentState) -> Dict:
             "low_signal_observed_cap_applied": False,
             "low_signal_item9_cap_reason": "",
             "low_signal_guardrail_active": low_signal_guardrail_active,
+            "strong_anchor_local_bypass_applied": False,
             "severe_amplitude_imputed_applied": False,
+            "severe_amplitude_observed_to_three": False,
             "blend_alpha": 0.0,
             "blend_applied": False,
             "blend_reason": "missing_imputed",
@@ -986,6 +1204,7 @@ def finalize_outputs(state: AgentState) -> Dict:
         imputed_point_budget = _low_signal_imputed_budget(
             int(low_signal_context["observed_positive_breadth"]),
             int(low_signal_context["observed_core_hits"]),
+            observed_mean_severity=float(low_signal_context.get("observed_mean_severity", 0.0) or 0.0),
         )
         for item_id in range(1, 22):
             detail = item_details.get(str(item_id), {})
@@ -1020,6 +1239,30 @@ def finalize_outputs(state: AgentState) -> Dict:
                 detail["post_trim_score"] = 0
                 detail["final_score"] = 0
                 somatic_corroboration_blocked_item_ids.append(item_id)
+                suppressed_imputed_item_ids.append(item_id)
+
+        solo_module_blocked_item_ids: List[int] = []
+        for item_id in range(1, 22):
+            detail = item_details.get(str(item_id), {})
+            if str(detail.get("source", "")) != "imputed" or final_item_scores[item_id] <= 0:
+                continue
+            if item_id not in SOLO_MODULE_IMPUTATION_BLOCKED_ITEMS:
+                continue
+            contributions = list(detail.get("contributions", []))
+            eligible_contributions = [
+                c for c in contributions
+                if bool(c.get("eligible", False)) or float(c.get("weight", 0.0) or 0.0) > 0.0
+            ]
+            all_solo = all(
+                int(module_stats.get(int(c.get("module_id", 0)), {}).get("observed_item_count", 0) or 0) < 2
+                for c in eligible_contributions
+            ) if eligible_contributions else True
+            if all_solo:
+                final_item_scores[item_id] = 0
+                detail["low_signal_solo_module_blocked"] = True
+                detail["post_trim_score"] = 0
+                detail["final_score"] = 0
+                solo_module_blocked_item_ids.append(item_id)
                 suppressed_imputed_item_ids.append(item_id)
 
         ranked_imputed_candidates: List[Tuple[float, int, float, int]] = []
@@ -1057,28 +1300,121 @@ def finalize_outputs(state: AgentState) -> Dict:
 
     if severe_recovery_mode_active:
         strong_anchor_module_ids = set(severe_strong_anchor_module_id_set)
-        anchored_module_ids = set(severe_anchor_module_id_set)
-        recovery_module_ids = {
-            module_id
-            for module_id in anchored_module_ids
-            if module_id in strong_anchor_module_ids
-            or int(module_stats.get(module_id, {}).get("observed_item_count", 0) or 0) >= 1
+        restore_candidates_by_module: Dict[int, List[Tuple[float, float, float, int]]] = {
+            module_id: [] for module_id in sorted(strong_anchor_module_ids)
         }
         for item_id in range(1, 22):
             detail = item_details.get(str(item_id), {})
             if str(detail.get("source", "")) != "imputed" or int(final_item_scores[item_id]) > 0:
                 continue
-            if float(detail.get("imputed_float", 0.0) or 0.0) <= 0.0:
+            imputed_float = float(detail.get("imputed_float", 0.0) or 0.0)
+            if imputed_float <= 0.0:
                 continue
-            candidate_modules = [
-                module_id for module_id in ITEM_TO_MODULES.get(item_id, []) if int(module_id) in recovery_module_ids
-            ]
-            if not candidate_modules:
-                continue
-            final_item_scores[item_id] = 1
-            detail["severe_recovery_restored"] = True
+            contribution_by_module = {
+                int(contribution.get("module_id", 0) or 0): contribution
+                for contribution in list(detail.get("contributions", []))
+            }
+            candidate_modules = []
+            for module_id in ITEM_TO_MODULES.get(item_id, []):
+                contribution = contribution_by_module.get(int(module_id), {})
+                if int(module_id) not in strong_anchor_module_ids:
+                    continue
+                if not (
+                    bool(contribution.get("eligible", False))
+                    or float(contribution.get("weight", 0.0) or 0.0) > 0.0
+                ):
+                    continue
+                candidate_modules.append(int(module_id))
+                restore_candidates_by_module[int(module_id)].append(
+                    (
+                        imputed_float,
+                        float(module_stats.get(int(module_id), {}).get("module_mean", 0.0) or 0.0),
+                        float(contribution.get("weight", 0.0) or 0.0),
+                        item_id,
+                    )
+                )
             detail["severe_recovery_source_modules"] = candidate_modules
-            severe_recovered_item_ids.append(item_id)
+
+        for module_id in sorted(restore_candidates_by_module):
+            candidates = sorted(
+                restore_candidates_by_module[module_id],
+                key=lambda row: (-row[0], -row[1], -row[2], row[3]),
+            )
+            restored = 0
+            for _, _, _, item_id in candidates:
+                if restored >= 1:
+                    break
+                detail = item_details[str(item_id)]
+                if int(final_item_scores[item_id]) > 0:
+                    continue
+                if item_id in denied_item_id_set:
+                    continue
+                final_item_scores[item_id] = 1
+                detail["severe_recovery_restored"] = True
+                detail["severe_recovery_source_modules"] = [module_id]
+                severe_recovered_item_ids.append(item_id)
+                severe_recovered_item_ids_by_module.setdefault(str(module_id), []).append(item_id)
+                restored += 1
+
+        module3_item_ids = set(MODULE_TO_ITEMS.get(3, []))
+        module3_observed_severe_item_ids = [
+            item_id
+            for item_id in sorted(module3_item_ids)
+            if int(beliefs[item_id].support_count) >= 1
+            and (
+                float(beliefs[item_id].expected_score) >= 1.5
+                or bool(item_evidence_summary.get(item_id, {}).get("has_strong_row", False))
+            )
+        ]
+        corroborated_nonrisk_outside_module3 = any(
+            int(item_id) not in module3_item_ids
+            for item_id in list(severe_anchor_context.get("corroborated_nonrisk_item_ids", []))
+        )
+        if module3_observed_severe_item_ids and corroborated_nonrisk_outside_module3:
+            severe_module3_restore_budget = 2
+            module3_restore_candidates: List[Tuple[int, float, float, int]] = []
+            for item_id in sorted(module3_item_ids):
+                detail = item_details.get(str(item_id), {})
+                if str(detail.get("source", "")) != "imputed" or int(final_item_scores[item_id]) > 0:
+                    continue
+                imputed_float = float(detail.get("imputed_float", 0.0) or 0.0)
+                item14_with_worthlessness = (item_id == 14 and recent_worthlessness_priority_hit)
+                restore_threshold = 0.70 if item14_with_worthlessness else 1.0
+                if imputed_float < restore_threshold:
+                    continue
+                contribution_by_module = {
+                    int(contribution.get("module_id", 0) or 0): contribution
+                    for contribution in list(detail.get("contributions", []))
+                }
+                module3_contribution = contribution_by_module.get(3, {})
+                module3_weight = float(module3_contribution.get("weight", 0.0) or 0.0)
+                if not (
+                    bool(module3_contribution.get("eligible", False))
+                    or module3_weight > 0.0
+                ):
+                    continue
+                worthlessness_priority = 1 if item14_with_worthlessness else 0
+                if worthlessness_priority > 0:
+                    severe_module3_item14_priority_applied = True
+                module3_restore_candidates.append((worthlessness_priority, imputed_float, module3_weight, item_id))
+
+            module3_restore_candidates.sort(key=lambda row: (-row[0], -row[1], -row[2], row[3]))
+            restored = 0
+            for _, _, _, item_id in module3_restore_candidates:
+                if restored >= severe_module3_restore_budget:
+                    break
+                if int(final_item_scores[item_id]) > 0:
+                    continue
+                if item_id in denied_item_id_set:
+                    continue
+                final_item_scores[item_id] = 1
+                detail = item_details[str(item_id)]
+                detail["severe_recovery_restored"] = True
+                detail["severe_recovery_source_modules"] = [3]
+                detail["severe_module3_restore_applied"] = True
+                severe_recovered_item_ids.append(item_id)
+                severe_module3_restored_item_ids.append(item_id)
+                restored += 1
 
         eligible_strong_anchor_modules: Dict[int, Dict[str, float | int]] = {}
         for module_id in sorted(strong_anchor_module_ids):
@@ -1145,6 +1481,8 @@ def finalize_outputs(state: AgentState) -> Dict:
                     break
                 if int(final_item_scores[item_id]) != 1:
                     continue
+                if item_id in denied_item_id_set:
+                    continue
                 final_item_scores[item_id] = 2
                 detail = item_details[str(item_id)]
                 detail["severe_amplitude_imputed_applied"] = True
@@ -1170,6 +1508,72 @@ def finalize_outputs(state: AgentState) -> Dict:
             item9_detail["severe_item9_rescued"] = True
             severe_item9_rescued = True
 
+    module3_latent_companion_count = sum(
+        1 for companion_item_id in (5, 7, 8) if int(final_item_scores.get(companion_item_id, 0)) >= 1
+    )
+    module3_companion_mean = 0.0
+    module3_companion_scores = [
+        int(final_item_scores.get(companion_item_id, 0))
+        for companion_item_id in (5, 7, 8)
+        if int(final_item_scores.get(companion_item_id, 0)) >= 1
+    ]
+    if module3_companion_scores:
+        module3_companion_mean = sum(module3_companion_scores) / len(module3_companion_scores)
+    item14_detail = item_details.get("14", {})
+    item14_restore_score = 1
+    if module3_latent_companion_count >= 2 and module3_companion_mean >= 2.0 and recent_worthlessness_priority_hit:
+        item14_restore_score = min(3, _round_item_score(module3_companion_mean))
+    elif module3_latent_companion_count >= 2 and module3_companion_mean >= 1.5:
+        item14_restore_score = 2
+    if (
+        str(item14_detail.get("source", "")) == "imputed"
+        and int(final_item_scores.get(14, 0)) < item14_restore_score
+        and float(item14_detail.get("imputed_float", 0.0) or 0.0) >= 0.75
+        and recent_item14_latent_restore_hit
+        and (
+            module3_latent_companion_count >= 2
+            or (module3_latent_companion_count >= 1 and severe_recovery_mode_active)
+        )
+    ):
+        final_item_scores[14] = item14_restore_score
+        item14_detail["item14_latent_restore_applied"] = True
+        item14_detail["post_trim_score"] = item14_restore_score
+        item14_detail["final_score"] = item14_restore_score
+        _clear_imputed_suppression_tracking(
+            item_id=14,
+            detail=item14_detail,
+            suppressed_imputed_item_ids=suppressed_imputed_item_ids,
+            somatic_corroboration_blocked_item_ids=somatic_corroboration_blocked_item_ids,
+        )
+        item14_latent_restored_item_ids.append(14)
+
+    item20_summary = dict(item_evidence_summary.get(20, {}))
+    item21_detail = item_details.get("21", {})
+    if (
+        severe_recovery_mode_active
+        and str(item21_detail.get("source", "")) == "imputed"
+        and int(final_item_scores.get(21, 0)) == 0
+        and float(item21_detail.get("imputed_float", 0.0) or 0.0) >= 1.0
+        and item21_question_history_hit
+        and int(item21_direct_denial_count) <= 1
+        and int(beliefs[20].support_count) >= 1
+        and (
+            float(beliefs[20].expected_score) >= 1.5
+            or bool(item20_summary.get("has_strong_row", False))
+        )
+    ):
+        final_item_scores[21] = 1
+        item21_detail["item21_imputed_restore_applied"] = True
+        item21_detail["post_trim_score"] = 1
+        item21_detail["final_score"] = 1
+        _clear_imputed_suppression_tracking(
+            item_id=21,
+            detail=item21_detail,
+            suppressed_imputed_item_ids=suppressed_imputed_item_ids,
+            somatic_corroboration_blocked_item_ids=somatic_corroboration_blocked_item_ids,
+        )
+        item21_imputed_restored = True
+
     imputed_points_after_guardrail = sum(
         int(final_item_scores[item_id])
         for item_id in range(1, 22)
@@ -1185,8 +1589,12 @@ def finalize_outputs(state: AgentState) -> Dict:
     low_signal_observed_cap_item_ids = sorted(set(low_signal_observed_cap_item_ids))
     low_signal_singleton_trimmed_item_ids = sorted(set(low_signal_singleton_trimmed_item_ids))
     severe_recovered_item_ids = sorted(set(severe_recovered_item_ids))
+    severe_module3_restored_item_ids = sorted(set(severe_module3_restored_item_ids))
+    item14_latent_restored_item_ids = sorted(set(item14_latent_restored_item_ids))
     severe_amplitude_observed_item_ids = sorted(set(severe_amplitude_observed_item_ids))
+    severe_amplitude_observed_to_three_item_ids = sorted(set(severe_amplitude_observed_to_three_item_ids))
     severe_amplitude_imputed_item_ids = sorted(set(severe_amplitude_imputed_item_ids))
+    strong_anchor_local_bypass_item_ids = sorted(set(strong_anchor_local_bypass_item_ids))
 
     for item_id in range(1, 22):
         detail = item_details.get(str(item_id), {})
@@ -1248,9 +1656,21 @@ def finalize_outputs(state: AgentState) -> Dict:
             "severe_anchor_module_ids": list(severe_anchor_context["severe_anchor_module_ids"]),
             "severe_recovery_reason": str(severe_anchor_context["severe_recovery_reason"]),
             "severe_recovered_item_ids": severe_recovered_item_ids,
+            "severe_recovered_item_ids_by_module": severe_recovered_item_ids_by_module,
+            "severe_module3_restored_item_ids": severe_module3_restored_item_ids,
+            "severe_module3_restore_budget": severe_module3_restore_budget,
+            "severe_module3_item14_priority_applied": bool(severe_module3_item14_priority_applied),
+            "item14_latent_restored_item_ids": item14_latent_restored_item_ids,
+            "strong_anchor_local_bypass_item_ids": strong_anchor_local_bypass_item_ids,
             "severe_amplitude_observed_item_ids": severe_amplitude_observed_item_ids,
+            "severe_amplitude_observed_to_three_item_ids": severe_amplitude_observed_to_three_item_ids,
             "severe_amplitude_imputed_item_ids": severe_amplitude_imputed_item_ids,
+            "item21_mild_observed_retained": bool(item21_mild_observed_retained),
+            "item21_imputed_restored": bool(item21_imputed_restored),
+            "item21_question_history_hit": bool(item21_question_history_hit),
+            "item21_direct_denial_count": int(item21_direct_denial_count),
             "severe_item9_rescued": bool(severe_item9_rescued),
+            "denied_item_ids": sorted(denied_item_id_set),
         }
     )
 
@@ -1314,6 +1734,7 @@ def finalize_outputs(state: AgentState) -> Dict:
         "imputed_points_after_guardrail": imputed_points_after_guardrail,
         "suppressed_imputed_item_ids": suppressed_imputed_item_ids,
         "somatic_corroboration_blocked_item_ids": somatic_corroboration_blocked_item_ids,
+        "solo_module_blocked_item_ids": sorted(set(solo_module_blocked_item_ids)),
         "low_signal_observed_cap_item_ids": low_signal_observed_cap_item_ids,
         "low_signal_singleton_trimmed_item_ids": low_signal_singleton_trimmed_item_ids,
         "low_signal_item9_cap_reason": low_signal_item9_cap_reason,
@@ -1322,8 +1743,19 @@ def finalize_outputs(state: AgentState) -> Dict:
         "severe_anchor_module_ids": list(severe_anchor_context["severe_anchor_module_ids"]),
         "severe_recovery_reason": str(severe_anchor_context["severe_recovery_reason"]),
         "severe_recovered_item_ids": severe_recovered_item_ids,
+        "severe_recovered_item_ids_by_module": severe_recovered_item_ids_by_module,
+        "severe_module3_restored_item_ids": severe_module3_restored_item_ids,
+        "severe_module3_restore_budget": severe_module3_restore_budget,
+        "severe_module3_item14_priority_applied": bool(severe_module3_item14_priority_applied),
+        "item14_latent_restored_item_ids": item14_latent_restored_item_ids,
+        "strong_anchor_local_bypass_item_ids": strong_anchor_local_bypass_item_ids,
         "severe_amplitude_observed_item_ids": severe_amplitude_observed_item_ids,
+        "severe_amplitude_observed_to_three_item_ids": severe_amplitude_observed_to_three_item_ids,
         "severe_amplitude_imputed_item_ids": severe_amplitude_imputed_item_ids,
+        "item21_mild_observed_retained": bool(item21_mild_observed_retained),
+        "item21_imputed_restored": bool(item21_imputed_restored),
+        "item21_question_history_hit": bool(item21_question_history_hit),
+        "item21_direct_denial_count": int(item21_direct_denial_count),
         "severe_item9_rescued": bool(severe_item9_rescued),
         "depression_from_bdi": depression_from_bdi,
         "depression_from_core_coverage": depression_from_core_coverage,

@@ -437,6 +437,13 @@ def write_eval_artifacts(
         _write_json(output_dir / "error_report_run_local.json", error_report_payload)
         _write_json(output_dir / "extract_parse_fail_log_run_local.json", extract_parse_fail_log_entries)
 
+    extractor_failure_entries = [
+        entry for entry in extract_parse_fail_log_entries if bool(entry.get("counts_as_failure", True))
+    ]
+    extractor_non_failure_entries = [
+        entry for entry in extract_parse_fail_log_entries if not bool(entry.get("counts_as_failure", True))
+    ]
+
     evidence_nonempty_rate = (evidence_turns_nonempty / turns_total) if turns_total else 0.0
     avg_evidence_per_turn = (evidence_records_total / turns_total) if turns_total else 0.0
     extract_parse_fail_rate = (
@@ -491,7 +498,8 @@ def write_eval_artifacts(
             "extract_source_distribution": dict(extract_source_distribution),
             "extract_recovery_distribution": dict(extract_recovery_distribution),
             "method_weight_usage": dict(method_weight_usage),
-            "extract_parse_fail_log_count": len(extract_parse_fail_log_entries),
+            "extract_parse_fail_log_count": len(extractor_failure_entries),
+            "extract_non_failure_log_count": len(extractor_non_failure_entries),
             "duplicate_evidence_rows_total": int(duplicate_evidence_rows_total),
             "duplicate_evidence_rows_rate": round(duplicate_evidence_rows_rate, 4),
             "contradiction_evidence_rows_total": int(contradiction_evidence_rows_total),

@@ -36,6 +36,13 @@ def _positive_row(
     )
 
 
+def _per_item_stat(trace: dict, item_id: int) -> dict:
+    for row in trace.get("per_item_stats", []):
+        if int(row.get("item_id", 0) or 0) == item_id:
+            return row
+    raise AssertionError(f"missing per_item_stats entry for item {item_id}")
+
+
 class BeliefUpdateGuardedSupportTests(unittest.TestCase):
     def test_weak_lexical_guarded_row_updates_posterior_but_not_support(self) -> None:
         state = _belief_state("weak-lexical-guarded")
@@ -110,6 +117,51 @@ class BeliefUpdateGuardedSupportTests(unittest.TestCase):
 
         result = update_beliefs(state)
         belief = result["item_beliefs"][16]
+        trace = result["turn_trace"]["belief_update"]
+
+        self.assertEqual(int(belief.support_count), 1)
+        self.assertEqual(int(trace["support_rejected_by_method_count"]), 0)
+        self.assertEqual(int(trace["support_rejected_guarded_item_count"]), 0)
+
+    def test_llm_opportunistic_non_guarded_row_uses_medium_weight_and_increments_support(self) -> None:
+        state = _belief_state("opportunistic-non-guarded")
+        state["latest_turn_likelihoods"] = [
+            _positive_row(item_id=16, evidence_type="llm_opportunistic", extract_confidence=0.6, extract_intensity=1.6)
+        ]
+
+        result = update_beliefs(state)
+        belief = result["item_beliefs"][16]
+        trace = result["turn_trace"]["belief_update"]
+        item_stat = _per_item_stat(trace, 16)
+
+        self.assertEqual(int(belief.support_count), 1)
+        self.assertEqual(int(trace["method_counts"]["llm_opportunistic"]), 1)
+        self.assertAlmostEqual(float(item_stat["effective_weight_mean"]), 0.75, places=6)
+        self.assertEqual(int(item_stat["support_increments"]), 1)
+
+    def test_llm_opportunistic_guarded_row_requires_stricter_threshold(self) -> None:
+        state = _belief_state("opportunistic-guarded-weak")
+        state["latest_turn_likelihoods"] = [
+            _positive_row(item_id=9, evidence_type="llm_opportunistic", extract_confidence=0.6, extract_intensity=1.6)
+        ]
+
+        result = update_beliefs(state)
+        belief = result["item_beliefs"][9]
+        trace = result["turn_trace"]["belief_update"]
+
+        self.assertGreater(float(belief.expected_score), 1.5)
+        self.assertEqual(int(belief.support_count), 0)
+        self.assertEqual(int(trace["support_rejected_by_method_count"]), 1)
+        self.assertEqual(int(trace["support_rejected_guarded_item_count"]), 1)
+
+    def test_llm_opportunistic_guarded_strong_row_increments_support(self) -> None:
+        state = _belief_state("opportunistic-guarded-strong")
+        state["latest_turn_likelihoods"] = [
+            _positive_row(item_id=9, evidence_type="llm_opportunistic", extract_confidence=0.7, extract_intensity=1.8)
+        ]
+
+        result = update_beliefs(state)
+        belief = result["item_beliefs"][9]
         trace = result["turn_trace"]["belief_update"]
 
         self.assertEqual(int(belief.support_count), 1)

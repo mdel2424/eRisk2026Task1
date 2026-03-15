@@ -273,6 +273,7 @@ class AgentState(TypedDict):
     trace_log: Annotated[List[dict], operator.add]
     failure_counters: Dict[str, int]
     empty_evidence_streak: int
+    denied_item_ids: Annotated[List[int], operator.add]
     new_items_this_turn: int
     recent_new_items_window: List[int]
     recent_nonempty_window: List[int]
@@ -353,6 +354,7 @@ def build_initial_state(persona_id: Optional[str] = None) -> AgentState:
         trace_log=[],
         failure_counters={},
         empty_evidence_streak=0,
+        denied_item_ids=[],
         new_items_this_turn=0,
         recent_new_items_window=[],
         recent_nonempty_window=[],

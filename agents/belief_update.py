@@ -10,6 +10,7 @@ from core.bdi_modules import MODULE_TO_ITEMS
 from core.state import AgentState, BeliefState, ItemBelief, coerce_item_belief
 
 GUARDED_ITEM_IDS = {9, *MODULE_TO_ITEMS[1], *MODULE_TO_ITEMS[3], *MODULE_TO_ITEMS[4]}
+ITEM14_RELAXED_GUARD = True
 
 
 
@@ -106,6 +107,8 @@ def _method_weight(evidence_type: str) -> float:
     method_key = str(evidence_type or "").strip().lower()
     if method_key == "llm_extractor":
         return _env_float("BELIEF_WEIGHT_LLM_EXTRACTOR", 1.00)
+    if method_key == "llm_opportunistic":
+        return _env_float("BELIEF_WEIGHT_LLM_OPPORTUNISTIC", 0.75)
     if method_key == "llm_salvage":
         return _env_float("BELIEF_WEIGHT_LLM_SALVAGE", 0.60)
     if method_key == "lexical_fallback":
@@ -132,6 +135,18 @@ def _support_increment_allowed(
     method_key = str(evidence_type or "").strip().lower()
     if method_key == "llm_extractor":
         return True, "llm_extractor_allowed"
+    if method_key == "llm_opportunistic":
+        if int(item_id) == 14 and ITEM14_RELAXED_GUARD:
+            if float(extract_confidence) >= 0.45 and float(extract_intensity) >= 1.25:
+                return True, "item14_relaxed_guard_threshold_met"
+            return False, "item14_relaxed_guard_threshold_blocked"
+        if int(item_id) in GUARDED_ITEM_IDS:
+            if float(extract_confidence) >= 0.65 and float(extract_intensity) >= 1.75:
+                return True, "opportunistic_guarded_threshold_met"
+            return False, "opportunistic_guarded_threshold_blocked"
+        if float(extract_confidence) >= 0.55 and float(extract_intensity) >= 1.5:
+            return True, "opportunistic_threshold_met"
+        return False, "opportunistic_threshold_blocked"
     if method_key == "llm_salvage":
         if float(extract_confidence) >= 0.55 and float(extract_intensity) >= 1.5:
             return True, "salvage_threshold_met"

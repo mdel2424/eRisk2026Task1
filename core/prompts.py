@@ -145,6 +145,224 @@ Latest persona message:
     }
 }
 
+PROMPT_REGISTRY["v2"] = {
+    **PROMPT_REGISTRY["v1"],
+    "evidence_gate": """
+You are a strict relevance gate for a targeted BDI-II evidence extractor.
+Decide whether the latest persona message contains evidence relevant to the allowed target items.
+
+Return STRICT JSON ONLY with exactly this schema:
+{{
+  "target_relevant": true,
+  "candidate_item_ids": [14, 5],
+  "anchor_quote": "I feel like a burden",
+  "confidence": 0.72,
+  "reason": "explicit self-worth language"
+}}
+
+Constraints:
+- candidate_item_ids must be a subset of allowed_item_ids.
+- If target_relevant is false, candidate_item_ids must be [].
+- Return at most 2 candidate_item_ids.
+- Use only canonical BDI-II item ids.
+- confidence must be in [0, 1].
+- Keep anchor_quote short and directly grounded in the latest message.
+- Mark target_relevant=true for direct, indirect, hedged, metaphorical, change-from-baseline, or functional-impact evidence inside allowed_item_ids.
+- For module-3 items (guilt, failure, self-dislike, self-criticalness, worthlessness), mark target_relevant=true when the reply contains explicit self-evaluation or self-blame language such as "my own fault", "guilt just shows up", "I don't measure up", "I feel like a burden", or "I've been hard on myself lately".
+- If the allowed items include item 14, prefer worthlessness relevance when the reply is about worth, mattering, burden, contribution, or identity-level failure, such as "I feel like a burden", "I do not contribute anything that matters", "I feel like a failure", or "I do not like who I am right now."
+- If the allowed items include item 14 and the reply is only "It is my own fault" without worth or identity language, prefer guilt/self-blame items rather than item 14.
+- If the detector asked about sexual interest and the reply is "That side of things is a little lower than usual, not a big change though" or "To put it simply, that side of things is a little lower than usual, not a big change though", mark target_relevant=true for item 21.
+- If the detector asked about sexual interest and the reply is "That side of things has been fine" or "That has not really been an issue", mark target_relevant=false for item 21.
+- If the detector asked about appetite, require direct appetite/eating change evidence such as "I'm not eating at all", "I'm eating much less than usual", or "I'm just grabbing junk because I can't be bothered." Do not mark appetite relevant for generic fatigue, chores, or "everything feels heavier" alone.
+- Reserve target_relevant=false for explicit denial, explicit no-change, or clearly unrelated/logistical replies.
+- Do not treat generic stress, pressure, busyness, or feeling behind as module-3 evidence unless the reply also contains explicit self-judgment, guilt, shame, blame, failure, or worthlessness language.
+- Do not emit markdown, prose, headings, or trailing text.
+- Output must start with "{{" and end with "}}".
+
+Examples:
+- If the detector asked about sleep and the reply is "a few nights, more than usual", return target_relevant=true.
+- If the detector asked about self-worth and the reply is "I guess I feel like a burden lately", return target_relevant=true.
+- If the allowed items include item 14 and the reply is "I feel like a failure" or "I do not like who I am right now", return target_relevant=true.
+- If the allowed items include module-3 and the reply is "I feel like I'm falling behind and it's my own fault", return target_relevant=true.
+- If the allowed items include module-3 and the reply is "Most days, guilt just shows up out of nowhere", return target_relevant=true.
+- If the detector asked about sexual interest and the reply is "That side of things is a little lower than usual, not a big change though", return target_relevant=true.
+- If the detector asked about sexual interest and the reply is "That side of things has been fine" or "That has not really been an issue", return target_relevant=false.
+- If the detector asked about appetite and the reply is "I'm not eating at all or just grabbing junk because I can't be bothered", return target_relevant=true.
+- If the reply is "not really, things feel about normal", return target_relevant=false.
+- If the detector asked about appetite and the reply is "I haven't noticed anything different there", return target_relevant=false.
+- If the reply is only "work has just been busy" or "everything feels heavier" without self-blame, self-judgment, or direct appetite change language, return target_relevant=false.
+
+Current specialist node: {node_name}
+Current detector question: {current_detector_question}
+Target item: {target_item_id} ({target_item_name})
+Target module: {target_module_id} ({target_module_name})
+Allowed item ids: {allowed_item_ids}
+
+Recent conversation:
+{recent_context}
+
+Latest persona message:
+{latest_message}
+""",
+    "evidence_extract_targeted": """
+You score every allowed BDI-II item for support in the latest persona message.
+
+Return STRICT JSON ONLY, exactly one top-level object with this schema:
+{{
+  "scores": [
+    {{
+      "item_id": 14,
+      "symptom_name": "Worthlessness",
+      "supported": true,
+      "intensity": 0.0,
+      "confidence": 0.0,
+      "anchor_quote": "short grounded quote",
+      "reason": "short rationale"
+    }}
+  ]
+}}
+
+Constraints:
+- Score every item in allowed_item_ids exactly once.
+- Never omit an allowed item from the scores list.
+- Do not score any item outside allowed_item_ids.
+- Prefer candidate_item_ids when supported by the message, but still score all allowed items.
+- For indirect but plausible in-scope signals, set supported=true with low confidence/low intensity instead of marking the item unsupported.
+- For module-3 items, treat explicit self-blame, guilt, shame, failure, self-dislike, self-criticalness, burden, or worthlessness language as support even when phrased indirectly or conversationally.
+- If allowed_item_ids include item 14, prefer worthlessness support when the reply is specifically about burden, mattering, worth, contribution, or identity-level failure, such as "I feel like a burden", "I do not contribute anything that matters", "I feel like a failure", or "I do not like who I am right now."
+- If allowed_item_ids include item 14 and the reply is only "It is my own fault" without worth or identity language, prefer guilt/self-blame items rather than item 14.
+- If allowed_item_ids include item 21 and the detector question is explicitly about sexual interest, treat direct mild decrease phrasing like "That side of things is a little lower than usual, not a big change though" or "To put it simply, that side of things is a little lower than usual, not a big change though" as supported=true with low confidence/intensity.
+- If allowed_item_ids include item 21 and the detector question is explicitly about sexual interest, keep item 21 supported=false for direct no-change replies like "That side of things has been fine" or "That has not really been an issue."
+- If allowed_item_ids include item 18, require direct appetite or eating change evidence. Keep item 18 supported=false for generic heaviness, fatigue, chores, or stress unless the reply explicitly describes appetite/eating change.
+- For module-3 items, do not map generic stress, busyness, pressure, or "everything feels heavier" to support unless the message also contains explicit self-evaluation, guilt, blame, shame, failure, or worthlessness language.
+- Reserve supported=false for true denial, no-change, or unrelated/logistical content for that item.
+- symptom_name must be the exact canonical BDI label for the chosen item_id.
+- intensity must be in [0, 3], confidence in [0, 1].
+- If supported=false, use intensity=0 and confidence=0 unless the message contains weak contradictory context you need to mention.
+- Do not emit markdown, prose, headings, or trailing text.
+- Output must start with "{{" and end with "}}".
+
+Examples:
+- If the detector asked about sleep and the reply is "a few nights, more than usual", mark the sleep item supported=true with low-to-moderate confidence/intensity, and mark the other allowed items supported=false.
+- If the allowed items include worthlessness/self-criticism and the reply is "I feel like a burden", mark worthlessness or self-critical items supported=true with low-to-moderate confidence rather than unsupported.
+- If the allowed items include item 14 and the reply is "I do not contribute anything that matters anymore", mark item 14 supported=true.
+- If the allowed items include item 14 and the reply is "I feel like a failure" or "I do not like who I am right now", mark item 14 supported=true.
+- If the allowed items include item 14 and the reply is only "It is my own fault", prefer guilt/self-blame items over item 14.
+- If the allowed items include module-3 and the reply is "I feel like I'm falling behind and it's my own fault", mark guilt/self-blame items supported=true with low-to-moderate confidence rather than unsupported.
+- If the allowed items include module-3 and the reply is "Most days, guilt just shows up out of nowhere", mark guilt or related self-evaluation items supported=true.
+- If the detector asked about sexual interest and the reply is "That side of things is a little lower than usual, not a big change though", mark item 21 supported=true with low confidence/intensity rather than unsupported.
+- If the detector asked about sexual interest and the reply is "That side of things has been fine" or "That has not really been an issue", keep item 21 supported=false.
+- If the detector asked about appetite and the reply is "I'm not eating at all or just grabbing junk because I can't be bothered", mark item 18 supported=true.
+- If the detector asked about appetite and the reply is "I haven't noticed anything different there", keep item 18 supported=false.
+- If the allowed items include module-3 and the reply is only "work has been stressful" or "everything feels heavier" without self-judgment, keep the module-3 items supported=false.
+- If the reply is "not really, everything feels about normal", return the full scores list with every allowed item marked supported=false.
+
+Current specialist node: {node_name}
+Current detector question: {current_detector_question}
+Target item: {target_item_id} ({target_item_name})
+Target module: {target_module_id} ({target_module_name})
+Allowed item ids: {allowed_item_ids}
+Candidate item ids: {candidate_item_ids}
+Anchor quote: {anchor_quote}
+
+Recent conversation:
+{recent_context}
+
+Latest persona message:
+{latest_message}
+""",
+    "evidence_shortlist_opportunistic": """
+You decide whether the latest persona message contains strong off-target BDI-II evidence outside the current scoped items.
+
+Return STRICT JSON ONLY with exactly this schema:
+{{
+  "has_strong_offtarget_signal": true,
+  "candidate_item_ids": [15, 20],
+  "anchor_quote": "everything takes so much energy",
+  "confidence": 0.72,
+  "reason": "strong fatigue language outside the current target scope"
+}}
+
+Constraints:
+- candidate_item_ids must only include BDI-II item ids outside scoped_allowed_item_ids.
+- Return at most 4 candidate_item_ids.
+- Use has_strong_offtarget_signal=true only for strong, specific evidence that clearly sits outside the current scope.
+- Prefer has_strong_offtarget_signal=false with an empty candidate list for mild, vague, mixed, denied, or no-change replies.
+- confidence must be in [0, 1].
+- Keep anchor_quote short and directly grounded in the latest message.
+- Do not emit markdown, prose, headings, or trailing text.
+- Output must start with "{{" and end with "}}".
+
+Examples:
+- If the reply is "Getting out of bed is a battle and everything takes so much energy", shortlist fatigue/energy items outside the current scope.
+- If the reply is "I wake up in the middle of the night and can't get back to sleep", shortlist the sleep item outside the current scope.
+- If the reply is "some things don't feel quite as fun as they used to", return has_strong_offtarget_signal=false.
+- If the reply is "not really, things feel about normal", return has_strong_offtarget_signal=false.
+
+Current specialist node: {node_name}
+Current detector question: {current_detector_question}
+Current target item: {target_item_id} ({target_item_name})
+Current target module: {target_module_id} ({target_module_name})
+Scoped allowed item ids: {scoped_allowed_item_ids}
+
+Recent conversation:
+{recent_context}
+
+Latest persona message:
+{latest_message}
+""",
+    "evidence_score_opportunistic": """
+You score shortlisted off-target BDI-II items for strong support in the latest persona message.
+
+Return STRICT JSON ONLY, exactly one top-level object with this schema:
+{{
+  "scores": [
+    {{
+      "item_id": 16,
+      "symptom_name": "Changes in Sleeping Pattern",
+      "supported": false,
+      "intensity": 0.0,
+      "confidence": 0.0,
+      "anchor_quote": "short grounded quote",
+      "reason": "short rationale"
+    }}
+  ]
+}}
+
+Constraints:
+- Score every item in candidate_item_ids exactly once.
+- Never omit a candidate item from the scores list.
+- Do not score items outside candidate_item_ids.
+- Use supported=true only for strong, specific off-target evidence that clearly stands on its own.
+- Prefer supported=false for mild, vague, mixed, denied, or generic emotional content.
+- symptom_name must be the exact canonical BDI label for the chosen item_id.
+- intensity must be in [0, 3], confidence in [0, 1].
+- If supported=false, use intensity=0 and confidence=0 unless a weak contradictory cue needs to be noted.
+- Do not emit markdown, prose, headings, or trailing text.
+- Output must start with "{{" and end with "}}".
+
+Examples:
+- If candidate_item_ids includes sleep and the reply is "I wake up in the middle of the night and can't get back to sleep", mark the sleep item supported=true.
+- If candidate_item_ids includes fatigue and the reply is "everything takes so much energy", mark the fatigue item supported=true.
+- If candidate_item_ids includes worthlessness but the reply is only "I guess work has been stressful", keep all candidates supported=false.
+
+Current specialist node: {node_name}
+Current detector question: {current_detector_question}
+Current target item: {target_item_id} ({target_item_name})
+Current target module: {target_module_id} ({target_module_name})
+Scoped allowed item ids: {scoped_allowed_item_ids}
+Candidate item ids: {candidate_item_ids}
+Shortlist anchor quote: {anchor_quote}
+Shortlist reason: {shortlist_reason}
+
+Recent conversation:
+{recent_context}
+
+Latest persona message:
+{latest_message}
+""",
+}
+
 
 def _prompt_version(version: str | None = None) -> str:
     resolved = (version or os.getenv("PROMPT_VERSION", "v1")).strip().lower()

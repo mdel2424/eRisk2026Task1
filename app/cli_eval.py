@@ -295,14 +295,92 @@ def run_eval(
                     llm_called = bool(extract_trace.get("llm_called", False))
                     raw_nonempty = bool(extract_trace.get("raw_nonempty", False))
                     kept_items_count = int(extract_trace.get("kept_items_count", 0) or 0)
-                    if llm_called and raw_nonempty and kept_items_count == 0:
+                    opportunistic_kept_items_count = int(extract_trace.get("opportunistic_kept_items_count", 0) or 0)
+                    support_increments_this_turn = 0
+                    if isinstance(belief_trace, dict):
+                        support_increments_this_turn = int(belief_trace.get("support_increments_count", 0) or 0)
+                    should_log_extract_event = llm_called and (
+                        kept_items_count == 0
+                        or (opportunistic_kept_items_count > 0 and support_increments_this_turn == 0)
+                    )
+                    if should_log_extract_event:
                         dropped_unknown_item_count = int(extract_trace.get("drop_unknown_item_count", 0) or 0)
                         dropped_invalid_range_count = int(extract_trace.get("drop_invalid_range_count", 0) or 0)
+                        detail_scored_item_count = int(extract_trace.get("detail_scored_item_count", 0) or 0)
+                        detail_supported_item_count = int(extract_trace.get("detail_supported_item_count", 0) or 0)
+                        detail_missing_allowed_item_count = int(
+                            extract_trace.get("detail_missing_allowed_item_count", 0) or 0
+                        )
+                        detail_supported_rows_dropped_by_item1 = int(
+                            extract_trace.get("detail_supported_rows_dropped_by_item1", 0) or 0
+                        )
+                        detail_supported_rows_dropped_by_item9 = int(
+                            extract_trace.get("detail_supported_rows_dropped_by_item9", 0) or 0
+                        )
+                        detail_supported_rows_kept_post_validation = int(
+                            extract_trace.get("detail_supported_rows_kept_post_validation", 0) or 0
+                        )
+                        genuine_no_signal_turn = bool(extract_trace.get("genuine_no_signal_turn", False))
                         json_parse_ok = bool(extract_trace.get("json_parse_ok", False))
                         parse_error_kind = str(extract_trace.get("parse_error_kind", "") or "")
                         parse_error_message = str(extract_trace.get("parse_error_message", "") or "")
-                        if not json_parse_ok:
+                        opportunistic_called = bool(extract_trace.get("opportunistic_called", False))
+                        opportunistic_shortlist_called = bool(
+                            extract_trace.get("opportunistic_shortlist_called", False)
+                        )
+                        opportunistic_shortlist_parse_ok = bool(
+                            extract_trace.get("opportunistic_shortlist_parse_ok", False)
+                        )
+                        opportunistic_has_strong_offtarget_signal = bool(
+                            extract_trace.get("opportunistic_has_strong_offtarget_signal", False)
+                        )
+                        opportunistic_score_called = bool(extract_trace.get("opportunistic_score_called", False))
+                        opportunistic_score_parse_ok = bool(
+                            extract_trace.get("opportunistic_score_parse_ok", False)
+                        )
+                        opportunistic_supported_item_count = int(
+                            extract_trace.get("opportunistic_supported_item_count", 0) or 0
+                        )
+                        counts_as_failure = True
+                        if opportunistic_kept_items_count > 0 and support_increments_this_turn == 0:
+                            failure_reason = "opportunistic_kept_but_no_support_increment"
+                        elif genuine_no_signal_turn and kept_items_count == 0:
+                            failure_reason = "genuine_no_signal_all_unsupported"
+                            counts_as_failure = False
+                        elif not json_parse_ok:
                             failure_reason = parse_error_kind or "invalid_or_truncated_json"
+                        elif detail_supported_item_count > 0 and kept_items_count == 0:
+                            if detail_supported_rows_dropped_by_item9 > 0:
+                                failure_reason = "scorer_supported_items_dropped_by_item9"
+                            elif detail_supported_rows_dropped_by_item1 > 0:
+                                failure_reason = "scorer_supported_items_dropped_by_item1"
+                            else:
+                                failure_reason = "scorer_supported_items_dropped_post_validation"
+                        elif opportunistic_shortlist_called and not opportunistic_shortlist_parse_ok:
+                            failure_reason = "opportunistic_shortlist_parse_fail"
+                        elif (
+                            opportunistic_shortlist_called
+                            and opportunistic_shortlist_parse_ok
+                            and not opportunistic_has_strong_offtarget_signal
+                        ):
+                            failure_reason = "opportunistic_shortlist_no_candidates"
+                        elif opportunistic_score_called and not opportunistic_score_parse_ok:
+                            failure_reason = "opportunistic_score_parse_fail"
+                        elif opportunistic_supported_item_count > 0 and opportunistic_kept_items_count == 0:
+                            if int(extract_trace.get("opportunistic_dropped_weak_count", 0) or 0) > 0:
+                                failure_reason = "opportunistic_supported_rows_dropped_by_strong_only_threshold"
+                            else:
+                                failure_reason = "opportunistic_supported_items_dropped_post_validation"
+                        elif detail_missing_allowed_item_count > 0 and kept_items_count == 0:
+                            failure_reason = "scorer_partial_allowed_item_coverage"
+                        elif detail_scored_item_count > 0 and detail_supported_item_count == 0 and opportunistic_called:
+                            failure_reason = "scorer_all_unsupported_then_opportunistic_empty"
+                        elif detail_scored_item_count > 0 and detail_supported_item_count == 0:
+                            failure_reason = "scorer_all_unsupported"
+                        elif opportunistic_called and kept_items_count == 0:
+                            failure_reason = "scoped_empty_then_opportunistic_empty"
+                        elif kept_items_count == 0:
+                            failure_reason = "scoped_empty_only"
                         elif dropped_unknown_item_count > 0 and dropped_invalid_range_count == 0:
                             failure_reason = "unknown_item_mapping"
                         elif dropped_invalid_range_count > 0:
@@ -311,23 +389,108 @@ def run_eval(
                             failure_reason = "parsed_but_no_usable_evidence"
                         extract_parse_fail_log_entries.append(
                             {
+                                "prompt_version": prompt_version,
                                 "llm": profile.persona_id,
                                 "split": profile.split,
                                 "family": profile.family,
                                 "turn": int(entry.get("turn", extract_trace.get("turn", 0)) or 0),
                                 "source": source or "llm_extractor",
                                 "failure_reason": failure_reason,
+                                "counts_as_failure": counts_as_failure,
                                 "json_parse_ok": json_parse_ok,
                                 "parse_error_kind": parse_error_kind,
                                 "parse_error_message": parse_error_message,
                                 "parse_error_line": int(extract_trace.get("parse_error_line", 0) or 0),
                                 "parse_error_column": int(extract_trace.get("parse_error_column", 0) or 0),
                                 "parse_error_position": int(extract_trace.get("parse_error_position", 0) or 0),
+                                "parse_fail_stage": str(extract_trace.get("parse_fail_stage", "") or ""),
                                 "parse_balance": extract_trace.get("parse_balance", {}),
                                 "raw_items_count": int(extract_trace.get("raw_items_count", 0) or 0),
                                 "kept_items_count": kept_items_count,
                                 "drop_unknown_item_count": dropped_unknown_item_count,
                                 "drop_invalid_range_count": dropped_invalid_range_count,
+                                "target_item_id": int(extract_trace.get("target_item_id", 0) or 0),
+                                "target_module_id": int(extract_trace.get("target_module_id", 0) or 0),
+                                "allowed_item_ids": list(extract_trace.get("allowed_item_ids", []) or []),
+                                "gate_candidate_item_ids": list(extract_trace.get("gate_candidate_item_ids", []) or []),
+                                "gate_called": bool(extract_trace.get("gate_called", False)),
+                                "gate_parse_ok": bool(extract_trace.get("gate_parse_ok", False)),
+                                "gate_target_relevant": bool(extract_trace.get("gate_target_relevant", False)),
+                                "stage2_called": bool(extract_trace.get("stage2_called", False)),
+                                "stage2_parse_ok": bool(extract_trace.get("stage2_parse_ok", False)),
+                                "clear_no_symptom_skip": bool(extract_trace.get("clear_no_symptom_skip", False)),
+                                "genuine_no_signal_turn": genuine_no_signal_turn,
+                                "gate_soft_false_overridden": bool(
+                                    extract_trace.get("gate_soft_false_overridden", False)
+                                ),
+                                "detail_called_due_to_gate_false": bool(
+                                    extract_trace.get("detail_called_due_to_gate_false", False)
+                                ),
+                                "detail_called_due_to_gate_parse_fail": bool(
+                                    extract_trace.get("detail_called_due_to_gate_parse_fail", False)
+                                ),
+                                "detail_empty_after_gate_true": bool(
+                                    extract_trace.get("detail_empty_after_gate_true", False)
+                                ),
+                                "detail_empty_after_gate_false": bool(
+                                    extract_trace.get("detail_empty_after_gate_false", False)
+                                ),
+                                "detail_scored_item_count": detail_scored_item_count,
+                                "detail_supported_item_count": detail_supported_item_count,
+                                "detail_unsupported_item_count": int(
+                                    extract_trace.get("detail_unsupported_item_count", 0) or 0
+                                ),
+                                "detail_supported_item_ids": list(
+                                    extract_trace.get("detail_supported_item_ids", []) or []
+                                ),
+                                "detail_missing_allowed_item_count": detail_missing_allowed_item_count,
+                                "detail_supported_rows_dropped_by_item1": detail_supported_rows_dropped_by_item1,
+                                "detail_supported_rows_dropped_by_item9": detail_supported_rows_dropped_by_item9,
+                                "detail_supported_rows_kept_post_validation": (
+                                    detail_supported_rows_kept_post_validation
+                                ),
+                                "opportunistic_called": opportunistic_called,
+                                "opportunistic_skipped_on_risk": bool(
+                                    extract_trace.get("opportunistic_skipped_on_risk", False)
+                                ),
+                                "opportunistic_shortlist_called": opportunistic_shortlist_called,
+                                "opportunistic_shortlist_parse_ok": opportunistic_shortlist_parse_ok,
+                                "opportunistic_has_strong_offtarget_signal": (
+                                    opportunistic_has_strong_offtarget_signal
+                                ),
+                                "opportunistic_candidate_item_ids": list(
+                                    extract_trace.get("opportunistic_candidate_item_ids", []) or []
+                                ),
+                                "opportunistic_score_called": opportunistic_score_called,
+                                "opportunistic_score_parse_ok": opportunistic_score_parse_ok,
+                                "opportunistic_parse_ok": bool(extract_trace.get("opportunistic_parse_ok", False)),
+                                "opportunistic_raw_items_count": int(
+                                    extract_trace.get("opportunistic_raw_items_count", 0) or 0
+                                ),
+                                "opportunistic_kept_items_count": opportunistic_kept_items_count,
+                                "opportunistic_scored_item_count": int(
+                                    extract_trace.get("opportunistic_scored_item_count", 0) or 0
+                                ),
+                                "opportunistic_supported_item_count": opportunistic_supported_item_count,
+                                "opportunistic_unsupported_item_count": int(
+                                    extract_trace.get("opportunistic_unsupported_item_count", 0) or 0
+                                ),
+                                "opportunistic_supported_item_ids": list(
+                                    extract_trace.get("opportunistic_supported_item_ids", []) or []
+                                ),
+                                "opportunistic_missing_item_count": int(
+                                    extract_trace.get("opportunistic_missing_item_count", 0) or 0
+                                ),
+                                "opportunistic_dropped_weak_count": int(
+                                    extract_trace.get("opportunistic_dropped_weak_count", 0) or 0
+                                ),
+                                "opportunistic_salvage_used": bool(
+                                    extract_trace.get("opportunistic_salvage_used", False)
+                                ),
+                                "opportunistic_item_ids": list(
+                                    extract_trace.get("opportunistic_item_ids", []) or []
+                                ),
+                                "support_increments_this_turn": support_increments_this_turn,
                                 "key_alias_used_count": int(extract_trace.get("key_alias_used_count", 0) or 0),
                                 "schema_coerce_used_count": int(extract_trace.get("schema_coerce_used_count", 0) or 0),
                                 "salvage_used": bool(extract_trace.get("salvage_used", False)),

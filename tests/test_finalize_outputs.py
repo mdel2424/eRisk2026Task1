@@ -73,6 +73,10 @@ def _add_persona_reply(state, message: str) -> None:
     state["messages"].append({"role": "assistant", "content": message})
 
 
+def _add_detector_question(state, message: str) -> None:
+    state["messages"].append({"role": "user", "content": message})
+
+
 class FinalizeOutputsTests(unittest.TestCase):
     def test_low_signal_sparse_control_profile_activates_guardrail(self) -> None:
         state = _finalizing_state("low-signal-active")
@@ -168,8 +172,8 @@ class FinalizeOutputsTests(unittest.TestCase):
         self.assertTrue(bool(module_imputation["low_signal_guardrail_active"]))
         self.assertEqual(int(module_imputation["observed_positive_breadth"]), 4)
         self.assertEqual(int(module_imputation["observed_core_hits"]), 1)
-        self.assertEqual(int(module_imputation["imputed_point_budget"]), 2)
-        self.assertLessEqual(int(module_imputation["imputed_points_after_guardrail"]), 2)
+        self.assertEqual(int(module_imputation["imputed_point_budget"]), 1)
+        self.assertLessEqual(int(module_imputation["imputed_points_after_guardrail"]), 1)
 
     def test_low_signal_somatic_only_evidence_cannot_create_somatic_spillover(self) -> None:
         state = _finalizing_state("somatic-only-block")
@@ -229,7 +233,7 @@ class FinalizeOutputsTests(unittest.TestCase):
         self.assertEqual(int(result["final_item_scores"][15]), 1)
         self.assertTrue(bool(detail["low_signal_singleton_trim_applied"]))
 
-    def test_strong_supported_nonrisk_positive_outside_low_signal_is_unchanged(self) -> None:
+    def test_strong_anchor_observed_item_bypasses_local_trim(self) -> None:
         state = _finalizing_state("singleton-bypass")
         _set_item_belief(state, item_id=4, expected_score=2.2, support_count=1, entropy=0.20)
         _set_item_belief(state, item_id=10, expected_score=1.2, support_count=1, entropy=0.20)
@@ -243,11 +247,30 @@ class FinalizeOutputsTests(unittest.TestCase):
         result = finalize_outputs(state)
         detail = result["module_imputation"]["item_details"]["15"]
 
-        self.assertFalse(bool(result["module_imputation"]["low_signal_guardrail_active"]))
+        self.assertTrue(bool(result["module_imputation"]["low_signal_guardrail_active"]))
         self.assertTrue(bool(result["module_imputation"]["severe_recovery_mode_active"]))
-        self.assertEqual(result["module_imputation"]["guardrail_bypass_source"], "severe_recovery")
+        self.assertEqual(result["module_imputation"]["guardrail_bypass_source"], "item_local_severe_recovery")
         self.assertEqual(int(result["final_item_scores"][15]), 2)
         self.assertFalse(bool(detail["low_signal_singleton_trim_applied"]))
+        self.assertTrue(bool(detail["strong_anchor_local_bypass_applied"]))
+
+    def test_severe_recovery_still_trims_non_anchor_singleton_observed_items(self) -> None:
+        state = _finalizing_state("severe-recovery-non-anchor-trim")
+        _set_item_belief(state, item_id=13, expected_score=2.2, support_count=1, entropy=0.90)
+        _set_item_belief(state, item_id=14, expected_score=2.0, support_count=1, entropy=0.90)
+        _set_item_belief(state, item_id=15, expected_score=2.0, support_count=1, entropy=0.90)
+        _add_evidence(state, item_id=14, turn=1)
+        _add_evidence(state, item_id=15, turn=2)
+        _add_persona_reply(state, "I genuinely feel worthless and like I do not contribute anything that matters.")
+        _add_persona_reply(state, "Even getting out of bed is a battle and everything takes so much energy.")
+
+        result = finalize_outputs(state)
+        detail = result["module_imputation"]["item_details"]["13"]
+
+        self.assertTrue(bool(result["module_imputation"]["severe_recovery_mode_active"]))
+        self.assertEqual(int(result["final_item_scores"][13]), 1)
+        self.assertTrue(bool(detail["low_signal_singleton_trim_applied"]))
+        self.assertFalse(bool(detail["strong_anchor_local_bypass_applied"]))
 
     def test_low_signal_single_passive_risk_without_core_corroboration_forces_zero(self) -> None:
         state = _finalizing_state("item9-passive-zero")
@@ -317,7 +340,6 @@ class FinalizeOutputsTests(unittest.TestCase):
 
         result = finalize_outputs(state)
 
-        self.assertFalse(bool(result["module_imputation"]["low_signal_guardrail_active"]))
         self.assertTrue(bool(result["module_imputation"]["severe_recovery_mode_active"]))
         self.assertEqual(int(result["final_item_scores"][9]), 1)
 
@@ -331,12 +353,14 @@ class FinalizeOutputsTests(unittest.TestCase):
         result = finalize_outputs(state)
         module_imputation = result["module_imputation"]
 
-        self.assertFalse(bool(module_imputation["low_signal_guardrail_active"]))
+        self.assertTrue(bool(module_imputation["low_signal_guardrail_active"]))
         self.assertTrue(bool(module_imputation["severe_recovery_mode_active"]))
-        self.assertEqual(module_imputation["guardrail_bypass_source"], "severe_recovery")
+        self.assertEqual(module_imputation["guardrail_bypass_source"], "item_local_severe_recovery")
         self.assertEqual(int(result["final_item_scores"][14]), 2)
         self.assertEqual(int(result["final_item_scores"][15]), 2)
         self.assertEqual(module_imputation["severe_recovery_reason"], "multiple_strong_anchor_modules")
+        self.assertIn(14, module_imputation["strong_anchor_local_bypass_item_ids"])
+        self.assertIn(15, module_imputation["strong_anchor_local_bypass_item_ids"])
 
     def test_severe_amplitude_observed_item_recovers_to_two(self) -> None:
         state = _finalizing_state("severe-amplitude-observed")
@@ -354,6 +378,43 @@ class FinalizeOutputsTests(unittest.TestCase):
         self.assertEqual(int(result["final_item_scores"][14]), 2)
         self.assertTrue(bool(detail["severe_amplitude_observed_applied"]))
         self.assertIn(14, result["module_imputation"]["severe_amplitude_observed_item_ids"])
+        self.assertFalse(bool(detail["severe_amplitude_observed_to_three"]))
+
+    def test_observed_somatic_severe_item_can_recover_to_three(self) -> None:
+        state = _finalizing_state("severe-amplitude-observed-three")
+        _set_item_belief(state, item_id=14, expected_score=2.0, support_count=1, entropy=0.90)
+        _set_item_belief(state, item_id=15, expected_score=2.4, support_count=2, entropy=0.80)
+        _add_evidence(state, item_id=14, turn=1, confidence=0.80, intensity=2.0)
+        _add_evidence(state, item_id=15, turn=1, confidence=0.80, intensity=2.0)
+        _add_evidence(state, item_id=15, turn=2, confidence=0.82, intensity=2.2)
+        _add_persona_reply(state, "I genuinely feel worthless and like I do not contribute anything that matters.")
+        _add_persona_reply(state, "Even getting out of bed is a battle and everything takes so much energy.")
+
+        result = finalize_outputs(state)
+        detail = result["module_imputation"]["item_details"]["15"]
+
+        self.assertTrue(bool(result["module_imputation"]["severe_recovery_mode_active"]))
+        self.assertEqual(int(result["final_item_scores"][15]), 3)
+        self.assertTrue(bool(detail["severe_amplitude_observed_applied"]))
+        self.assertTrue(bool(detail["severe_amplitude_observed_to_three"]))
+        self.assertIn(15, result["module_imputation"]["severe_amplitude_observed_to_three_item_ids"])
+
+    def test_non_somatic_observed_severe_item_still_caps_at_two(self) -> None:
+        state = _finalizing_state("severe-amplitude-observed-two-only")
+        _set_item_belief(state, item_id=14, expected_score=2.4, support_count=2, entropy=0.80)
+        _set_item_belief(state, item_id=15, expected_score=2.0, support_count=1, entropy=0.90)
+        _add_evidence(state, item_id=14, turn=1, confidence=0.80, intensity=2.0)
+        _add_evidence(state, item_id=14, turn=2, confidence=0.82, intensity=2.2)
+        _add_evidence(state, item_id=15, turn=3, confidence=0.80, intensity=2.0)
+        _add_persona_reply(state, "I genuinely feel worthless and like I do not contribute anything that matters.")
+        _add_persona_reply(state, "Even getting out of bed is a battle and everything takes so much energy.")
+
+        result = finalize_outputs(state)
+        detail = result["module_imputation"]["item_details"]["14"]
+
+        self.assertTrue(bool(result["module_imputation"]["severe_recovery_mode_active"]))
+        self.assertEqual(int(result["final_item_scores"][14]), 2)
+        self.assertFalse(bool(detail["severe_amplitude_observed_to_three"]))
 
     def test_anchored_observed_without_evidence_strength_does_not_uplift(self) -> None:
         state = _finalizing_state("severe-amplitude-observed-none")
@@ -396,14 +457,90 @@ class FinalizeOutputsTests(unittest.TestCase):
         result = finalize_outputs(state)
 
         self.assertTrue(bool(result["module_imputation"]["severe_recovery_mode_active"]))
-        self.assertFalse(bool(result["module_imputation"]["low_signal_guardrail_active"]))
+        self.assertTrue(bool(result["module_imputation"]["low_signal_guardrail_active"]))
         self.assertEqual(int(result["final_item_scores"][11]), 2)
         self.assertEqual(int(result["final_item_scores"][20]), 1)
         self.assertEqual(int(result["final_item_scores"][18]), 0)
         self.assertIn(11, result["module_imputation"]["severe_amplitude_imputed_item_ids"])
         self.assertNotIn(20, result["module_imputation"]["severe_amplitude_imputed_item_ids"])
 
-    def test_non_strong_anchor_module_imputed_candidate_stays_one(self) -> None:
+    def test_module_three_severe_restore_recovers_up_to_two_zeroed_items(self) -> None:
+        state = _finalizing_state("module-three-severe-restore")
+        _set_item_belief(state, item_id=5, expected_score=2.4, support_count=1, entropy=0.90)
+        _set_item_belief(state, item_id=12, expected_score=2.0, support_count=2, entropy=0.90)
+        _set_item_belief(state, item_id=15, expected_score=2.0, support_count=2, entropy=0.90)
+        _add_evidence(state, item_id=5, turn=1, confidence=0.75, intensity=2.4)
+        _add_evidence(state, item_id=12, turn=2, confidence=0.75, intensity=2.0)
+        _add_evidence(state, item_id=12, turn=3, confidence=0.78, intensity=2.1)
+        _add_evidence(state, item_id=15, turn=4, confidence=0.75, intensity=2.0)
+        _add_evidence(state, item_id=15, turn=5, confidence=0.78, intensity=2.1)
+        _add_persona_reply(state, "I genuinely feel worthless and like I do not contribute anything that matters.")
+        _add_persona_reply(state, "Even getting out of bed is a battle and everything takes so much energy.")
+
+        result = finalize_outputs(state)
+        restored_item_ids = result["module_imputation"]["severe_module3_restored_item_ids"]
+
+        self.assertTrue(bool(result["module_imputation"]["severe_recovery_mode_active"]))
+        self.assertEqual(int(result["module_imputation"]["severe_module3_restore_budget"]), 2)
+        self.assertEqual(len(restored_item_ids), 2)
+        self.assertTrue(all(item_id in {3, 6, 7, 8, 14} for item_id in restored_item_ids))
+        self.assertTrue(all(bool(result["module_imputation"]["item_details"][str(item_id)]["severe_module3_restore_applied"]) for item_id in restored_item_ids))
+        self.assertTrue(all(int(result["final_item_scores"][item_id]) >= 1 for item_id in restored_item_ids))
+
+    def test_module_three_severe_restore_requires_observed_module_three_severity(self) -> None:
+        state = _finalizing_state("module-three-severe-restore-off")
+        _set_item_belief(state, item_id=12, expected_score=2.0, support_count=2, entropy=0.90)
+        _set_item_belief(state, item_id=15, expected_score=2.0, support_count=2, entropy=0.90)
+        _add_evidence(state, item_id=12, turn=1, confidence=0.75, intensity=2.0)
+        _add_evidence(state, item_id=12, turn=2, confidence=0.78, intensity=2.1)
+        _add_evidence(state, item_id=15, turn=3, confidence=0.75, intensity=2.0)
+        _add_evidence(state, item_id=15, turn=4, confidence=0.78, intensity=2.1)
+        _add_persona_reply(state, "I genuinely feel worthless and like I do not contribute anything that matters.")
+        _add_persona_reply(state, "Even getting out of bed is a battle and everything takes so much energy.")
+
+        result = finalize_outputs(state)
+
+        self.assertTrue(bool(result["module_imputation"]["severe_recovery_mode_active"]))
+        self.assertEqual(result["module_imputation"]["severe_module3_restored_item_ids"], [])
+
+    def test_module_three_severe_restore_does_not_restore_non_module_three_items(self) -> None:
+        state = _finalizing_state("module-three-severe-restore-only-module-three")
+        _set_item_belief(state, item_id=5, expected_score=2.4, support_count=1, entropy=0.90)
+        _set_item_belief(state, item_id=12, expected_score=2.0, support_count=2, entropy=0.90)
+        _set_item_belief(state, item_id=15, expected_score=2.0, support_count=2, entropy=0.90)
+        _add_evidence(state, item_id=5, turn=1, confidence=0.75, intensity=2.4)
+        _add_evidence(state, item_id=12, turn=2, confidence=0.75, intensity=2.0)
+        _add_evidence(state, item_id=12, turn=3, confidence=0.78, intensity=2.1)
+        _add_evidence(state, item_id=15, turn=4, confidence=0.75, intensity=2.0)
+        _add_evidence(state, item_id=15, turn=5, confidence=0.78, intensity=2.1)
+        _add_persona_reply(state, "I genuinely feel worthless and like I do not contribute anything that matters.")
+        _add_persona_reply(state, "Even getting out of bed is a battle and everything takes so much energy.")
+
+        result = finalize_outputs(state)
+
+        restored_item_ids = result["module_imputation"]["severe_module3_restored_item_ids"]
+        self.assertTrue(restored_item_ids)
+        self.assertTrue(all(item_id in {3, 5, 6, 7, 8, 14} for item_id in restored_item_ids))
+
+    def test_module_three_severe_restore_prioritizes_item_fourteen_on_worthlessness_hits(self) -> None:
+        state = _finalizing_state("module-three-item14-priority")
+        _set_item_belief(state, item_id=5, expected_score=2.4, support_count=1, entropy=0.90)
+        _set_item_belief(state, item_id=12, expected_score=2.0, support_count=2, entropy=0.90)
+        _set_item_belief(state, item_id=15, expected_score=2.0, support_count=2, entropy=0.90)
+        _add_evidence(state, item_id=5, turn=1, confidence=0.75, intensity=2.4)
+        _add_evidence(state, item_id=12, turn=2, confidence=0.75, intensity=2.0)
+        _add_evidence(state, item_id=12, turn=3, confidence=0.78, intensity=2.1)
+        _add_evidence(state, item_id=15, turn=4, confidence=0.75, intensity=2.0)
+        _add_evidence(state, item_id=15, turn=5, confidence=0.78, intensity=2.1)
+        _add_persona_reply(state, "I genuinely feel worthless and like I do not contribute anything that matters.")
+        _add_persona_reply(state, "Even getting out of bed is a battle and everything takes so much energy.")
+
+        result = finalize_outputs(state)
+
+        self.assertTrue(bool(result["module_imputation"]["severe_module3_item14_priority_applied"]))
+        self.assertIn(14, result["module_imputation"]["severe_module3_restored_item_ids"])
+
+    def test_non_strong_anchor_module_imputed_candidate_is_not_restored(self) -> None:
         state = _finalizing_state("non-strong-anchor-imputed")
         _set_item_belief(state, item_id=14, expected_score=2.0, support_count=1, entropy=0.90)
         _set_item_belief(state, item_id=5, expected_score=1.6, support_count=1, entropy=0.90)
@@ -419,10 +556,11 @@ class FinalizeOutputsTests(unittest.TestCase):
         result = finalize_outputs(state)
 
         self.assertTrue(bool(result["module_imputation"]["severe_recovery_mode_active"]))
-        self.assertEqual(int(result["final_item_scores"][11]), 1)
+        self.assertLessEqual(int(result["final_item_scores"][11]), 1)
+        self.assertNotIn(11, result["module_imputation"]["severe_recovered_item_ids"])
         self.assertNotIn(11, result["module_imputation"]["severe_amplitude_imputed_item_ids"])
 
-    def test_module_three_amplitude_budget_caps_at_two(self) -> None:
+    def test_strong_anchor_imputed_restore_budget_is_one_per_module(self) -> None:
         state = _finalizing_state("module-three-budget")
         _set_item_belief(state, item_id=14, expected_score=2.2, support_count=1, entropy=0.90)
         _set_item_belief(state, item_id=5, expected_score=2.0, support_count=1, entropy=0.90)
@@ -434,12 +572,18 @@ class FinalizeOutputsTests(unittest.TestCase):
         _add_persona_reply(state, "Even getting out of bed is a battle and everything takes so much energy.")
 
         result = finalize_outputs(state)
-        upgraded = [item_id for item_id in (3, 6, 7, 8) if int(result["final_item_scores"][item_id]) == 2]
+        restored_module_three = result["module_imputation"]["severe_recovered_item_ids_by_module"].get("3", [])
 
-        self.assertEqual(len(upgraded), 2)
+        self.assertEqual(len(restored_module_three), 1)
         self.assertEqual(
-            len([item_id for item_id in result["module_imputation"]["severe_amplitude_imputed_item_ids"] if item_id in {3, 6, 7, 8}]),
-            2,
+            len(
+                [
+                    item_id
+                    for item_id in restored_module_three
+                    if item_id in {3, 6, 7, 8}
+                ]
+            ),
+            1,
         )
 
     def test_severe_recovery_does_not_loosen_item_nine(self) -> None:
@@ -456,6 +600,144 @@ class FinalizeOutputsTests(unittest.TestCase):
 
         self.assertTrue(bool(result["module_imputation"]["severe_recovery_mode_active"]))
         self.assertEqual(int(result["final_item_scores"][9]), 0)
+
+    def test_item_twenty_one_mild_observed_signal_is_retained_to_one(self) -> None:
+        state = _finalizing_state("item21-mild-retained")
+        _set_item_belief(state, item_id=21, expected_score=1.2, support_count=1, entropy=1.30)
+        _add_evidence(state, item_id=21, turn=1, confidence=0.6, intensity=1.0)
+        _add_persona_reply(state, "I genuinely feel worthless and like I do not contribute anything that matters.")
+        _add_persona_reply(state, "Even getting out of bed is a battle and everything takes so much energy.")
+        _add_persona_reply(state, "That side of things is a little lower than usual, not a big change though.")
+
+        result = finalize_outputs(state)
+        detail = result["module_imputation"]["item_details"]["21"]
+
+        self.assertTrue(bool(result["module_imputation"]["severe_recovery_mode_active"]))
+        self.assertTrue(bool(result["module_imputation"]["item21_mild_observed_retained"]))
+        self.assertEqual(int(result["final_item_scores"][21]), 1)
+        self.assertTrue(bool(detail["item21_mild_observed_retained"]))
+
+    def test_item_twenty_one_without_explicit_phrase_is_not_retained(self) -> None:
+        state = _finalizing_state("item21-mild-not-retained")
+        _set_item_belief(state, item_id=21, expected_score=1.2, support_count=1, entropy=1.30)
+        _add_evidence(state, item_id=21, turn=1, confidence=0.6, intensity=1.0)
+        _add_persona_reply(state, "I genuinely feel worthless and like I do not contribute anything that matters.")
+        _add_persona_reply(state, "Even getting out of bed is a battle and everything takes so much energy.")
+        _add_persona_reply(state, "That side of things has been fine.")
+
+        result = finalize_outputs(state)
+        detail = result["module_imputation"]["item_details"]["21"]
+
+        self.assertTrue(bool(result["module_imputation"]["severe_recovery_mode_active"]))
+        self.assertFalse(bool(result["module_imputation"]["item21_mild_observed_retained"]))
+        self.assertEqual(int(result["final_item_scores"][21]), 0)
+        self.assertFalse(bool(detail["item21_mild_observed_retained"]))
+
+    def test_item_fourteen_latent_restore_fires_with_module_three_corroboration(self) -> None:
+        state = _finalizing_state("item14-latent-restored")
+        _set_item_belief(state, item_id=5, expected_score=1.6, support_count=1, entropy=1.00)
+        _set_item_belief(state, item_id=7, expected_score=1.6, support_count=1, entropy=1.00)
+        _add_evidence(state, item_id=5, turn=1, confidence=0.6, intensity=1.6)
+        _add_evidence(state, item_id=7, turn=2, confidence=0.6, intensity=1.6)
+        _add_persona_reply(state, "I feel like it's my own fault and I don't like who I am right now.")
+
+        result = finalize_outputs(state)
+        detail = result["module_imputation"]["item_details"]["14"]
+
+        self.assertEqual(int(result["final_item_scores"][14]), 2)
+        self.assertIn(14, result["module_imputation"]["item14_latent_restored_item_ids"])
+        self.assertTrue(bool(detail["item14_latent_restore_applied"]))
+
+    def test_item_fourteen_latent_restore_does_not_fire_for_generic_stress(self) -> None:
+        state = _finalizing_state("item14-latent-no-generic-stress")
+        _set_item_belief(state, item_id=5, expected_score=1.6, support_count=1, entropy=1.00)
+        _set_item_belief(state, item_id=7, expected_score=1.6, support_count=1, entropy=1.00)
+        _add_evidence(state, item_id=5, turn=1, confidence=0.6, intensity=1.6)
+        _add_evidence(state, item_id=7, turn=2, confidence=0.6, intensity=1.6)
+        _add_persona_reply(state, "Work has been busy and everything feels heavier lately.")
+
+        result = finalize_outputs(state)
+        detail = result["module_imputation"]["item_details"]["14"]
+
+        self.assertEqual(int(result["final_item_scores"][14]), 0)
+        self.assertEqual(result["module_imputation"]["item14_latent_restored_item_ids"], [])
+        self.assertFalse(bool(detail["item14_latent_restore_applied"]))
+
+    def test_item_fourteen_latent_restore_requires_more_than_one_weak_companion_without_severe_mode(self) -> None:
+        state = _finalizing_state("item14-latent-one-companion")
+        _set_item_belief(state, item_id=5, expected_score=1.6, support_count=1, entropy=1.00)
+        _add_evidence(state, item_id=5, turn=1, confidence=0.6, intensity=1.6)
+        _add_persona_reply(state, "I feel like it's my own fault and I don't like who I am right now.")
+
+        result = finalize_outputs(state)
+        detail = result["module_imputation"]["item_details"]["14"]
+
+        self.assertFalse(bool(result["module_imputation"]["severe_recovery_mode_active"]))
+        self.assertEqual(int(result["final_item_scores"][14]), 0)
+        self.assertFalse(bool(detail["item14_latent_restore_applied"]))
+
+    def test_item_twenty_one_imputed_restore_fires_with_question_history_and_one_soft_denial(self) -> None:
+        state = _finalizing_state("item21-imputed-restored")
+        _set_item_belief(state, item_id=20, expected_score=1.7, support_count=1, entropy=0.90)
+        _add_evidence(state, item_id=20, turn=1, confidence=0.7, intensity=1.8)
+        _add_persona_reply(state, "I genuinely feel worthless and like I do not contribute anything that matters.")
+        _add_persona_reply(state, "Even getting out of bed is a battle and everything takes so much energy.")
+        _add_detector_question(
+            state,
+            "In the past two weeks, how often have you noticed a reduced interest in sexual activity compared with your usual level?",
+        )
+        _add_persona_reply(state, "That side of things has been fine.")
+
+        result = finalize_outputs(state)
+        detail = result["module_imputation"]["item_details"]["21"]
+
+        self.assertTrue(bool(result["module_imputation"]["severe_recovery_mode_active"]))
+        self.assertTrue(bool(result["module_imputation"]["item21_question_history_hit"]))
+        self.assertEqual(int(result["module_imputation"]["item21_direct_denial_count"]), 1)
+        self.assertTrue(bool(result["module_imputation"]["item21_imputed_restored"]))
+        self.assertEqual(int(result["final_item_scores"][21]), 1)
+        self.assertTrue(bool(detail["item21_imputed_restore_applied"]))
+
+    def test_item_twenty_one_imputed_restore_requires_question_history(self) -> None:
+        state = _finalizing_state("item21-imputed-no-question")
+        _set_item_belief(state, item_id=20, expected_score=1.7, support_count=1, entropy=0.90)
+        _add_evidence(state, item_id=20, turn=1, confidence=0.7, intensity=1.8)
+        _add_persona_reply(state, "I genuinely feel worthless and like I do not contribute anything that matters.")
+        _add_persona_reply(state, "Even getting out of bed is a battle and everything takes so much energy.")
+
+        result = finalize_outputs(state)
+        detail = result["module_imputation"]["item_details"]["21"]
+
+        self.assertFalse(bool(result["module_imputation"]["item21_question_history_hit"]))
+        self.assertFalse(bool(result["module_imputation"]["item21_imputed_restored"]))
+        self.assertEqual(int(result["final_item_scores"][21]), 0)
+        self.assertFalse(bool(detail["item21_imputed_restore_applied"]))
+
+    def test_item_twenty_one_imputed_restore_is_blocked_by_repeated_direct_denials(self) -> None:
+        state = _finalizing_state("item21-imputed-two-denials")
+        _set_item_belief(state, item_id=20, expected_score=1.7, support_count=1, entropy=0.90)
+        _add_evidence(state, item_id=20, turn=1, confidence=0.7, intensity=1.8)
+        _add_persona_reply(state, "I genuinely feel worthless and like I do not contribute anything that matters.")
+        _add_persona_reply(state, "Even getting out of bed is a battle and everything takes so much energy.")
+        _add_detector_question(
+            state,
+            "In the past two weeks, how often have you noticed a reduced interest in sexual activity compared with your usual level?",
+        )
+        _add_persona_reply(state, "That side of things has been fine.")
+        _add_detector_question(
+            state,
+            "In the past two weeks, how often have you noticed a reduced interest in sexual activity compared with your usual level?",
+        )
+        _add_persona_reply(state, "Okay honestly, that side of things has been fine.")
+
+        result = finalize_outputs(state)
+        detail = result["module_imputation"]["item_details"]["21"]
+
+        self.assertTrue(bool(result["module_imputation"]["item21_question_history_hit"]))
+        self.assertEqual(int(result["module_imputation"]["item21_direct_denial_count"]), 2)
+        self.assertFalse(bool(result["module_imputation"]["item21_imputed_restored"]))
+        self.assertEqual(int(result["final_item_scores"][21]), 0)
+        self.assertFalse(bool(detail["item21_imputed_restore_applied"]))
 
     def test_severe_item_nine_rescue_recovers_to_one(self) -> None:
         state = _finalizing_state("severe-item9-rescue")
