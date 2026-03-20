@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from typing import Dict, List
 
 OPENING_MESSAGE_FIXED = (
@@ -8,9 +7,8 @@ OPENING_MESSAGE_FIXED = (
     "talk to someone?"
 )
 
-PROMPT_REGISTRY: Dict[str, Dict[str, str | Dict[str, List[str]]]] = {
-    "v1": {
-        "specialist_question": """
+PROMPT_REGISTRY: Dict[str, str | Dict[str, List[str]]] = {
+    "specialist_question": """
 You are a skilled clinical interviewer conducting a BDI-II-aligned depression screening.
 Write exactly one naturalistic, clinically grounded follow-up question.
 
@@ -45,108 +43,51 @@ Latest persona message:
 Recent context (most recent turns):
 {recent_context}
 """,
-        "opening_question": OPENING_MESSAGE_FIXED,
-        "evidence_extraction": """
-You extract interpretable depression evidence from one persona message.
-Return STRICT JSON ONLY, exactly one top-level object with this schema:
-{{
-  "evidence": [
-    {{
-      "item_id": 19,
-      "symptom_name": "Concentration Difficulty",
-      "direction": "increase|decrease|neutral",
-      "intensity": 0.0,
-      "confidence": 0.0,
-      "evidence_text": "verbatim short quote/paraphrase",
-      "reason": "short rationale"
-    }}
-  ]
-}}
-
-Constraints:
-- Return {{ "evidence": [] }} ONLY if the message is purely factual/neutral with zero emotional, behavioral, or somatic content.
-- Err on the side of extracting with lower confidence rather than omitting. Even hedged, tentative, or indirect signals should be extracted — use lower confidence (0.2-0.4) and intensity to reflect uncertainty.
-- Examples of extractable hedged signals: "things have been weird lately" → Loss of Pleasure (confidence 0.3); "I guess I haven't been eating much" → Changes in Appetite (confidence 0.4); "not the best week" → Sadness (confidence 0.25).
-- item_id must be 1..21.
-- symptom_name must be the exact canonical BDI label for the given item_id (no alternative labels).
-- If symptom wording is non-canonical, map it to the closest canonical BDI label; do not invent new labels.
-- Map metaphorical language to symptoms: e.g. "running on fumes" → fatigue/energy, "going through the motions" → loss of pleasure, "cloud over my head" → sadness, "short fuse" → irritability.
-- intensity in [0, 3], confidence in [0, 1].
-- use only BDI-II symptom labels.
-- Do not default to item 1 (Sadness) when evidence is vague or unspecific.
-- Item 1 increase requires explicit mood-affect language (sad/down/low mood/tearful/crying/numb or emotionally flat).
-- Fatigue/sleep/concentration-only evidence should map to their specific items, not item 1.
-- Do not map generic overwhelm, escape metaphors, or safety-planning language to item 9 without direct passive-death or self-harm semantics.
-- Do not map dissociation, autopilot, or disconnection alone to item 4 without explicit loss of enjoyment, reward, or interest.
-- Do not map generic stress, pressure, or being behind to self-evaluation items without explicit self-judgment, guilt, shame, failure, or worthlessness language.
-- Do not map racing thoughts or fogginess alone to item 19 without explicit concentration or decision-making impairment.
-- Output MUST start with "{{" and end with "}}".
-- Do not wrap output in markdown fences.
-- Do not add commentary, notes, explanations, headings, or trailing text.
-- Do not include fields outside the schema.
-- Keep evidence list length <= 4 (unless strong concurrent risk+somatic evidence).
-
-Invalid output examples (do NOT do these):
-- ```json ... ```
-- "Here is the JSON:" followed by object
-- Objects missing item_id/intensity/confidence
-
-Current specialist node: {node_name}
-Recent conversation:
-{recent_context}
-
-Latest persona message:
-{latest_message}
-""",
-        "fallback_questions": {
-            "somatic": [
-                "How has your sleep changed compared with your usual pattern, falling asleep, staying asleep, or waking early?",
-                "How has your energy shifted across a typical day recently, and when does it feel worst?",
-                "How has your appetite been compared with usual, increased, decreased, or unchanged?",
-                "On how many days in the past two weeks has fatigue interfered with getting things done?",
-                "When your body feels off, what does that usually look like for you?",
-                "When you wake up most mornings recently, do you feel rested or still exhausted?",
-                "Have you noticed more restlessness or difficulty sitting still compared with usual?",
-                "How often have you felt completely worn out before the day is even halfway through?",
-                "What has your evening routine felt like compared with your normal?",
-                "How different has your concentration felt when doing routine tasks like reading or following a conversation?",
-                "How has your pace or motivation for starting basic tasks shifted recently?",
-                "Have you noticed any weight change or your clothes fitting differently without trying?",
-            ],
-            "cognitive": [
-                "What thought has been loudest or most repetitive in your mind recently?",
-                "When things feel heavy lately, what do you tend to tell yourself?",
-                "Thinking about the future, do you feel hopeful things will improve or does it feel unlikely?",
-                "When something goes wrong, do you tend toward frustration, self-blame, guilt, or something else?",
-                "How has your confidence in yourself changed compared with your usual level?",
-                "What worries or thoughts have been looping the most in the past couple of weeks?",
-                "When something doesn't go as planned, where does your mind go first?",
-                "When you face small decisions, do you decide and move on, or do you get stuck replaying options?",
-                "What has felt most mentally draining in your day-to-day recently?",
-                "How often have guilt or self-blame thoughts shown up over the past two weeks?",
-                "What activities or interests feel less meaningful or rewarding than they used to?",
-                "When you try to rest, what does your mind tend to do?",
-            ],
-            "risk": [
-                "When things felt very heavy recently, what helped you get through it?",
-                "Who or what helped you through your hardest moments lately?",
-                "When thoughts feel overwhelming, what is usually the first thing you do?",
-                "When distress spikes, what signs tell you that you need extra support?",
-                "What has helped you get through moments that felt emotionally unsafe?",
-                "When you feel close to your limit, who can you reach out to quickly?",
-                "When things feel at their worst, what do you find yourself wishing for, relief, escape, shutting everything off?",
-                "What has made difficult moments feel even slightly safer recently?",
-                "When you feel like withdrawing completely, what keeps you grounded?",
-                "Have there been moments where life felt not worth the effort, or you felt you would rather not be here?",
-                "What has stopped things from escalating on your hardest days?",
-                "What would be your first step if things felt unmanageable tonight?",
-            ],
-        },
-    }
-}
-
-PROMPT_REGISTRY["v2"] = {
-    **PROMPT_REGISTRY["v1"],
+    "opening_question": OPENING_MESSAGE_FIXED,
+    "fallback_questions": {
+        "somatic": [
+            "How has your sleep changed compared with your usual pattern, falling asleep, staying asleep, or waking early?",
+            "How has your energy shifted across a typical day recently, and when does it feel worst?",
+            "How has your appetite been compared with usual, increased, decreased, or unchanged?",
+            "On how many days in the past two weeks has fatigue interfered with getting things done?",
+            "When your body feels off, what does that usually look like for you?",
+            "When you wake up most mornings recently, do you feel rested or still exhausted?",
+            "Have you noticed more restlessness or difficulty sitting still compared with usual?",
+            "How often have you felt completely worn out before the day is even halfway through?",
+            "What has your evening routine felt like compared with your normal?",
+            "How different has your concentration felt when doing routine tasks like reading or following a conversation?",
+            "How has your pace or motivation for starting basic tasks shifted recently?",
+            "Have you noticed any weight change or your clothes fitting differently without trying?",
+        ],
+        "cognitive": [
+            "What thought has been loudest or most repetitive in your mind recently?",
+            "When things feel heavy lately, what do you tend to tell yourself?",
+            "Thinking about the future, do you feel hopeful things will improve or does it feel unlikely?",
+            "When something goes wrong, do you tend toward frustration, self-blame, guilt, or something else?",
+            "How has your confidence in yourself changed compared with your usual level?",
+            "What worries or thoughts have been looping the most in the past couple of weeks?",
+            "When something doesn't go as planned, where does your mind go first?",
+            "When you face small decisions, do you decide and move on, or do you get stuck replaying options?",
+            "What has felt most mentally draining in your day-to-day recently?",
+            "How often have guilt or self-blame thoughts shown up over the past two weeks?",
+            "What activities or interests feel less meaningful or rewarding than they used to?",
+            "When you try to rest, what does your mind tend to do?",
+        ],
+        "risk": [
+            "When things felt very heavy recently, what helped you get through it?",
+            "Who or what helped you through your hardest moments lately?",
+            "When thoughts feel overwhelming, what is usually the first thing you do?",
+            "When distress spikes, what signs tell you that you need extra support?",
+            "What has helped you get through moments that felt emotionally unsafe?",
+            "When you feel close to your limit, who can you reach out to quickly?",
+            "When things feel at their worst, what do you find yourself wishing for, relief, escape, shutting everything off?",
+            "What has made difficult moments feel even slightly safer recently?",
+            "When you feel like withdrawing completely, what keeps you grounded?",
+            "Have there been moments where life felt not worth the effort, or you felt you would rather not be here?",
+            "What has stopped things from escalating on your hardest days?",
+            "What would be your first step if things felt unmanageable tonight?",
+        ],
+    },
     "evidence_gate": """
 You are a strict relevance gate for a targeted BDI-II evidence extractor.
 Decide whether the latest persona message contains evidence relevant to the allowed target items.
@@ -168,12 +109,17 @@ Constraints:
 - confidence must be in [0, 1].
 - Keep anchor_quote short and directly grounded in the latest message.
 - Mark target_relevant=true for direct, indirect, hedged, metaphorical, change-from-baseline, or functional-impact evidence inside allowed_item_ids.
+- Do not mark target_relevant=true for generic ambiguity alone, such as "it seems a little different", "there has been some shift", "it feels a bit off", or "it's hard to be exact", unless the same reply also includes symptom-specific content, a concrete functional example, or a direct symptom-linked change from baseline.
 - For module-3 items (guilt, failure, self-dislike, self-criticalness, worthlessness), mark target_relevant=true when the reply contains explicit self-evaluation or self-blame language such as "my own fault", "guilt just shows up", "I don't measure up", "I feel like a burden", or "I've been hard on myself lately".
 - If the allowed items include item 14, prefer worthlessness relevance when the reply is about worth, mattering, burden, contribution, or identity-level failure, such as "I feel like a burden", "I do not contribute anything that matters", "I feel like a failure", or "I do not like who I am right now."
 - If the allowed items include item 14 and the reply is only "It is my own fault" without worth or identity language, prefer guilt/self-blame items rather than item 14.
 - If the detector asked about sexual interest and the reply is "That side of things is a little lower than usual, not a big change though" or "To put it simply, that side of things is a little lower than usual, not a big change though", mark target_relevant=true for item 21.
 - If the detector asked about sexual interest and the reply is "That side of things has been fine" or "That has not really been an issue", mark target_relevant=false for item 21.
-- If the detector asked about appetite, require direct appetite/eating change evidence such as "I'm not eating at all", "I'm eating much less than usual", or "I'm just grabbing junk because I can't be bothered." Do not mark appetite relevant for generic fatigue, chores, or "everything feels heavier" alone.
+- If the detector asked about appetite, require direct appetite/eating change evidence such as "I'm not eating at all", "I'm eating much less than usual", "I'm just grabbing junk because I can't be bothered", or explicit variability phrasing like "it's been up and down", "not clearly one direction", or "some days food sounds fine and other days I barely bother." Do not mark appetite relevant for generic fatigue, chores, or "everything feels heavier" alone.
+- If the detector asked about sleep, mark target_relevant=true for mixed sleep-instability phrasing like "sleep is a mess", "I'm up all night or sleeping too much", or "I wake in the night and can't get back to sleep."
+- For module-3 items, softer self-evaluation language like "I've lost confidence in myself", "I'm hard on myself", "I keep thinking I should be doing better", or "I second-guess everything" is still relevant evidence.
+- If the detector asked about sadness and the reply says it is "more irritability than sadness", mark target_relevant=true for the irritability sibling if it is in allowed_item_ids.
+- If the detector asked about energy or interest and the reply says "it is a bit of both" or "both show up", mark target_relevant=true for the in-scope sibling symptom named by the reply rather than leaving it unsupported.
 - Reserve target_relevant=false for explicit denial, explicit no-change, or clearly unrelated/logistical replies.
 - Do not treat generic stress, pressure, busyness, or feeling behind as module-3 evidence unless the reply also contains explicit self-judgment, guilt, shame, blame, failure, or worthlessness language.
 - Do not emit markdown, prose, headings, or trailing text.
@@ -188,6 +134,8 @@ Examples:
 - If the detector asked about sexual interest and the reply is "That side of things is a little lower than usual, not a big change though", return target_relevant=true.
 - If the detector asked about sexual interest and the reply is "That side of things has been fine" or "That has not really been an issue", return target_relevant=false.
 - If the detector asked about appetite and the reply is "I'm not eating at all or just grabbing junk because I can't be bothered", return target_relevant=true.
+- If the detector asked about appetite and the reply is "it's been up and down" or "some days food sounds fine and other days I barely bother", return target_relevant=true.
+- If the detector asked about sleep and the reply is "sleep is a mess, I'm up all night or sleeping too much", return target_relevant=true.
 - If the reply is "not really, things feel about normal", return target_relevant=false.
 - If the detector asked about appetite and the reply is "I haven't noticed anything different there", return target_relevant=false.
 - If the reply is only "work has just been busy" or "everything feels heavier" without self-blame, self-judgment, or direct appetite change language, return target_relevant=false.
@@ -227,14 +175,19 @@ Constraints:
 - Never omit an allowed item from the scores list.
 - Do not score any item outside allowed_item_ids.
 - Prefer candidate_item_ids when supported by the message, but still score all allowed items.
-- For indirect but plausible in-scope signals, set supported=true with low confidence/low intensity instead of marking the item unsupported.
+- For indirect but plausible in-scope signals, set supported=true with low confidence/low intensity only when the reply still names or concretely describes the symptom. Generic uncertainty alone is not enough.
 - For module-3 items, treat explicit self-blame, guilt, shame, failure, self-dislike, self-criticalness, burden, or worthlessness language as support even when phrased indirectly or conversationally.
 - If allowed_item_ids include item 14, prefer worthlessness support when the reply is specifically about burden, mattering, worth, contribution, or identity-level failure, such as "I feel like a burden", "I do not contribute anything that matters", "I feel like a failure", or "I do not like who I am right now."
 - If allowed_item_ids include item 14 and the reply is only "It is my own fault" without worth or identity language, prefer guilt/self-blame items rather than item 14.
 - If allowed_item_ids include item 21 and the detector question is explicitly about sexual interest, treat direct mild decrease phrasing like "That side of things is a little lower than usual, not a big change though" or "To put it simply, that side of things is a little lower than usual, not a big change though" as supported=true with low confidence/intensity.
 - If allowed_item_ids include item 21 and the detector question is explicitly about sexual interest, keep item 21 supported=false for direct no-change replies like "That side of things has been fine" or "That has not really been an issue."
-- If allowed_item_ids include item 18, require direct appetite or eating change evidence. Keep item 18 supported=false for generic heaviness, fatigue, chores, or stress unless the reply explicitly describes appetite/eating change.
+- If allowed_item_ids include item 18, require direct appetite or eating change evidence. Keep item 18 supported=false for generic heaviness, fatigue, chores, or stress unless the reply explicitly describes appetite/eating change, including variability language like "it's been up and down", "not clearly one direction", or "some days food sounds fine and other days I barely bother."
+- If allowed_item_ids include item 16 and the detector question is about sleep, treat mixed sleep-instability phrasing like "sleep is a mess", "I'm up all night or sleeping too much", or "I wake in the night and can't get back to sleep" as supported=true with low-to-moderate confidence/intensity rather than unsupported.
+- For module-3 items, softer self-evaluation phrasing like "I've lost confidence in myself", "I'm hard on myself", "I keep thinking I should be doing better", or "I second-guess everything" still counts as support.
+- If the detector asked about sadness and the reply says it is "more irritability than sadness", support the irritability sibling if it is in allowed_item_ids.
+- If the detector asked about energy or interest and the reply says "it is a bit of both" or "both show up", support the in-scope sibling symptom named by the reply with low confidence rather than leaving it unsupported.
 - For module-3 items, do not map generic stress, busyness, pressure, or "everything feels heavier" to support unless the message also contains explicit self-evaluation, guilt, blame, shame, failure, or worthlessness language.
+- Do not treat phrases like "it seems a little different", "there has been some shift", "it feels a bit off compared with usual", or "it is hard to be exact" as support by themselves unless the reply also includes symptom-specific language, a concrete functional example, or a direct symptom-linked change from baseline.
 - Reserve supported=false for true denial, no-change, or unrelated/logistical content for that item.
 - symptom_name must be the exact canonical BDI label for the chosen item_id.
 - intensity must be in [0, 3], confidence in [0, 1].
@@ -253,7 +206,12 @@ Examples:
 - If the detector asked about sexual interest and the reply is "That side of things is a little lower than usual, not a big change though", mark item 21 supported=true with low confidence/intensity rather than unsupported.
 - If the detector asked about sexual interest and the reply is "That side of things has been fine" or "That has not really been an issue", keep item 21 supported=false.
 - If the detector asked about appetite and the reply is "I'm not eating at all or just grabbing junk because I can't be bothered", mark item 18 supported=true.
+- If the detector asked about appetite and the reply is "it's been up and down rather than clearly one direction" or "some days food sounds fine and other days I barely bother", mark item 18 supported=true with low-to-moderate confidence/intensity.
 - If the detector asked about appetite and the reply is "I haven't noticed anything different there", keep item 18 supported=false.
+- If the detector asked about sleep and the reply is "sleep is a mess, I'm up all night or sleeping too much", mark item 16 supported=true with low-to-moderate confidence/intensity.
+- If the allowed items include self-dislike or self-criticalness and the reply is "I've lost confidence in myself" or "I keep thinking I should be doing better", mark the matching module-3 item supported=true with low confidence rather than unsupported.
+- If the detector asked about sadness and the reply is "it leans more toward irritability than outright sadness", support the irritability sibling if it is in allowed_item_ids.
+- If the detector asked about energy or interest and the reply is "it is a bit of both, honestly; starting things takes more effort and I get less out of them once I do", support the in-scope sibling symptom named by the reply with low confidence rather than unsupported.
 - If the allowed items include module-3 and the reply is only "work has been stressful" or "everything feels heavier" without self-judgment, keep the module-3 items supported=false.
 - If the reply is "not really, everything feels about normal", return the full scores list with every allowed item marked supported=false.
 
@@ -364,22 +322,15 @@ Latest persona message:
 }
 
 
-def _prompt_version(version: str | None = None) -> str:
-    resolved = (version or os.getenv("PROMPT_VERSION", "v1")).strip().lower()
-    return resolved if resolved in PROMPT_REGISTRY else "v1"
-
-
-def get_prompt(key: str, version: str | None = None) -> str:
-    v = _prompt_version(version)
-    value = PROMPT_REGISTRY[v].get(key)
+def get_prompt(key: str) -> str:
+    value = PROMPT_REGISTRY.get(key)
     if isinstance(value, str):
         return value
     return ""
 
 
-def get_fallback_questions(node_name: str, version: str | None = None) -> List[str]:
-    v = _prompt_version(version)
-    value = PROMPT_REGISTRY[v].get("fallback_questions", {})
+def get_fallback_questions(node_name: str) -> List[str]:
+    value = PROMPT_REGISTRY.get("fallback_questions", {})
     if isinstance(value, dict):
         options = value.get(node_name, [])
         if isinstance(options, list):

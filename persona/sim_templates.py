@@ -150,6 +150,367 @@ NEUTRAL_CONTEXT_ANCHORS: List[str] = [
     "I manage my inbox at a reasonable pace",
 ]
 
+CONTEXT_TAG_ANCHORS: Dict[str, List[str]] = {
+    "workload": [
+        "deadlines pile up faster than I can clear them",
+        "my work queue keeps growing even when I stay on top of it",
+        "small tasks at work take more effort than they should",
+    ],
+    "school": [
+        "coursework and studying take up a lot more mental space lately",
+        "assignments hang over me even when I try to switch off",
+        "keeping up with classes and deadlines feels heavier than usual",
+    ],
+    "caregiving": [
+        "other people's needs tend to take the front seat most days",
+        "keeping everyone else afloat leaves me with less room to recover",
+        "home responsibilities eat up a lot of my energy lately",
+    ],
+    "relationship_strain": [
+        "tension at home keeps bleeding into the rest of the day",
+        "relationship stress tends to sit in the background all day",
+        "feeling disconnected from people close to me makes everything feel harder",
+    ],
+    "health_stress": [
+        "physical discomfort makes it harder to tell where the stress stops",
+        "health stuff has been sitting in the background a lot lately",
+        "worrying about my body adds another layer to the day",
+    ],
+    "financial_pressure": [
+        "money stress keeps humming in the background most days",
+        "budget worries follow me through pretty ordinary decisions",
+        "finances make everything feel less flexible than it used to",
+    ],
+    "social_isolation": [
+        "I spend a lot more time on my own than I mean to",
+        "feeling cut off from people makes the days run together",
+        "even when people are around I still feel a bit on my own",
+    ],
+    "routine_stable": [
+        "my routine is still pretty steady overall",
+        "the basic shape of my days has stayed fairly consistent",
+        "there's still a decent structure to most days for me",
+    ],
+}
+
+NEUTRAL_CONTEXT_TAG_ANCHORS: Dict[str, List[str]] = {
+    "workload": [
+        "work has been busy but still manageable",
+        "deadlines are there, but I can keep pace with them",
+    ],
+    "school": [
+        "classes and coursework feel pretty manageable right now",
+        "school takes time, but it still feels workable",
+    ],
+    "caregiving": [
+        "family responsibilities feel busy but still manageable",
+        "home responsibilities take time, but they feel steady enough",
+    ],
+    "relationship_strain": [
+        "things with people close to me feel pretty stable overall",
+        "relationship stress has not really been a big factor lately",
+    ],
+    "health_stress": [
+        "health-wise things feel pretty steady right now",
+        "physical stuff is not taking up much headspace lately",
+    ],
+    "financial_pressure": [
+        "money is something I watch, but it does not feel overwhelming",
+        "financially things feel stable enough day to day",
+    ],
+    "social_isolation": [
+        "I still feel connected enough to people around me",
+        "socially things feel pretty normal for me",
+    ],
+    "routine_stable": [
+        "my routine still feels pretty balanced",
+        "day-to-day structure is still working for me",
+    ],
+}
+
+STYLE_OPENERS: Dict[str, List[str]] = {
+    "terse_guarded": [
+        "Honestly,",
+        "If I keep it short,",
+        "Short version,",
+        "Plainly,",
+    ],
+    "contextual_reflective": [
+        "When I think about it,",
+        "If I put it in context,",
+        "Looking at the last couple of weeks,",
+        "What I notice most is,",
+    ],
+    "minimizing_practical": [
+        "Practically speaking,",
+        "Functionally,",
+        "Day to day,",
+        "In concrete terms,",
+    ],
+    "open_but_flat": [
+        "Pretty simply,",
+        "To be direct,",
+        "The straightforward version is,",
+        "Mostly,",
+    ],
+    "hedged_uncertain": [
+        "I think,",
+        "Maybe,",
+        "It's hard to say exactly, but",
+        "If I'm being real,",
+    ],
+}
+
+STYLE_DEFLECTORS: Dict[str, List[str]] = {
+    "terse_guarded": [
+        "I'd rather stick to the practical part than labels.",
+        "Labels are not really how I think about it.",
+    ],
+    "contextual_reflective": [
+        "It's easier for me to explain the pattern than label it.",
+        "I can talk through the context more easily than the label.",
+    ],
+    "minimizing_practical": [
+        "I can explain the day-to-day impact better than the label.",
+        "I usually think about what changed practically, not labels.",
+    ],
+    "open_but_flat": [
+        "I can describe it directly, just not in diagnosis terms.",
+        "Examples are easier for me than labels.",
+    ],
+    "hedged_uncertain": [
+        "I'm not great with labels, but I can describe what it feels like.",
+        "It's easier to talk about the experience than the label for me.",
+    ],
+}
+
+ALL_CONTEXT_ANCHORS: List[str] = CONTEXT_ANCHORS + [
+    anchor
+    for anchors in CONTEXT_TAG_ANCHORS.values()
+    for anchor in anchors
+] + NEUTRAL_CONTEXT_ANCHORS + [
+    anchor
+    for anchors in NEUTRAL_CONTEXT_TAG_ANCHORS.values()
+    for anchor in anchors
+]
+
+RESPONSE_QUALIFIERS: List[str] = [
+    "I think",
+    "I guess",
+    "maybe",
+    "mostly",
+    "a bit",
+    "to be honest",
+]
+
+BASELINE_COMPARISON_PHRASES: Dict[int, List[str]] = {
+    0: [
+        "compared with usual, that part feels about the same",
+        "relative to my normal baseline, I haven't noticed much shift there",
+    ],
+    1: [
+        "it's a little more noticeable than usual",
+        "there's a small change compared with how I usually am",
+    ],
+    2: [
+        "it's been more of a problem than it used to be",
+        "it's definitely showing up more than it normally would",
+    ],
+    3: [
+        "it's there most days now, not just once in a while",
+        "it's become a pretty steady part of the last couple of weeks",
+    ],
+}
+
+SOFT_DENIAL_PHRASES: List[str] = [
+    "that part feels pretty close to normal for me",
+    "I haven't noticed much change there compared with usual",
+    "that's not really the part that's shifted the most",
+    "that one has stayed mostly the same",
+]
+
+OPENING_SUMMARY_BANK: Dict[str, List[str]] = {
+    "somatic_fatigue_sleep": [
+        "the main change has been energy and sleep both feeling off lately",
+        "what stands out most is how drained I feel and how uneven sleep has gotten",
+    ],
+    "appetite_variability": [
+        "my routine around food and basic upkeep has been less steady than usual",
+        "the physical side has felt less predictable, especially with appetite and day-to-day rhythm",
+    ],
+    "interest_withdrawal": [
+        "motivation has been lower and it takes more effort to stay engaged in things",
+        "I can still show up, but interest and enjoyment drop off pretty quickly",
+    ],
+    "irritability_tension": [
+        "I have been more on edge and easier to set off than usual",
+        "the biggest shift is probably how tense and irritable I feel through the day",
+    ],
+    "cognitive_self_eval": [
+        "I have been pretty hard on myself and stuck in my own head lately",
+        "a lot of it feels tied to second-guessing myself and feeling down on who I am",
+    ],
+    "focus_decision": [
+        "it has been easier to get mentally bogged down and harder to stay on top of decisions",
+        "my head feels more cluttered lately, especially with focus and small choices",
+    ],
+    "hopeless_risk": [
+        "the bigger change is that things have felt heavier and darker lately",
+        "I have had a harder time feeling hopeful or steady lately",
+    ],
+}
+
+CONTROL_OPENING_SUMMARY_BANK: List[str] = [
+    "mostly it has felt like stress and routine pressure more than anything severe",
+    "it has been more of a general strain than one specific thing taking over",
+    "the main change has been feeling a bit worn down, but still mostly steady overall",
+]
+
+CONTRASTIVE_NEGATIVE_BANK: Dict[str, List[str]] = {
+    "sadness_vs_irritability": [
+        "not so much sadness, more irritability and feeling worn down lately",
+        "it is less sadness and more that I feel on edge and worn out",
+    ],
+    "interest_vs_energy": [
+        "it is less that I do not care and more that everything takes extra effort lately",
+        "interest is not the main issue there, it is more exhaustion and effort",
+    ],
+    "appetite_vs_fatigue": [
+        "appetite itself is not the main thing; it is more the fatigue and routine feeling off",
+        "it is less about appetite and more that my whole day feels worn down",
+    ],
+    "sleep_vs_focus": [
+        "it is less that exact symptom and more that sleep and mental pace have both been off",
+        "not so much that specific piece, more that my sleep and focus have been uneven",
+    ],
+}
+
+QUALIFIED_UNSURE_PHRASES: List[str] = [
+    "I haven't tracked it that closely, but it seems a little different",
+    "it's hard to be exact, though I think there has been some shift",
+    "I'm not completely sure, but it feels at least a bit off compared with usual",
+]
+
+MINIMIZATION_FRAGMENTS: List[str] = [
+    "I keep telling myself it's probably just stress",
+    "I know it sounds smaller when I say it out loud",
+    "part of me still tries to brush it off as a rough patch",
+    "I try to tell myself it should be manageable, even if it doesn't feel that way",
+]
+
+ITEM_CONCRETE_EXAMPLES: Dict[int, List[str]] = {
+    1: [
+        "I get home and just sink into the couch instead of doing much of anything",
+        "even normal parts of the day feel heavier than they used to",
+    ],
+    4: [
+        "I still pick up hobbies sometimes, but the spark drops out fast",
+        "I can go through the motions of something I used to enjoy and still feel flat afterward",
+    ],
+    10: [
+        "small things can suddenly make me tear up",
+        "I'll catch myself crying over something that normally would not hit me that hard",
+    ],
+    11: [
+        "little annoyances like noise or traffic get under my skin fast",
+        "I can feel keyed up in my body even when I try to sit still",
+    ],
+    12: [
+        "messages stack up and I keep putting off answering them",
+        "I find myself turning down plans I normally would have said yes to",
+    ],
+    13: [
+        "I can stand there over a small decision longer than makes sense",
+        "simple choices take more mental energy than they should",
+    ],
+    14: [
+        "I keep landing on the feeling that I am letting people down",
+        "it is hard not to feel like I am falling short of who I should be",
+    ],
+    15: [
+        "getting out of bed or starting the first task takes too much effort",
+        "I can sit there knowing what needs to happen and still struggle to begin",
+    ],
+    16: [
+        "I wake in the night and end up lying there for a while",
+        "sleep breaks up enough that the next day feels off before it starts",
+    ],
+    17: [
+        "small inconveniences can make me sharper with people than I mean to be",
+        "I notice myself getting short over things that would not normally bother me much",
+    ],
+    18: [
+        "some days food sounds fine and other days I barely bother with it",
+        "eating has felt more inconsistent than usual lately",
+    ],
+    19: [
+        "I can reread the same page and still not really absorb it",
+        "my attention slips out from under me in the middle of simple tasks",
+    ],
+    20: [
+        "by the afternoon it feels like I have already used up the day's energy",
+        "even after rest I still feel wrung out more than usual",
+    ],
+    21: [
+        "that side of things feels lower than it usually would",
+        "interest in closeness has dropped off compared with my normal baseline",
+    ],
+}
+
+CONTEXT_RESPONSE_EXAMPLES: Dict[str, List[str]] = {
+    "workload": [
+        "deadlines and follow-ups seem to pile up faster than I can clear them",
+        "the workday can feel heavier before it even really gets going",
+    ],
+    "school": [
+        "coursework stays in my head even when I try to switch off",
+        "assignments take up more mental space than they used to",
+    ],
+    "caregiving": [
+        "looking after everyone else can leave me with not much left for myself",
+        "home responsibilities take up a lot of bandwidth before the day is even half done",
+    ],
+    "relationship_strain": [
+        "tension at home bleeds into the rest of the day more than I want it to",
+        "it is harder to feel settled when things feel strained with people close to me",
+    ],
+    "health_stress": [
+        "physical discomfort adds another layer to how drained everything feels",
+        "worrying about my body makes it harder to tell where the stress really starts",
+    ],
+    "financial_pressure": [
+        "money worries can sit behind even ordinary decisions lately",
+        "budget stress keeps humming in the background of normal days",
+    ],
+    "social_isolation": [
+        "I can go through whole stretches of the day feeling cut off from people",
+        "even when messages come in, I often do not have much in me to answer them",
+    ],
+    "routine_stable": [
+        "the structure of the day is still there even if I feel a bit off inside it",
+        "my routine is intact, even if parts of it feel less automatic than usual",
+    ],
+}
+
+PARTIAL_ANSWER_BANK: Dict[str, List[str]] = {
+    "tone_balance": [
+        "it is less pure sadness and more that I feel worn down and irritable",
+        "if I had to choose, it leans more toward irritability than outright sadness",
+    ],
+    "energy_interest": [
+        "it is a bit of both, honestly; starting things takes more effort and I get less out of them once I do",
+        "both show up; the energy is low and the interest fades quickly once I begin",
+    ],
+    "slowed_restless": [
+        "mostly I feel heavy, but there is still a restless edge underneath it sometimes",
+        "it is a mix; I can feel slowed down and still kind of keyed up at the same time",
+    ],
+    "appetite_variability": [
+        "it has been up and down rather than clearly one direction the whole time",
+        "it is not completely steady; some days are lower and some feel more normal",
+    ],
+}
+
 RISK_RESPONSE_BANK: Dict[int, List[str]] = {
     0: [
         "I have not had thoughts about doing anything to hurt myself",
@@ -216,7 +577,7 @@ NEUTRAL_ITEM_CONTEXT_HINTS: Dict[int, List[str]] = {
 
 ITEM_SENTENCE_BANK: Dict[int, Dict[int, str]] = {
     1: {
-        1: "I feel a bit sad sometimes, but it passes pretty quickly",
+        1: "I feel low sometimes, but it passes pretty quickly",
         2: "most days there's this heaviness I can't really shake off",
         3: "the low mood is constant, like I'm walking around with a cloud over my head",
     },
@@ -231,7 +592,7 @@ ITEM_SENTENCE_BANK: Dict[int, Dict[int, str]] = {
         3: "everything I look back on feels like a string of mistakes I can't fix",
     },
     4: {
-        1: "some things don't feel quite as fun as they used to, but I still enjoy most stuff",
+        1: "some things feel flatter, but I still enjoy most stuff",
         2: "I still do stuff but it feels more like a chore than something I actually want to do",
         3: "even things that should make me happy just feel empty, you know?",
     },
@@ -286,7 +647,7 @@ ITEM_SENTENCE_BANK: Dict[int, Dict[int, str]] = {
         3: "I genuinely feel worthless, like I don't contribute anything that matters",
     },
     15: {
-        1: "it takes a little more effort to get going than it used to",
+        1: "it takes more effort to get going lately",
         2: "I have to force myself to do basic things, like I'm pushing through mud",
         3: "even getting out of bed is a battle, everything takes so much energy",
     },
@@ -301,7 +662,7 @@ ITEM_SENTENCE_BANK: Dict[int, Dict[int, str]] = {
         3: "I'm irritable all the time, like I'm walking around with a short fuse",
     },
     18: {
-        1: "my appetite has been slightly off but nothing major",
+        1: "my appetite has been off in small ways, nothing major",
         2: "I'm either not eating at all or just grabbing junk because I can't be bothered",
         3: "food doesn't interest me at all, I just forget to eat and then feel worse",
     },
@@ -311,12 +672,12 @@ ITEM_SENTENCE_BANK: Dict[int, Dict[int, str]] = {
         3: "my concentration is shot, I can't follow a conversation without zoning out",
     },
     20: {
-        1: "I notice I'm a bit more tired than usual by the end of the day",
+        1: "I get more worn down by the end of the day",
         2: "I feel like I'm running on fumes, just dragging myself through the day",
         3: "I'm exhausted from the moment I wake up, like I haven't slept at all",
     },
     21: {
-        1: "that side of things is a little lower than usual, not a big change though",
+        1: "that side of things feels a little lower lately, but not in a dramatic way",
         2: "I used to enjoy it but now it just feels like another thing I should be doing",
         3: "interest in that is basically gone, I can't even muster the energy to think about it",
     },

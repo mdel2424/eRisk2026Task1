@@ -24,7 +24,6 @@ def run_tune(
     tune_max_api_calls: int,
     tune_save_diagnostics: bool,
     tune_trace_level: str,
-    tune_prompt_version: str,
     tune_top_k: int,
     debug_outputs: bool = False,
 ) -> None:
@@ -82,7 +81,6 @@ def run_tune(
             result = run_eval(
                 persona_count=tune_personas,
                 seed=seed,
-                prompt_version=tune_prompt_version,
                 save_diagnostics=tune_save_diagnostics,
                 max_api_calls=tune_max_api_calls,
                 trace_level=tune_trace_level,
@@ -277,7 +275,6 @@ def run_tune(
             "tune_personas": tune_personas,
             "tune_seed": tune_seed,
             "tune_max_api_calls": tune_max_api_calls,
-            "tune_prompt_version": tune_prompt_version,
             "tune_top_k": tune_top_k,
             "debug_outputs": bool(debug_outputs),
         },

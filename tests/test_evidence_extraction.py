@@ -285,7 +285,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -315,7 +315,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
         )
         fake_llm = _FakeLLM([])
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -336,7 +336,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
         )
         fake_llm = _FakeLLM([])
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -371,7 +371,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -415,7 +415,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -463,7 +463,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -499,7 +499,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -523,7 +523,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -565,7 +565,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -623,7 +623,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -661,7 +661,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -721,7 +721,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -740,7 +740,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
 
         with patch.dict(
             os.environ,
-            {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "0", "EXTRACTOR_MIN_RECORDS_TARGET": "1"},
+            {"EVIDENCE_LLM_ON_LEXICAL_HIT": "0", "EXTRACTOR_MIN_RECORDS_TARGET": "1"},
             clear=False,
         ):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
@@ -788,7 +788,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -826,7 +826,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -863,7 +863,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=item1_llm):
                 item1_result = extract_likelihoods(item1_state)
 
@@ -902,7 +902,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
 
         with patch.dict(
             os.environ,
-            {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1", "EXTRACT_ITEM1_STRICT_GATE": "1"},
+            {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1", "EXTRACT_ITEM1_STRICT_GATE": "1"},
             clear=False,
         ):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
@@ -938,7 +938,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -972,7 +972,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -995,7 +995,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -1020,7 +1020,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -1055,7 +1055,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -1081,7 +1081,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -1109,7 +1109,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -1133,7 +1133,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -1159,7 +1159,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -1183,7 +1183,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -1219,6 +1219,104 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
         self.assertEqual(int(stats["detail_item21_direct_denial_blocked"]), 1)
         self.assertEqual(int(stats["detail_item21_mild_direct_keep_applied"]), 0)
 
+    def test_generic_ambiguous_shift_alone_does_not_produce_support(self) -> None:
+        records, stats = _records_from_scored_items(
+            json.loads(
+                _scored_payload(
+                    [13, 19],
+                    supported={
+                        13: {
+                            "confidence": 0.42,
+                            "intensity": 1.0,
+                            "anchor_quote": "seems a little different",
+                            "reason": "generic shift only",
+                        }
+                    },
+                )
+            )["scores"],
+            allowed_item_ids=[13, 19],
+            node_name="cognitive",
+            turn=1,
+            latest_message="I haven't tracked it that closely, but it seems a little different.",
+            key_aliases_enabled=True,
+            strict_schema_coerce=True,
+            item1_strict_gate=False,
+            item1_weak_max_conf=0.55,
+            item1_weak_max_intensity=1.5,
+            method_override="llm_extractor",
+            stats_prefix="detail",
+            current_detector_question="In the past two weeks, how often has concentration been harder than usual?",
+        )
+
+        self.assertEqual(records, [])
+        self.assertEqual(int(stats["detail_generic_shift_blocked_count"]), 1)
+
+    def test_generic_ambiguous_shift_with_concrete_symptom_example_can_still_survive(self) -> None:
+        records, stats = _records_from_scored_items(
+            json.loads(
+                _scored_payload(
+                    [13, 19],
+                    supported={
+                        13: {
+                            "confidence": 0.50,
+                            "intensity": 1.2,
+                            "anchor_quote": "keep rereading the same page",
+                            "reason": "concentration difficulty",
+                        }
+                    },
+                )
+            )["scores"],
+            allowed_item_ids=[13, 19],
+            node_name="cognitive",
+            turn=1,
+            latest_message=(
+                "I haven't tracked it that closely, but it seems a little different and I keep rereading the same page."
+            ),
+            key_aliases_enabled=True,
+            strict_schema_coerce=True,
+            item1_strict_gate=False,
+            item1_weak_max_conf=0.55,
+            item1_weak_max_intensity=1.5,
+            method_override="llm_extractor",
+            stats_prefix="detail",
+            current_detector_question="In the past two weeks, how often has concentration been harder than usual?",
+        )
+
+        self.assertEqual([int(record.item_id) for record in records], [13])
+        self.assertEqual(int(stats["detail_generic_shift_with_symptom_kept_count"]), 1)
+
+    def test_generic_ambiguous_shift_does_not_support_module_three_without_self_evaluation_language(self) -> None:
+        records, stats = _records_from_scored_items(
+            json.loads(
+                _scored_payload(
+                    [5, 7, 8, 14],
+                    supported={
+                        14: {
+                            "confidence": 0.40,
+                            "intensity": 1.0,
+                            "anchor_quote": "some shift",
+                            "reason": "generic uncertainty only",
+                        }
+                    },
+                )
+            )["scores"],
+            allowed_item_ids=[5, 7, 8, 14],
+            node_name="cognitive",
+            turn=1,
+            latest_message="It's hard to be exact, though I think there has been some shift.",
+            key_aliases_enabled=True,
+            strict_schema_coerce=True,
+            item1_strict_gate=False,
+            item1_weak_max_conf=0.55,
+            item1_weak_max_intensity=1.5,
+            method_override="llm_extractor",
+            stats_prefix="detail",
+            current_detector_question="In the past two weeks, how often have you felt badly about yourself?",
+        )
+
+        self.assertEqual(records, [])
+        self.assertEqual(int(stats["detail_generic_shift_blocked_count"]), 1)
+
     def test_v2_item18_heavier_language_without_appetite_change_is_rejected(self) -> None:
         allowed_item_ids = [16, 18]
         state = _extract_state(
@@ -1245,7 +1343,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -1280,7 +1378,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -1314,13 +1412,147 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
         trace = result["turn_trace"]["extract_evidence"]
         self.assertEqual([int(record.item_id) for record in result["latest_turn_evidence"]], [18])
         self.assertTrue(bool(trace["detail_item18_change_signal_match"]))
+
+    def test_v2_item18_variability_phrase_now_survives(self) -> None:
+        allowed_item_ids = [16, 18]
+        state = _extract_state(
+            route="somatic",
+            target_item_id=18,
+            target_module_id=6,
+            latest_message="A bit, it has been up and down rather than clearly one direction the whole time.",
+            previous_question="In the past two weeks, how often have you noticed a change in your appetite compared with your usual eating habits?",
+        )
+        fake_llm = _FakeLLM(
+            [
+                '{"target_relevant": true, "candidate_item_ids": [18], "anchor_quote": "up and down", "confidence": 0.64, "reason": "explicit appetite variability"}',
+                _scored_payload(allowed_item_ids),
+            ]
+        )
+
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+            with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
+                result = extract_likelihoods(state)
+
+        trace = result["turn_trace"]["extract_evidence"]
+        records = result["latest_turn_evidence"]
+        self.assertEqual([int(record.item_id) for record in records], [18])
+        self.assertTrue(bool(trace["detail_item18_change_signal_match"]))
+        self.assertTrue(bool(trace["detail_item18_variability_match"]))
+
+    def test_v2_item16_mixed_sleep_instability_phrase_survives(self) -> None:
+        allowed_item_ids = [11, 15, 16, 20]
+        state = _extract_state(
+            route="somatic",
+            target_item_id=16,
+            target_module_id=6,
+            latest_message="Sleep is a mess, I'm up all night or sleeping too much and still tired.",
+            previous_question="In the past two weeks, how often have you had trouble falling asleep or staying asleep compared with your usual pattern?",
+        )
+        fake_llm = _FakeLLM(
+            [
+                '{"target_relevant": true, "candidate_item_ids": [16], "anchor_quote": "sleep is a mess", "confidence": 0.68, "reason": "mixed sleep instability"}',
+                _scored_payload(allowed_item_ids),
+            ]
+        )
+
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+            with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
+                result = extract_likelihoods(state)
+
+        trace = result["turn_trace"]["extract_evidence"]
+        self.assertEqual([int(record.item_id) for record in result["latest_turn_evidence"]], [16])
+        self.assertTrue(bool(trace["detail_item16_sleep_instability_match"]))
+
+    def test_v2_item7_soft_self_evaluation_phrase_survives(self) -> None:
+        records, stats = _records_from_scored_items(
+            json.loads(_scored_payload([5, 7, 8, 14]))["scores"],
+            allowed_item_ids=[5, 7, 8, 14],
+            node_name="cognitive",
+            turn=1,
+            latest_message="I've lost confidence in myself lately.",
+            key_aliases_enabled=True,
+            strict_schema_coerce=True,
+            item1_strict_gate=False,
+            item1_weak_max_conf=0.55,
+            item1_weak_max_intensity=1.5,
+            method_override="llm_extractor",
+            stats_prefix="detail",
+            current_detector_question="In the past two weeks, how often have you felt badly about yourself?",
+        )
+
+        self.assertEqual([int(record.item_id) for record in records], [7])
+        self.assertEqual(int(stats["detail_item7_soft_self_evaluation_applied"]), 1)
+
+    def test_v2_item8_soft_self_criticism_phrase_survives(self) -> None:
+        records, stats = _records_from_scored_items(
+            json.loads(_scored_payload([5, 7, 8, 14]))["scores"],
+            allowed_item_ids=[5, 7, 8, 14],
+            node_name="cognitive",
+            turn=1,
+            latest_message="I keep thinking I should be doing better and I second-guess everything.",
+            key_aliases_enabled=True,
+            strict_schema_coerce=True,
+            item1_strict_gate=False,
+            item1_weak_max_conf=0.55,
+            item1_weak_max_intensity=1.5,
+            method_override="llm_extractor",
+            stats_prefix="detail",
+            current_detector_question="In the past two weeks, how often have you been hard on yourself or critical of your choices?",
+        )
+
+        self.assertEqual([int(record.item_id) for record in records], [8])
+        self.assertEqual(int(stats["detail_item8_soft_self_criticism_applied"]), 1)
+
+    def test_v2_sadness_contrastive_reply_supports_irritability_sibling_when_in_scope(self) -> None:
+        allowed_item_ids = [1, 4, 10, 12, 17]
+        state = _extract_state(
+            route="cognitive",
+            target_item_id=1,
+            target_module_id=1,
+            latest_message="If I had to choose, it leans more toward irritability than outright sadness.",
+            previous_question="In the last two weeks, how often have you felt sad—like a few days, most days, or nearly every day?",
+        )
+        fake_llm = _FakeLLM(
+            [
+                '{"target_relevant": true, "candidate_item_ids": [17], "anchor_quote": "more toward irritability", "confidence": 0.58, "reason": "contrastive sibling answer"}',
+                _scored_payload(allowed_item_ids),
+            ]
+        )
+
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+            with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
+                result = extract_likelihoods(state)
+
+        trace = result["turn_trace"]["extract_evidence"]
+        self.assertEqual([int(record.item_id) for record in result["latest_turn_evidence"]], [17])
+        self.assertTrue(bool(trace["detail_contrastive_sibling_support_applied"]))
+
+    def test_v2_sadness_contrastive_reply_does_not_inject_irritability_when_out_of_scope(self) -> None:
+        records, stats = _records_from_scored_items(
+            json.loads(_scored_payload([1, 4, 10, 12]))["scores"],
+            allowed_item_ids=[1, 4, 10, 12],
+            node_name="cognitive",
+            turn=1,
+            latest_message="If I had to choose, it leans more toward irritability than outright sadness.",
+            key_aliases_enabled=True,
+            strict_schema_coerce=True,
+            item1_strict_gate=False,
+            item1_weak_max_conf=0.55,
+            item1_weak_max_intensity=1.5,
+            method_override="llm_extractor",
+            stats_prefix="detail",
+            current_detector_question="In the last two weeks, how often have you felt sad—like a few days, most days, or nearly every day?",
+        )
+
+        self.assertEqual(records, [])
+        self.assertEqual(int(stats["detail_contrastive_sibling_support_applied"]), 0)
 
     def test_v2_scoped_module_four_rows_survive_post_validation(self) -> None:
         allowed_item_ids = [13, 19]
@@ -1347,7 +1579,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -1380,7 +1612,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -1419,7 +1651,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -1476,7 +1708,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -1518,7 +1750,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 result = extract_likelihoods(state)
 
@@ -1529,29 +1761,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
         self.assertEqual(int(trace["opportunistic_kept_items_count"]), 0)
         self.assertEqual(int(trace["opportunistic_dropped_weak_count"]), 1)
 
-    def test_v1_behavior_remains_callable(self) -> None:
-        state = _extract_state(
-            route="cognitive",
-            target_item_id=14,
-            target_module_id=3,
-            latest_message="I feel like a burden and worthless lately.",
-        )
-        fake_llm = _FakeLLM(
-            [
-                '{"evidence": [{"item_id": 14, "symptom_name": "Worthlessness", "direction": "increase", "intensity": 2.0, "confidence": 0.8, "evidence_text": "burden", "reason": "explicit worthlessness language"}]}'
-            ]
-        )
-
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v1", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
-            with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
-                result = extract_likelihoods(state)
-
-        trace = result["turn_trace"]["extract_evidence"]
-        self.assertEqual(trace["extractor_version"], "v1")
-        self.assertEqual(fake_llm.calls, 1)
-        self.assertEqual(int(result["latest_turn_evidence"][0].item_id), 14)
-
-    def test_belief_update_consumes_v2_rows_without_schema_change(self) -> None:
+    def test_belief_update_consumes_unified_rows_without_schema_change(self) -> None:
         allowed_item_ids = [3, 5, 6, 7, 8, 14]
         state = _extract_state(
             route="cognitive",
@@ -1576,7 +1786,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             ]
         )
 
-        with patch.dict(os.environ, {"PROMPT_VERSION": "v2", "EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
             with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
                 extracted = extract_likelihoods(state)
 

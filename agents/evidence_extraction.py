@@ -211,6 +211,26 @@ ITEM14_WORTHLESSNESS_PATTERNS = (
     re.compile(r"\bdo\s+not\s+contribute\b"),
 )
 
+ITEM16_SLEEP_QUESTION_PATTERNS = (
+    re.compile(r"\bsleep\b"),
+    re.compile(r"\bfall(?:ing)?\s+asleep\b"),
+    re.compile(r"\bstay(?:ing)?\s+asleep\b"),
+    re.compile(r"\bwake(?:ing|s|up)?\b"),
+)
+
+ITEM16_SLEEP_INSTABILITY_PATTERNS = (
+    re.compile(r"\bsleep\s+is\s+a\s+mess\b"),
+    re.compile(r"\bup\s+all\s+night\b"),
+    re.compile(r"\bsleeping\s+too\s+much\b"),
+    re.compile(r"\bwake(?:\s+up)?\s+in\s+the\s+(?:middle\s+of\s+the\s+)?night\b"),
+    re.compile(r"\bcan'?t\s+get\s+back\s+to\s+sleep\b"),
+    re.compile(r"\btrouble\s+falling\s+asleep\b"),
+    re.compile(r"\btrouble\s+staying\s+asleep\b"),
+    re.compile(r"\bsleep\s+breaks?\s+up\b"),
+    re.compile(r"\bwaking\s+early\b"),
+    re.compile(r"\bwake\s+in\s+the\s+night\b"),
+)
+
 ITEM21_SEXUAL_QUESTION_PATTERNS = (
     re.compile(r"\breduced\s+interest\s+in\s+sexual\s+activity\b"),
     re.compile(r"\blittle\s+or\s+no\s+interest\s+in\s+sexual\s+activity\b"),
@@ -255,6 +275,13 @@ ITEM18_APPETITE_SIGNAL_PATTERNS = (
     re.compile(r"\bfood\b"),
 )
 
+ITEM18_APPETITE_QUESTION_PATTERNS = (
+    re.compile(r"\bappetite\b"),
+    re.compile(r"\beat(?:ing)?\b"),
+    re.compile(r"\bmeals?\b"),
+    re.compile(r"\beating\s+habits\b"),
+)
+
 ITEM18_APPETITE_BASELINE_CHANGE_PATTERNS = (
     re.compile(r"\bmuch\s+less\b"),
     re.compile(r"\ba\s+little\s+less\b"),
@@ -268,12 +295,97 @@ ITEM18_APPETITE_BASELINE_CHANGE_PATTERNS = (
     re.compile(r"\bchange(?:d)?\b"),
 )
 
+ITEM18_APPETITE_VARIABILITY_PATTERNS = (
+    re.compile(r"\bup\s+and\s+down\b"),
+    re.compile(r"\bnot\s+clearly\s+one\s+direction\b"),
+    re.compile(r"\bnot\s+completely\s+steady\b"),
+    re.compile(r"\binconsistent(?:ly)?\b"),
+    re.compile(r"\bsome\s+days\s+food\s+sounds\s+fine\s+and\s+other\s+days\s+i\s+barely\s+bother\b"),
+    re.compile(r"\bsome\s+days\s+are\s+lower\s+and\s+some\s+feel\s+more\s+normal\b"),
+    re.compile(r"\beating\s+has\s+felt\s+more\s+inconsistent\b"),
+    re.compile(r"\bfood\s+sounds\s+fine\s+and\s+other\s+days\s+i\s+barely\s+bother\b"),
+)
+
 ITEM18_APPETITE_DYSFUNCTION_PATTERNS = (
     re.compile(r"\bnot\s+eating\s+at\s+all\b"),
     re.compile(r"\b(?:barely|hardly)\s+eat(?:ing)?\b"),
     re.compile(r"\bgrabbing\s+junk\b"),
     re.compile(r"\beat\s+because\s+i\s+have\s+to\b"),
     re.compile(r"\bmeals?\s+feel\s+more\s+like\s+a\s+chore\b"),
+)
+
+ITEM7_SOFT_SELF_EVALUATION_PATTERNS = (
+    re.compile(r"\blost\s+confidence\s+in\s+myself\b"),
+    re.compile(r"\bdon'?t\s+feel\s+good\s+about\s+myself\b"),
+    re.compile(r"\bdo\s+not\s+feel\s+good\s+about\s+myself\b"),
+)
+
+ITEM8_SOFT_SELF_CRITICISM_PATTERNS = (
+    re.compile(r"\bhard\s+on\s+myself\b"),
+    re.compile(r"\bshould\s+be\s+doing\s+better\b"),
+    re.compile(r"\bsecond[\s\-]?guess\s+everything\b"),
+    re.compile(r"\bi\s+second[\s\-]?guess\s+everything\b"),
+)
+
+GENERIC_AMBIGUOUS_SHIFT_PATTERNS = (
+    re.compile(r"\bseems?\s+a\s+little\s+different\b"),
+    re.compile(r"\bseems?\s+a\s+bit\s+different\b"),
+    re.compile(r"\bsome\s+shift\b"),
+    re.compile(r"\ba\s+bit\s+off\s+compared\s+with\s+usual\b"),
+    re.compile(r"\bfeels?\s+at\s+least\s+a\s+bit\s+off\s+compared\s+with\s+usual\b"),
+    re.compile(r"\bhard\s+to\s+be\s+exact\b"),
+    re.compile(r"\bit'?s\s+hard\s+to\s+be\s+exact\b"),
+)
+
+MODULE4_FUNCTIONAL_EXAMPLE_PATTERNS = (
+    re.compile(r"\bkeep\s+reread(?:ing)?\s+the\s+same\s+(?:page|line)\b"),
+    re.compile(r"\breread(?:ing)?\s+the\s+same\s+(?:page|line)\b"),
+    re.compile(r"\bforget\s+what\s+i\s+just\s+read\b"),
+    re.compile(r"\blose\s+track\s+(?:mid(?:-| )sentence|of\s+what\s+i'?m\s+doing)\b"),
+)
+
+ITEM1_SADNESS_QUESTION_PATTERNS = (
+    re.compile(r"\bsad(?:ness)?\b"),
+    re.compile(r"\bdeep\s+sense\s+of\s+sadness\b"),
+)
+
+ITEM17_IRRITABILITY_CONTRAST_PATTERNS = (
+    re.compile(r"\bmore\s+toward\s+irritability\b"),
+    re.compile(r"\bleans?\s+more\s+toward\s+irritability\b"),
+    re.compile(r"\bless\s+(?:pure\s+)?sad(?:ness)?\s+and\s+more\b.{0,24}\birrit"),
+    re.compile(r"\bnot\s+so\s+much\s+sad(?:ness)?\b.{0,24}\birrit"),
+)
+
+ENERGY_INTEREST_QUESTION_PATTERNS = (
+    re.compile(r"\benergy\b"),
+    re.compile(r"\bfatigue\b"),
+    re.compile(r"\binterest\b"),
+    re.compile(r"\benjoy(?:ment)?\b"),
+    re.compile(r"\bpleasure\b"),
+)
+
+ENERGY_INTEREST_MIXED_PATTERNS = (
+    re.compile(r"\bit\s+is\s+a\s+bit\s+of\s+both\b"),
+    re.compile(r"\bboth\s+show\s+up\b"),
+    re.compile(r"\benergy\s+is\s+low\b"),
+    re.compile(r"\binterest\s+fades\s+quickly\b"),
+    re.compile(r"\bget\s+less\s+out\s+of\s+them\s+once\s+i\s+do\b"),
+    re.compile(r"\btakes?\s+more\s+effort\b"),
+)
+
+ENERGY_SIGNAL_PATTERNS = (
+    re.compile(r"\benergy\s+is\s+low\b"),
+    re.compile(r"\black\s+of\s+energy\b"),
+    re.compile(r"\btakes?\s+more\s+effort\b"),
+    re.compile(r"\bstruggle\s+to\s+begin\b"),
+    re.compile(r"\bgetting\s+out\s+of\s+bed\b"),
+)
+
+INTEREST_SIGNAL_PATTERNS = (
+    re.compile(r"\binterest\s+fades\s+quickly\b"),
+    re.compile(r"\bget\s+less\s+out\s+of\s+them\s+once\s+i\s+do\b"),
+    re.compile(r"\bless\s+out\s+of\b"),
+    re.compile(r"\blittle\s+or\s+no\s+interest\b"),
 )
 
 MODULE4_STRONG_PATTERNS = (
@@ -355,10 +467,6 @@ def _previous_detector_question(state: AgentState) -> str:
         if msg.get("role") == "user":
             return str(msg.get("content", ""))
     return ""
-
-
-def _extractor_version() -> str:
-    return "v2" if os.getenv("PROMPT_VERSION", "v1").strip().lower() == "v2" else "v1"
 
 
 def _state_field(value: Any, key: str, default: Any) -> Any:
@@ -1007,6 +1115,14 @@ def _has_item14_identity_change_semantics(text: str) -> bool:
     return _has_any_pattern(text, ITEM14_IDENTITY_CHANGE_PATTERNS)
 
 
+def _is_item16_detector_question(question: str) -> bool:
+    return _has_any_pattern(question, ITEM16_SLEEP_QUESTION_PATTERNS)
+
+
+def _has_item16_sleep_instability_signal(text: str) -> bool:
+    return _has_any_pattern(text, ITEM16_SLEEP_INSTABILITY_PATTERNS)
+
+
 def _is_item21_detector_question(question: str) -> bool:
     return _has_any_pattern(question, ITEM21_SEXUAL_QUESTION_PATTERNS)
 
@@ -1019,14 +1135,130 @@ def _has_item21_direct_denial(text: str) -> bool:
     return _has_any_pattern(text, ITEM21_DIRECT_DENIAL_PATTERNS)
 
 
+def _is_item18_detector_question(question: str) -> bool:
+    return _has_any_pattern(question, ITEM18_APPETITE_QUESTION_PATTERNS)
+
+
+def _has_item18_variability_signal(text: str) -> bool:
+    return _has_any_pattern(text, ITEM18_APPETITE_VARIABILITY_PATTERNS)
+
+
+def _has_item7_soft_self_evaluation(text: str) -> bool:
+    return _has_any_pattern(text, ITEM7_SOFT_SELF_EVALUATION_PATTERNS)
+
+
+def _has_item8_soft_self_criticism(text: str) -> bool:
+    return _has_any_pattern(text, ITEM8_SOFT_SELF_CRITICISM_PATTERNS)
+
+
+def _is_sadness_detector_question(question: str) -> bool:
+    return _has_any_pattern(question, ITEM1_SADNESS_QUESTION_PATTERNS)
+
+
+def _has_irritability_contrast_signal(text: str) -> bool:
+    return _has_any_pattern(text, ITEM17_IRRITABILITY_CONTRAST_PATTERNS)
+
+
+def _is_energy_interest_question(question: str) -> bool:
+    return _has_any_pattern(question, ENERGY_INTEREST_QUESTION_PATTERNS)
+
+
+def _has_energy_interest_mixed_signal(text: str) -> bool:
+    return _has_any_pattern(text, ENERGY_INTEREST_MIXED_PATTERNS)
+
+
+def _contrastive_sibling_support_item_ids(*, allowed_item_ids: List[int], question: str, text: str) -> List[int]:
+    supported_item_ids: List[int] = []
+    if _is_sadness_detector_question(question) and _has_irritability_contrast_signal(text) and 17 in allowed_item_ids:
+        supported_item_ids.append(17)
+
+    if _is_energy_interest_question(question) and _has_energy_interest_mixed_signal(text):
+        if any(item_id in allowed_item_ids for item_id in (15, 20)) and _has_any_pattern(text, ENERGY_SIGNAL_PATTERNS):
+            for item_id in (15, 20):
+                if item_id in allowed_item_ids and item_id not in supported_item_ids:
+                    supported_item_ids.append(item_id)
+        if any(item_id in allowed_item_ids for item_id in (4, 12)) and _has_any_pattern(text, INTEREST_SIGNAL_PATTERNS):
+            for item_id in (4, 12):
+                if item_id in allowed_item_ids and item_id not in supported_item_ids:
+                    supported_item_ids.append(item_id)
+
+    return supported_item_ids
+
+
 def _item18_has_direct_change_signal(text: str, *, previous_question: str = "") -> bool:
+    appetite_question = _is_item18_detector_question(previous_question)
+    variability_signal = _has_item18_variability_signal(text)
     if _is_clear_no_symptom_reply(text, previous_question=previous_question):
         return False
-    if not _has_any_pattern(text, ITEM18_APPETITE_SIGNAL_PATTERNS):
+    has_appetite_signal = _has_any_pattern(text, ITEM18_APPETITE_SIGNAL_PATTERNS)
+    if not has_appetite_signal and not (appetite_question and variability_signal):
         return False
     if _has_any_pattern(text, ITEM18_APPETITE_DYSFUNCTION_PATTERNS):
         return True
+    if variability_signal:
+        return True
     return _has_any_pattern(text, ITEM18_APPETITE_BASELINE_CHANGE_PATTERNS)
+
+
+def _has_generic_ambiguous_shift(text: str) -> bool:
+    return _has_any_pattern(text, GENERIC_AMBIGUOUS_SHIFT_PATTERNS)
+
+
+def _has_scoped_symptom_or_example_signal(
+    *,
+    allowed_item_ids: Sequence[int],
+    text: str,
+    previous_question: str = "",
+) -> bool:
+    allowed = {int(item_id) for item_id in allowed_item_ids}
+
+    if 9 in allowed and _item9_precision_signal(text) != "none":
+        return True
+    if allowed.intersection({1, 4, 10, 12, 17}):
+        if _precision_signal_strength(
+            text,
+            strong_patterns=MODULE1_STRONG_PATTERNS,
+            weak_patterns=MODULE1_WEAK_PATTERNS,
+        ) != "none":
+            return True
+        if _has_irritability_contrast_signal(text) or _has_any_pattern(text, ENERGY_SIGNAL_PATTERNS) or _has_any_pattern(
+            text, INTEREST_SIGNAL_PATTERNS
+        ):
+            return True
+    if allowed.intersection(PRECISION_GUARD_MODULE3):
+        if _precision_signal_strength(
+            text,
+            strong_patterns=MODULE3_STRONG_PATTERNS,
+            weak_patterns=MODULE3_WEAK_PATTERNS,
+        ) != "none":
+            return True
+        if bool(_module3_soft_support_item_ids(text)):
+            return True
+    if allowed.intersection(PRECISION_GUARD_MODULE4):
+        if _precision_signal_strength(
+            text,
+            strong_patterns=MODULE4_STRONG_PATTERNS,
+            weak_patterns=MODULE4_WEAK_PATTERNS,
+        ) != "none":
+            return True
+        if _has_any_pattern(text, MODULE4_FUNCTIONAL_EXAMPLE_PATTERNS):
+            return True
+    if 14 in allowed and (_has_item14_latent_support_semantics(text) or _has_item14_worthlessness_semantics(text)):
+        return True
+    if 16 in allowed and (
+        _has_item16_sleep_instability_signal(text)
+        or (_is_item16_detector_question(previous_question) and _has_any_pattern(text, ITEM16_SLEEP_QUESTION_PATTERNS))
+    ):
+        return True
+    if 18 in allowed and _item18_has_direct_change_signal(text, previous_question=previous_question):
+        return True
+    if 21 in allowed and (_has_item21_mild_direct_signal(text) or _has_item21_direct_denial(text)):
+        return True
+    if 7 in allowed and _has_item7_soft_self_evaluation(text):
+        return True
+    if 8 in allowed and _has_item8_soft_self_criticism(text):
+        return True
+    return bool(SYMPTOM_SIGNAL_PATTERN.search(" ".join(str(text or "").lower().split())))
 
 
 def _apply_precision_gate(
@@ -1609,8 +1841,15 @@ def _records_from_scored_items(
         _key("item14_latent_support_applied"): 0,
         _key("item21_mild_direct_keep_applied"): 0,
         _key("item21_direct_denial_blocked"): 0,
+        _key("item16_sleep_instability_match"): 0,
         _key("item18_change_signal_match"): 0,
+        _key("item18_variability_match"): 0,
         _key("item18_change_signal_rejected"): 0,
+        _key("item7_soft_self_evaluation_applied"): 0,
+        _key("item8_soft_self_criticism_applied"): 0,
+        _key("contrastive_sibling_support_applied"): 0,
+        _key("generic_shift_blocked_count"): 0,
+        _key("generic_shift_with_symptom_kept_count"): 0,
     }
 
     supported_items: List[Dict[str, Any]] = []
@@ -1622,15 +1861,33 @@ def _records_from_scored_items(
     item14_identity_change_signal = False
     apply_scoped_item21_keep = False
     item21_direct_denial_blocked = False
+    apply_scoped_item16_keep = False
     item18_change_signal_match = _item18_has_direct_change_signal(
         latest_message,
         previous_question=current_detector_question,
     )
+    item18_variability_match = _has_item18_variability_signal(latest_message)
+    generic_ambiguous_shift = False
+    generic_shift_has_scoped_signal = False
+    item7_soft_self_evaluation = False
+    item8_soft_self_criticism = False
+    contrastive_sibling_item_ids: set[int] = set()
     if str(method_override or "").strip().lower() == "llm_extractor":
+        generic_ambiguous_shift = _has_generic_ambiguous_shift(latest_message)
+        generic_shift_has_scoped_signal = _has_scoped_symptom_or_example_signal(
+            allowed_item_ids=allowed_item_ids,
+            text=latest_message,
+            previous_question=current_detector_question,
+        )
         module3_soft_support_item_ids = set(_module3_soft_support_item_ids(latest_message))
         apply_scoped_item14_hint = 14 in allowed and _has_item14_worthlessness_semantics(latest_message)
         apply_scoped_item14_latent_support = 14 in allowed and _has_item14_latent_support_semantics(latest_message)
         item14_identity_change_signal = 14 in allowed and _has_item14_identity_change_semantics(latest_message)
+        apply_scoped_item16_keep = (
+            16 in allowed
+            and _is_item16_detector_question(current_detector_question)
+            and _has_item16_sleep_instability_signal(latest_message)
+        )
         item21_direct_denial_blocked = (
             21 in allowed
             and _is_item21_detector_question(current_detector_question)
@@ -1644,6 +1901,15 @@ def _records_from_scored_items(
             and _is_item21_detector_question(current_detector_question)
             and _has_item21_mild_direct_signal(latest_message)
             and not item21_direct_denial_blocked
+        )
+        item7_soft_self_evaluation = 7 in allowed and _has_item7_soft_self_evaluation(latest_message)
+        item8_soft_self_criticism = 8 in allowed and _has_item8_soft_self_criticism(latest_message)
+        contrastive_sibling_item_ids = set(
+            _contrastive_sibling_support_item_ids(
+                allowed_item_ids=allowed,
+                question=current_detector_question,
+                text=latest_message,
+            )
         )
 
     for raw_item in [dict(item) for item in scored_items if isinstance(item, dict)]:
@@ -1684,6 +1950,10 @@ def _records_from_scored_items(
         module3_soft_supported = False
         item14_worthlessness_hint_applied = False
         item14_latent_support_applied = False
+        item16_sleep_instability_applied = False
+        item7_soft_self_evaluation_applied = False
+        item8_soft_self_criticism_applied = False
+        contrastive_sibling_support_applied = False
         if (
             not supported
             and int(resolved_item_id) == 14
@@ -1693,6 +1963,15 @@ def _records_from_scored_items(
             supported = True
             item14_latent_support_applied = True
             item14_worthlessness_hint_applied = apply_scoped_item14_hint
+        if not supported and int(resolved_item_id) == 16 and apply_scoped_item16_keep:
+            supported = True
+            item16_sleep_instability_applied = True
+        if not supported and int(resolved_item_id) == 7 and item7_soft_self_evaluation:
+            supported = True
+            item7_soft_self_evaluation_applied = True
+        if not supported and int(resolved_item_id) == 8 and item8_soft_self_criticism:
+            supported = True
+            item8_soft_self_criticism_applied = True
         if (
             not supported
             and int(resolved_item_id) in PRECISION_GUARD_MODULE3
@@ -1700,10 +1979,23 @@ def _records_from_scored_items(
         ):
             supported = True
             module3_soft_supported = True
+        if not supported and int(resolved_item_id) in contrastive_sibling_item_ids:
+            supported = True
+            contrastive_sibling_support_applied = True
         item21_mild_direct_keep_applied = False
         if not supported and int(resolved_item_id) == 21 and apply_scoped_item21_keep:
             supported = True
             item21_mild_direct_keep_applied = True
+        item18_variability_keep_applied = False
+        if (
+            not supported
+            and int(resolved_item_id) == 18
+            and _is_item18_detector_question(current_detector_question)
+            and item18_variability_match
+            and item18_change_signal_match
+        ):
+            supported = True
+            item18_variability_keep_applied = True
         if (
             not supported
             and int(resolved_item_id) == 21
@@ -1715,8 +2007,15 @@ def _records_from_scored_items(
         if supported and int(resolved_item_id) == 18 and not item18_change_signal_match:
             supported = False
             stats[_key("item18_change_signal_rejected")] = int(stats[_key("item18_change_signal_rejected")]) + 1
+        if supported and generic_ambiguous_shift and not generic_shift_has_scoped_signal:
+            supported = False
+            stats[_key("generic_shift_blocked_count")] = int(stats[_key("generic_shift_blocked_count")]) + 1
         if not supported:
             continue
+        if generic_ambiguous_shift and generic_shift_has_scoped_signal:
+            stats[_key("generic_shift_with_symptom_kept_count")] = int(
+                stats[_key("generic_shift_with_symptom_kept_count")]
+            ) + 1
 
         if module3_soft_supported:
             try:
@@ -1746,9 +2045,45 @@ def _records_from_scored_items(
             stats[_key("item14_latent_support_applied")] = int(
                 stats[_key("item14_latent_support_applied")]
             ) + 1
+        if item16_sleep_instability_applied:
+            normalized_item["intensity"] = max(float(normalized_item.get("intensity", 0.0) or 0.0), 1.0)
+            normalized_item["confidence"] = max(float(normalized_item.get("confidence", 0.0) or 0.0), 0.45)
+            normalized_item["reason"] = str(normalized_item.get("reason", "") or "").strip() or (
+                "item16 sleep instability support from explicit mixed sleep-change phrasing"
+            )
+            stats[_key("item16_sleep_instability_match")] = int(
+                stats[_key("item16_sleep_instability_match")]
+            ) + 1
         if item14_worthlessness_hint_applied:
             stats[_key("item14_worthlessness_hint_applied")] = int(
                 stats[_key("item14_worthlessness_hint_applied")]
+            ) + 1
+        if item7_soft_self_evaluation_applied:
+            normalized_item["intensity"] = max(float(normalized_item.get("intensity", 0.0) or 0.0), 1.0)
+            normalized_item["confidence"] = max(float(normalized_item.get("confidence", 0.0) or 0.0), 0.42)
+            normalized_item["reason"] = str(normalized_item.get("reason", "") or "").strip() or (
+                "item7 soft self-evaluation support from reduced self-confidence language"
+            )
+            stats[_key("item7_soft_self_evaluation_applied")] = int(
+                stats[_key("item7_soft_self_evaluation_applied")]
+            ) + 1
+        if item8_soft_self_criticism_applied:
+            normalized_item["intensity"] = max(float(normalized_item.get("intensity", 0.0) or 0.0), 1.0)
+            normalized_item["confidence"] = max(float(normalized_item.get("confidence", 0.0) or 0.0), 0.42)
+            normalized_item["reason"] = str(normalized_item.get("reason", "") or "").strip() or (
+                "item8 soft self-criticism support from self-evaluative phrasing"
+            )
+            stats[_key("item8_soft_self_criticism_applied")] = int(
+                stats[_key("item8_soft_self_criticism_applied")]
+            ) + 1
+        if contrastive_sibling_support_applied:
+            normalized_item["intensity"] = max(float(normalized_item.get("intensity", 0.0) or 0.0), 1.0)
+            normalized_item["confidence"] = max(float(normalized_item.get("confidence", 0.0) or 0.0), 0.40)
+            normalized_item["reason"] = str(normalized_item.get("reason", "") or "").strip() or (
+                "contrastive sibling support from explicit same-turn comparison"
+            )
+            stats[_key("contrastive_sibling_support_applied")] = int(
+                stats[_key("contrastive_sibling_support_applied")]
             ) + 1
         if item21_mild_direct_keep_applied:
             normalized_item["intensity"] = max(float(normalized_item.get("intensity", 0.0) or 0.0), 1.0)
@@ -1761,6 +2096,14 @@ def _records_from_scored_items(
             ) + 1
         if int(resolved_item_id) == 18 and item18_change_signal_match:
             stats[_key("item18_change_signal_match")] = int(stats[_key("item18_change_signal_match")]) + 1
+        if int(resolved_item_id) == 18 and item18_variability_match:
+            if item18_variability_keep_applied:
+                normalized_item["intensity"] = max(float(normalized_item.get("intensity", 0.0) or 0.0), 1.0)
+                normalized_item["confidence"] = max(float(normalized_item.get("confidence", 0.0) or 0.0), 0.42)
+                normalized_item["reason"] = str(normalized_item.get("reason", "") or "").strip() or (
+                    "item18 variability support from explicit appetite change-from-baseline phrasing"
+                )
+            stats[_key("item18_variability_match")] = int(stats[_key("item18_variability_match")]) + 1
 
         supported_items.append(
             {
@@ -1850,7 +2193,7 @@ def _likelihood_from_record(record: EvidenceRecord) -> List[float]:
     return [neutral, neutral, neutral, neutral]
 
 
-def _extract_likelihoods_v2(
+def _extract_likelihoods_impl(
     state: AgentState,
     *,
     turn: int,
@@ -1917,8 +2260,15 @@ def _extract_likelihoods_v2(
     detail_item14_latent_support_applied = False
     detail_item21_mild_direct_keep_applied = False
     detail_item21_direct_denial_blocked = False
+    detail_item16_sleep_instability_match = False
     detail_item18_change_signal_match = False
+    detail_item18_variability_match = False
     detail_item18_change_signal_rejected = False
+    detail_item7_soft_self_evaluation_applied = False
+    detail_item8_soft_self_criticism_applied = False
+    detail_contrastive_sibling_support_applied = False
+    detail_generic_shift_blocked = False
+    detail_generic_shift_with_symptom_kept = False
     item9_direct_match = False
     item9_passive_risk_match = False
     item9_routed_risk_recovery_applied = False
@@ -2173,11 +2523,32 @@ def _extract_likelihoods_v2(
                             detail_item21_direct_denial_blocked = bool(
                                 int(scored_stats["detail_item21_direct_denial_blocked"] or 0) > 0
                             )
+                            detail_item16_sleep_instability_match = bool(
+                                int(scored_stats["detail_item16_sleep_instability_match"] or 0) > 0
+                            )
                             detail_item18_change_signal_match = bool(
                                 int(scored_stats["detail_item18_change_signal_match"] or 0) > 0
                             )
+                            detail_item18_variability_match = bool(
+                                int(scored_stats["detail_item18_variability_match"] or 0) > 0
+                            )
                             detail_item18_change_signal_rejected = bool(
                                 int(scored_stats["detail_item18_change_signal_rejected"] or 0) > 0
+                            )
+                            detail_item7_soft_self_evaluation_applied = bool(
+                                int(scored_stats["detail_item7_soft_self_evaluation_applied"] or 0) > 0
+                            )
+                            detail_item8_soft_self_criticism_applied = bool(
+                                int(scored_stats["detail_item8_soft_self_criticism_applied"] or 0) > 0
+                            )
+                            detail_contrastive_sibling_support_applied = bool(
+                                int(scored_stats["detail_contrastive_sibling_support_applied"] or 0) > 0
+                            )
+                            detail_generic_shift_blocked = bool(
+                                int(scored_stats["detail_generic_shift_blocked_count"] or 0) > 0
+                            )
+                            detail_generic_shift_with_symptom_kept = bool(
+                                int(scored_stats["detail_generic_shift_with_symptom_kept_count"] or 0) > 0
                             )
                             item9_direct_match = bool(scored_stats["item9_direct_match_count"] > 0)
                             item9_passive_risk_match = bool(scored_stats["item9_passive_risk_match_count"] > 0)
@@ -2507,7 +2878,6 @@ def _extract_likelihoods_v2(
     trace_payload = {
         "turn": turn,
         "source": source,
-        "extractor_version": "v2",
         "target_item_id": int(target_spec["target_item_id"]),
         "target_module_id": int(target_spec["target_module_id"]),
         "allowed_item_ids": allowed_item_ids,
@@ -2542,8 +2912,15 @@ def _extract_likelihoods_v2(
         "detail_item14_latent_support_applied": detail_item14_latent_support_applied,
         "detail_item21_mild_direct_keep_applied": detail_item21_mild_direct_keep_applied,
         "detail_item21_direct_denial_blocked": detail_item21_direct_denial_blocked,
+        "detail_item16_sleep_instability_match": detail_item16_sleep_instability_match,
         "detail_item18_change_signal_match": detail_item18_change_signal_match,
+        "detail_item18_variability_match": detail_item18_variability_match,
         "detail_item18_change_signal_rejected": detail_item18_change_signal_rejected,
+        "detail_item7_soft_self_evaluation_applied": detail_item7_soft_self_evaluation_applied,
+        "detail_item8_soft_self_criticism_applied": detail_item8_soft_self_criticism_applied,
+        "detail_contrastive_sibling_support_applied": detail_contrastive_sibling_support_applied,
+        "detail_generic_shift_blocked": detail_generic_shift_blocked,
+        "detail_generic_shift_with_symptom_kept": detail_generic_shift_with_symptom_kept,
         "item9_direct_match": bool(item9_direct_match),
         "item9_passive_risk_match": bool(item9_passive_risk_match),
         "item9_routed_risk_recovery_applied": bool(item9_routed_risk_recovery_applied),
@@ -2641,7 +3018,6 @@ def extract_likelihoods(state: AgentState) -> Dict:
         turn_trace = dict(state.get("turn_trace", {}))
         trace_payload = {
             "turn": turn,
-            "extractor_version": _extractor_version(),
             "source": "skip_no_new_persona",
             "kept_items_count": 0,
             "empty_streak": int(state.get("empty_evidence_streak", 0)),
@@ -2656,320 +3032,12 @@ def extract_likelihoods(state: AgentState) -> Dict:
             "turn_trace": turn_trace,
         }
 
-    if _extractor_version() == "v2":
-        return _extract_likelihoods_v2(
-            state,
-            turn=turn,
-            latest_message=latest_message,
-            node_name=node_name,
-        )
-
-    evidence_records: List[EvidenceRecord] = []
-    raw_nonempty = False
-    json_parse_ok = False
-    raw_items_count = 0
-    dropped_unknown = 0
-    dropped_invalid = 0
-    source = "llm_extractor"
-    counters = dict(state.get("failure_counters", {}))
-    lexical_prefilter: List[EvidenceRecord] = []
-    clear_no_symptom_skip = False
-    salvage_used = False
-    salvage_items_count = 0
-    key_alias_used_count = 0
-    schema_coerce_used_count = 0
-    symptom_name_normalized_count = 0
-    item1_gate_kept_count = 0
-    item1_gate_dropped_count = 0
-    item1_gate_soft_clamped_count = 0
-    precision_gate_dropped_count = 0
-    precision_gate_soft_clamped_count = 0
-    precision_gate_item_counts: Dict[str, Dict[str, int]] = {}
-    parse_error_kind = ""
-    parse_error_message = ""
-    parse_error_line = 0
-    parse_error_column = 0
-    parse_error_position = 0
-    parse_balance: Dict[str, Any] = {}
-    llm_called = False
-    llm_raw_text = ""
-    raw_payload_logged = ""
-    llm_on_lexical_hit = _env_bool("EVIDENCE_LLM_ON_LEXICAL_HIT", "0")
-    key_aliases_enabled = _env_bool("EXTRACTOR_JSON_KEY_ALIASES", "1")
-    strict_schema_coerce = _env_bool("EXTRACTOR_STRICT_SCHEMA_COERCE", "1")
-    item1_strict_gate = _env_bool("EXTRACT_ITEM1_STRICT_GATE", "0")
-    item1_weak_max_conf = _clamp(_env_float("EXTRACT_ITEM1_WEAK_MAX_CONF", 0.55), 0.0, 1.0)
-    item1_weak_max_intensity = _clamp(_env_float("EXTRACT_ITEM1_WEAK_MAX_INTENSITY", 1.5), 0.0, 3.0)
-    extractor_min_records_target = max(1, int(os.getenv("EXTRACTOR_MIN_RECORDS_TARGET", "1")))
-
-    if latest_message.strip():
-        lexical_prefilter = _fallback_evidence_from_text(node_name, turn, latest_message)
-        lexical_prefilter, dropped_count, soft_clamped_count, item_counts = _apply_precision_gate_batch(
-            lexical_prefilter,
-            latest_message=latest_message,
-        )
-        precision_gate_dropped_count += int(dropped_count)
-        precision_gate_soft_clamped_count += int(soft_clamped_count)
-        _merge_precision_gate_item_counts(precision_gate_item_counts, item_counts)
-        should_skip_llm = len(lexical_prefilter) >= extractor_min_records_target and not llm_on_lexical_hit
-        if should_skip_llm:
-            evidence_records = lexical_prefilter
-            source = "lexical_prefilter"
-        else:
-            prompt = get_prompt("evidence_extraction").format(
-                node_name=node_name,
-                recent_context=_recent_context(state) or "none",
-                latest_message=latest_message,
-            )
-            try:
-                llm_called = True
-                llm = get_extractor_llm()
-                raw = llm.invoke([("system", prompt)]).content
-                raw_text = str(raw)
-                llm_raw_text = raw_text
-                raw_nonempty = bool(raw_text.strip())
-                if not raw_nonempty:
-                    counters = bump_failure_counter(counters, "extract_llm_empty_payload")
-                    source = "llm_extractor_empty_payload"
-                parsed, json_parse_ok, parse_diagnostics = _parse_json_payload(raw_text)
-                parse_error_kind = str(parse_diagnostics.get("error_kind", "") or "")
-                parse_error_message = str(parse_diagnostics.get("error_message", "") or "")
-                parse_error_line = int(parse_diagnostics.get("error_line", 0) or 0)
-                parse_error_column = int(parse_diagnostics.get("error_column", 0) or 0)
-                parse_error_position = int(parse_diagnostics.get("error_position", 0) or 0)
-                parse_balance = {
-                    "brace_open": int(parse_diagnostics.get("brace_open", 0) or 0),
-                    "brace_close": int(parse_diagnostics.get("brace_close", 0) or 0),
-                    "bracket_open": int(parse_diagnostics.get("bracket_open", 0) or 0),
-                    "bracket_close": int(parse_diagnostics.get("bracket_close", 0) or 0),
-                    "double_quote_count": int(parse_diagnostics.get("double_quote_count", 0) or 0),
-                    "unmatched_double_quote": bool(parse_diagnostics.get("unmatched_double_quote", False)),
-                }
-                items, schema_payload_coerce = _payload_items(parsed)
-                schema_coerce_used_count += int(schema_payload_coerce)
-                if schema_payload_coerce > 0:
-                    counters = bump_failure_counter(counters, "extract_schema_coerce_used", amount=schema_payload_coerce)
-
-                if raw_nonempty and not items:
-                    salvage_items = _salvage_items_from_text(raw_text)
-                    if salvage_items:
-                        items = salvage_items
-                        salvage_used = True
-                        salvage_items_count = len(salvage_items)
-                        source = "llm_salvage"
-                        counters = bump_failure_counter(counters, "extract_salvage_used")
-                        counters = bump_failure_counter(
-                            counters, "extract_salvage_kept_items", amount=salvage_items_count
-                        )
-
-                raw_items_count = len(items) if isinstance(items, list) else 0
-                if isinstance(items, list):
-                    for raw_item in items:
-                        if not isinstance(raw_item, dict):
-                            dropped_invalid += 1
-                            continue
-                        normalized_item, alias_hits = _normalize_item_keys(
-                            raw_item,
-                            key_aliases_enabled=key_aliases_enabled,
-                        )
-                        key_alias_used_count += int(alias_hits)
-                        if alias_hits > 0:
-                            counters = bump_failure_counter(counters, "extract_key_alias_used", amount=alias_hits)
-
-                        normalized_item, schema_hits = _coerce_schema_defaults(
-                            normalized_item,
-                            strict_schema_coerce=strict_schema_coerce,
-                        )
-                        schema_coerce_used_count += int(schema_hits)
-                        if schema_hits > 0:
-                            counters = bump_failure_counter(counters, "extract_schema_coerce_used", amount=schema_hits)
-
-                        symptom_name = str(normalized_item.get("symptom_name", "")).strip()
-                        resolved_item_id = _coerce_item_id(normalized_item.get("item_id"), symptom_name)
-                        if resolved_item_id is None:
-                            dropped_unknown += 1
-                            continue
-                        canonical_symptom_name, normalized_symptom = _canonicalize_symptom_name(
-                            resolved_item_id,
-                            symptom_name,
-                        )
-                        normalized_item["symptom_name"] = canonical_symptom_name
-                        if normalized_symptom:
-                            symptom_name_normalized_count += 1
-                            counters = bump_failure_counter(counters, "extract_symptom_name_normalized")
-                        if "item_id" not in normalized_item:
-                            normalized_item["item_id"] = resolved_item_id
-
-                        if not _number_in_range(normalized_item.get("intensity"), 0.0, 3.0):
-                            dropped_invalid += 1
-                            continue
-                        if not _number_in_range(normalized_item.get("confidence"), 0.0, 1.0):
-                            dropped_invalid += 1
-                            continue
-                        record = _coerce_evidence_record(node_name, turn, normalized_item, latest_message)
-                        if record is not None:
-                            if _is_item1_llm_candidate(record):
-                                gated_record, gate_action = _apply_item1_gate(
-                                    record,
-                                    latest_message=latest_message,
-                                    strict_gate=item1_strict_gate,
-                                    weak_max_conf=item1_weak_max_conf,
-                                    weak_max_intensity=item1_weak_max_intensity,
-                                )
-                                if gate_action == "dropped":
-                                    item1_gate_dropped_count += 1
-                                    continue
-                                if gate_action == "soft_clamped":
-                                    item1_gate_soft_clamped_count += 1
-                                else:
-                                    item1_gate_kept_count += 1
-                                record = gated_record
-                            if record is not None:
-                                gated_record, precision_action = _apply_precision_gate(
-                                    record,
-                                    latest_message=latest_message,
-                                )
-                                if precision_action == "dropped":
-                                    precision_gate_dropped_count += 1
-                                    _merge_precision_gate_counts(
-                                        precision_gate_item_counts,
-                                        item_id=int(record.item_id),
-                                        action=precision_action,
-                                    )
-                                    continue
-                                if precision_action == "soft_clamped":
-                                    precision_gate_soft_clamped_count += 1
-                                    _merge_precision_gate_counts(
-                                        precision_gate_item_counts,
-                                        item_id=int(record.item_id),
-                                        action=precision_action,
-                                    )
-                                record = gated_record
-                            evidence_records.append(record)
-                else:
-                    source = "llm_extractor_non_list_payload"
-
-            except LLMBudgetExceeded:
-                raise
-            except Exception as exc:
-                source = "llm_extractor_error"
-                counters = bump_failure_counter(counters, "extract_llm_call_fail")
-                error_text = str(exc).strip()
-                parse_error_kind = "llm_timeout" if "timed out" in error_text.lower() else "llm_call_failed"
-                parse_error_message = error_text[:300]
-    else:
-        source = "skip_empty_message"
-
-    if dropped_unknown > 0:
-        counters = bump_failure_counter(counters, "extract_item_map_fail", amount=dropped_unknown)
-
-    fallback_records: List[EvidenceRecord] = []
-    if not evidence_records and latest_message.strip():
-        fallback_records = _fallback_evidence_from_text(node_name, turn, latest_message)
-        fallback_records, dropped_count, soft_clamped_count, item_counts = _apply_precision_gate_batch(
-            fallback_records,
-            latest_message=latest_message,
-        )
-        precision_gate_dropped_count += int(dropped_count)
-        precision_gate_soft_clamped_count += int(soft_clamped_count)
-        _merge_precision_gate_item_counts(precision_gate_item_counts, item_counts)
-        if fallback_records:
-            evidence_records = fallback_records
-            source = "lexical_fallback"
-
-    if llm_called and raw_nonempty and not evidence_records:
-        counters = bump_failure_counter(counters, "extract_json_parse_fail")
-        raw_payload_logged = llm_raw_text
-
-    if not evidence_records:
-        counters = bump_failure_counter(counters, "extract_empty")
-        empty_streak = int(state.get("empty_evidence_streak", 0)) + 1
-    else:
-        empty_streak = 0
-
-    likelihood_rows: List[LikelihoodEvidence] = []
-    for record in evidence_records:
-        method = str(record.method or "llm_extractor")
-        likelihood_rows.append(
-            LikelihoodEvidence(
-                item_id=int(record.item_id),
-                likelihood=_likelihood_from_record(record),
-                spans=[record.evidence_text],
-                extract_confidence=float(record.confidence),
-                extract_intensity=float(record.intensity),
-                evidence_type=method,
-                symptom_name=str(record.symptom_name),
-                direction=str(record.direction),
-                evidence_id=_evidence_id(record),
-                method_weight_hint=float(METHOD_WEIGHT_HINTS.get(method, 0.50)),
-                precision_gate_action=str(getattr(record, "precision_gate_action", "kept") or "kept"),
-                support_increment_blocked=bool(getattr(record, "support_increment_blocked", False)),
-            )
-        )
-
-    trace_payload = {
-        "turn": turn,
-        "source": source,
-        "extractor_version": "v1",
-        "raw_nonempty": raw_nonempty,
-        "json_parse_ok": json_parse_ok,
-        "parse_error_kind": parse_error_kind,
-        "parse_error_message": parse_error_message,
-        "parse_error_line": parse_error_line,
-        "parse_error_column": parse_error_column,
-        "parse_error_position": parse_error_position,
-        "parse_balance": parse_balance,
-        "raw_items_count": raw_items_count,
-        "kept_items_count": len(evidence_records),
-        "drop_unknown_item_count": dropped_unknown,
-        "drop_invalid_range_count": dropped_invalid,
-        "prefilter_count": len(lexical_prefilter),
-        "llm_on_lexical_hit": llm_on_lexical_hit,
-        "extractor_min_records_target": extractor_min_records_target,
-        "llm_called": llm_called,
-        "key_alias_used_count": key_alias_used_count,
-        "schema_coerce_used_count": schema_coerce_used_count,
-        "symptom_name_normalized_count": symptom_name_normalized_count,
-        "item1_gate_kept_count": item1_gate_kept_count,
-        "item1_gate_dropped_count": item1_gate_dropped_count,
-        "item1_gate_soft_clamped_count": item1_gate_soft_clamped_count,
-        "precision_gate_dropped_count": precision_gate_dropped_count,
-        "precision_gate_soft_clamped_count": precision_gate_soft_clamped_count,
-        "precision_gate_item_counts": precision_gate_item_counts,
-        "fallback_used": bool(fallback_records),
-        "salvage_used": salvage_used,
-        "salvage_items_count": salvage_items_count,
-        "raw_extractor_payload": raw_payload_logged,
-        "latest_message": latest_message if raw_payload_logged else "",
-        "empty_streak": empty_streak,
-        "has_new_persona_input": True,
-    }
-    turn_trace = dict(state.get("turn_trace", {}))
-    turn_trace["extract_likelihoods"] = trace_payload
-    turn_trace["extract_evidence"] = trace_payload
-
-    denied_items_this_turn: List[int] = []
-    if clear_no_symptom_skip:
-        _denied_item_id = int(target_spec["target_item_id"])
-        if 1 <= _denied_item_id <= 21:
-            denied_items_this_turn.append(_denied_item_id)
-
-    summary = (
-        f"{state.get('specialist_debug', '')} | evidence_count={len(evidence_records)}"
-        if state.get("specialist_debug")
-        else f"Evidence extraction: count={len(evidence_records)}"
+    return _extract_likelihoods_impl(
+        state,
+        turn=turn,
+        latest_message=latest_message,
+        node_name=node_name,
     )
-
-    return {
-        "latest_turn_likelihoods": likelihood_rows,
-        "latest_turn_evidence": evidence_records,
-        "evidence_log": evidence_records,
-        "specialist_debug": summary,
-        "turn_trace": turn_trace,
-        "failure_counters": counters,
-        "empty_evidence_streak": empty_streak,
-        "denied_item_ids": denied_items_this_turn,
-    }
 
 
 # Backward compatibility for old imports.

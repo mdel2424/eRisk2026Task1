@@ -21,12 +21,16 @@ class PersonaProfile:
     persona_id: str
     split: SplitName
     family: str
+    severity_tier: str
+    subtype_tag: str
+    context_tag: str
+    style_tag: str
     bdi_scores: Dict[int, int]
     depressed: bool
     source: str = "synthetic"
     has_ground_truth: bool = True
     behavior_params: Dict[str, float | str] = None  # type: ignore[assignment]
-    template_bank: str = "train_bank_v1"
+    template_bank: str = "default"
     generation_seed: int = 0
 
     def __post_init__(self) -> None:

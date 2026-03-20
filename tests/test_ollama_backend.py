@@ -211,13 +211,17 @@ class OllamaBackendTests(unittest.TestCase):
         from app.eval_artifacts import write_eval_artifacts
 
         manifest_payload = {
-            "run_config": {"manifest_schema_version": 3, "persona_count": 1, "seed": 42},
+            "run_config": {"manifest_schema_version": 4, "persona_count": 1, "seed": 42},
             "persona_count": 1,
             "profiles": [
                 {
                     "persona_id": "alpha",
                     "split": "eval",
                     "family": "control_neutral",
+                    "severity_tier": "minimal",
+                    "subtype_tag": "routine_stable",
+                    "context_tag": "routine_stable",
+                    "style_tag": "open_but_flat",
                     "source": "synthetic",
                     "has_ground_truth": True,
                     "depressed": False,
@@ -271,7 +275,6 @@ class OllamaBackendTests(unittest.TestCase):
                 manifest_hash="abc123",
                 manifest_payload=manifest_payload,
                 prior_manifest_info={"exists": True, "hash": "oldhash", "profile_count": 1, "read_error": None},
-                prompt_version="v1",
                 seed=42,
                 persona_count=1,
                 processed_profiles=0,

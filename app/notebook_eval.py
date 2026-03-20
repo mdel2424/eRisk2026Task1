@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -13,6 +14,8 @@ from app.finalizer_summary import (
     default_finalizer_summary_value,
 )
 from core.state import symptom_name_from_item
+from persona import create_persona, generate_persona_pool
+from persona.sim_behavior import response_style_flags
 
 FINALIZER_GROUPED_COLUMNS = (
     [f"finalizer_{field}" for field in FINALIZER_GUARDRAIL_FIELDS]
@@ -24,6 +27,10 @@ RECORD_BASE_COLUMNS = [
     "persona_id",
     "split",
     "family",
+    "severity_tier",
+    "subtype_tag",
+    "context_tag",
+    "style_tag",
     "source",
     "bdi_true",
     "bdi_pred",
@@ -55,6 +62,16 @@ PERSONA_ERROR_COLUMNS = [
     "bdi_pred",
     "bdi_error",
     "bdi_abs_error",
+]
+
+SIM_STYLE_CALIBRATION_PROBES: List[Dict[str, object]] = [
+    {"target_item_id": 1, "route": "cognitive", "style": "gentle_probe", "mode": "normal", "directness": "indirect", "priority": 0.5},
+    {"target_item_id": 4, "route": "cognitive", "style": "functional_impact", "mode": "normal", "directness": "indirect", "priority": 0.6},
+    {"target_item_id": 14, "route": "cognitive", "style": "gentle_probe", "mode": "normal", "directness": "direct", "priority": 0.75},
+    {"target_item_id": 15, "route": "somatic", "style": "functional_impact", "mode": "normal", "directness": "indirect", "priority": 0.6},
+    {"target_item_id": 16, "route": "somatic", "style": "clarify_frequency", "mode": "normal", "directness": "direct", "priority": 0.7},
+    {"target_item_id": 18, "route": "somatic", "style": "gentle_probe", "mode": "normal", "directness": "direct", "priority": 0.7},
+    {"target_item_id": 21, "route": "somatic", "style": "gentle_probe", "mode": "normal", "directness": "direct", "priority": 0.7},
 ]
 
 
@@ -95,6 +112,39 @@ def _empty_item_error_frame() -> pd.DataFrame:
     return pd.DataFrame(columns=ITEM_ERROR_COLUMNS)
 
 
+def _style_summary_from_responses(responses: List[str]) -> Dict[str, Any]:
+    cleaned = [str(response or "").strip() for response in responses if str(response or "").strip()]
+    response_count = len(cleaned)
+    if response_count <= 0:
+        return {
+            "response_count": 0,
+            "avg_response_words": 0.0,
+            "qualifier_rate": 0.0,
+            "hedge_rate": 0.0,
+            "context_anchor_rate": 0.0,
+            "mixed_answer_rate": 0.0,
+            "soft_denial_rate": 0.0,
+            "baseline_comparison_rate": 0.0,
+        }
+
+    word_counts = [len(response.split()) for response in cleaned]
+    flags = [response_style_flags(response) for response in cleaned]
+
+    def _rate(key: str) -> float:
+        return round(sum(1 for flag in flags if bool(flag.get(key))) / float(response_count), 4)
+
+    return {
+        "response_count": response_count,
+        "avg_response_words": round(sum(word_counts) / float(response_count), 4),
+        "qualifier_rate": _rate("qualifier"),
+        "hedge_rate": _rate("hedged"),
+        "context_anchor_rate": _rate("context_anchor"),
+        "mixed_answer_rate": _rate("mixed_answer"),
+        "soft_denial_rate": _rate("soft_denial"),
+        "baseline_comparison_rate": _rate("baseline_comparison"),
+    }
+
+
 def _scores_from_row(row: pd.Series, key: str) -> Dict[str, int]:
     scores = row.get(key, {})
     if isinstance(scores, dict):
@@ -123,7 +173,6 @@ def run_eval_notebook(
     *,
     persona_count: int = 10,
     seed: int = 42,
-    prompt_version: str = "v1",
     save_diagnostics: bool = False,
     max_api_calls: int = 500,
     trace_level: str = "off",
@@ -136,7 +185,6 @@ def run_eval_notebook(
     result = run_eval(
         persona_count=persona_count,
         seed=seed,
-        prompt_version=prompt_version,
         save_diagnostics=save_diagnostics,
         max_api_calls=max_api_calls,
         trace_level=trace_level,
@@ -195,6 +243,10 @@ def load_eval_records(output_dir: str | Path) -> pd.DataFrame:
             "persona_id": persona_id,
             "split": str(profile.get("split", "")),
             "family": str(profile.get("family", "")),
+            "severity_tier": str(profile.get("severity_tier", "")),
+            "subtype_tag": str(profile.get("subtype_tag", "")),
+            "context_tag": str(profile.get("context_tag", "")),
+            "style_tag": str(profile.get("style_tag", "")),
             "source": str(profile.get("source", "")),
             "bdi_true": int(profile.get("bdi_total", sum(true_scores.values())) or 0),
             "bdi_pred": int(result.get("bdi-score", 0) or 0),
@@ -223,6 +275,66 @@ def load_eval_records(output_dir: str | Path) -> pd.DataFrame:
     if not rows:
         return _empty_records_frame()
     return pd.DataFrame(rows, columns=RECORD_COLUMNS)
+
+
+def summarize_transcript_style(transcript_source: str | Path) -> Dict[str, Any]:
+    candidate_path = Path(transcript_source)
+    if candidate_path.exists():
+        text = candidate_path.read_text(encoding="utf-8")
+    else:
+        text = str(transcript_source)
+    responses = re.findall(r"^(?:Patient|Persona):\s*(.*)$", text, flags=re.M)
+    summary = _style_summary_from_responses(responses)
+    summary["source_kind"] = "path" if candidate_path.exists() else "inline_text"
+    return summary
+
+
+def summarize_simulated_style(
+    *,
+    persona_count: int = 12,
+    seed: int = 42,
+    probe_battery: List[Dict[str, object]] | None = None,
+) -> Dict[str, Any]:
+    probes = list(probe_battery or SIM_STYLE_CALIBRATION_PROBES)
+    profiles = generate_persona_pool(count=persona_count, seed=seed)
+    responses: List[str] = []
+    for profile in profiles:
+        persona = create_persona(profile)
+        history: List[Dict[str, object]] = []
+        for probe in probes:
+            reply = persona.reply(history, dict(probe))
+            responses.append(reply)
+            history.append({"role": "user", "content": f"probe-{probe.get('target_item_id', '')}"})
+            history.append({"role": "assistant", "content": reply})
+
+    summary = _style_summary_from_responses(responses)
+    summary["persona_count"] = int(persona_count)
+    summary["probe_count"] = len(probes)
+    summary["seed"] = int(seed)
+    return summary
+
+
+def compare_style_summaries(reference: Dict[str, Any], simulated: Dict[str, Any]) -> Dict[str, Any]:
+    keys = [
+        "avg_response_words",
+        "qualifier_rate",
+        "hedge_rate",
+        "context_anchor_rate",
+        "mixed_answer_rate",
+        "soft_denial_rate",
+        "baseline_comparison_rate",
+    ]
+    comparison: Dict[str, Any] = {
+        "reference_response_count": int(reference.get("response_count", 0) or 0),
+        "simulated_response_count": int(simulated.get("response_count", 0) or 0),
+    }
+    for key in keys:
+        reference_value = float(reference.get(key, 0.0) or 0.0)
+        simulated_value = float(simulated.get(key, 0.0) or 0.0)
+        comparison[f"reference_{key}"] = round(reference_value, 4)
+        comparison[f"simulated_{key}"] = round(simulated_value, 4)
+        comparison[f"delta_{key}"] = round(simulated_value - reference_value, 4)
+    return comparison
 
 
 def build_persona_error_table(records_df: pd.DataFrame | None) -> pd.DataFrame:
@@ -307,11 +419,15 @@ def split_item_error_table(item_error_df: pd.DataFrame) -> Dict[str, pd.DataFram
 __all__ = [
     "ITEM_ERROR_COLUMNS",
     "PERSONA_ERROR_COLUMNS",
+    "SIM_STYLE_CALIBRATION_PROBES",
     "build_persona_error_table",
     "RECORD_COLUMNS",
     "build_item_error_table",
+    "compare_style_summaries",
     "load_eval_records",
     "load_eval_metrics",
     "run_eval_notebook",
+    "summarize_simulated_style",
+    "summarize_transcript_style",
     "split_item_error_table",
 ]

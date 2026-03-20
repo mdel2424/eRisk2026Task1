@@ -18,6 +18,8 @@ from core.state import (
 CORE_ITEM_IDS = [2, 3, 4, 5, 7, 8, 14, 15, 16, 19, 20]
 LOW_SIGNAL_COGNITIVE_AFFECTIVE_MODULES = {1, 2, 3, 4}
 LOW_SIGNAL_SOMATIC_INTERPERSONAL_MODULES = {5, 6, 7, 8}
+SOMATIC_CLUSTER_RECOVERY_OBSERVED_ITEM_IDS = {15, 16, 18, 20, 21}
+SOMATIC_CLUSTER_RECOVERY_IMPUTED_ITEM_IDS = {16, 18, 20, 21}
 SOLO_MODULE_IMPUTATION_BLOCKED_ITEMS = {18}
 SEVERE_ANCHOR_NEGATION_PHRASES = [
     "not really a problem",
@@ -301,6 +303,7 @@ def _support_geometry_from_state(
 ) -> Dict[str, object]:
     evidence_turns_by_item: Dict[int, set[int]] = {item_id: set() for item_id in range(1, 22)}
     evidence_methods_by_item: Dict[int, set[str]] = {item_id: set() for item_id in range(1, 22)}
+    has_strong_row_by_item: Dict[int, bool] = {item_id: False for item_id in range(1, 22)}
     for row in evidence_rows:
         item_id = int(getattr(row, "item_id", 0) or 0)
         if item_id < 1 or item_id > 21 or bool(getattr(row, "support_increment_blocked", False)):
@@ -311,6 +314,10 @@ def _support_geometry_from_state(
         method = str(getattr(row, "method", "") or "")
         if method:
             evidence_methods_by_item[item_id].add(method)
+        confidence = _clamp(float(getattr(row, "confidence", 0.0) or 0.0), 0.0, 1.0)
+        intensity = _clamp(float(getattr(row, "intensity", 0.0) or 0.0), 0.0, 3.0)
+        if confidence >= 0.55 and intensity >= 1.5:
+            has_strong_row_by_item[item_id] = True
 
     observed_supported_item_ids = [
         item_id for item_id in range(1, 22) if int(item_beliefs[item_id].support_count) > 0
@@ -344,19 +351,21 @@ def _support_geometry_from_state(
         expected_score = float(item_beliefs[item_id].expected_score)
         evidence_turn_count = len(evidence_turns_by_item[item_id])
         evidence_method_count = len(evidence_methods_by_item[item_id])
+        has_strong_row = bool(has_strong_row_by_item[item_id])
         same_module_corroborated_item_ids = []
         if support_count >= 1:
             for other_item_id in same_module_supported_item_ids:
                 other_support_count = int(item_beliefs[other_item_id].support_count)
                 other_expected_score = float(item_beliefs[other_item_id].expected_score)
                 other_evidence_turn_count = len(evidence_turns_by_item[other_item_id])
+                other_has_strong_row = bool(has_strong_row_by_item[other_item_id])
                 if other_support_count < 1 or other_evidence_turn_count < 1:
                     continue
                 if (
-                    support_count >= 2
-                    or expected_score >= 1.5
-                    or other_support_count >= 2
-                    or other_expected_score >= 1.5
+                    other_support_count >= 2
+                    or other_evidence_turn_count >= 2
+                    or other_has_strong_row
+                    or other_expected_score >= 1.75
                 ):
                     same_module_corroborated_item_ids.append(other_item_id)
         is_corroborated_item = False
@@ -364,6 +373,8 @@ def _support_geometry_from_state(
             if risk_reason in {"active self-harm cue match", "multiple passive death ideation cues"}:
                 is_corroborated_item = True
         elif support_count >= 2 and evidence_turn_count >= 2:
+            is_corroborated_item = True
+        elif support_count >= 1 and has_strong_row:
             is_corroborated_item = True
         elif support_count >= 1 and same_module_corroborated_item_ids:
             is_corroborated_item = True
@@ -379,6 +390,7 @@ def _support_geometry_from_state(
             "same_module_corroborated_item_count": len(same_module_corroborated_item_ids),
             "same_module_corroborated_item_ids": same_module_corroborated_item_ids,
             "is_corroborated_item": is_corroborated_item,
+            "has_strong_row": has_strong_row,
         }
 
     corroborated_item_id_set = set(corroborated_item_ids)
@@ -480,6 +492,8 @@ def _low_signal_guardrail_context(
             corroborated_affective_cognitive_module_breadth >= 2,
             corroborated_affective_cognitive_module_breadth,
         ),
+        ("strong_observed_item_count>=2", strong_observed_item_count >= 2, strong_observed_item_count),
+        ("observed_mean_severity>=1.25", observed_mean_severity >= 1.25, round(observed_mean_severity, 6)),
         ("support_concentration_dominant==False", not support_concentration_dominant, support_concentration_dominant),
     ]
     support_geometry_candidate_bypass = all(passed for _, passed, _ in bypass_conditions)
@@ -625,6 +639,10 @@ def _severe_anchor_context(
     state: AgentState,
     *,
     low_signal_context: Dict[str, object],
+    item_beliefs: Dict[int, ItemBelief],
+    item_evidence_summary: Dict[int, Dict[str, object]],
+    raw_predicted_bdi_score: int,
+    observed_mean_severity: float,
 ) -> Dict[str, object]:
     strong_anchor_module_ids: set[int] = set()
     severe_anchor_module_ids: set[int] = set()
@@ -659,18 +677,36 @@ def _severe_anchor_context(
         }
     )
     cognitive_affective_anchor = bool(strong_anchor_module_ids.intersection(LOW_SIGNAL_COGNITIVE_AFFECTIVE_MODULES))
+    single_anchor_anchor_module_ids = sorted(strong_anchor_module_ids) if len(strong_anchor_module_ids) == 1 else []
+    single_anchor_activation_eligible = False
+    single_anchor_qualified_supported_item_ids: List[int] = []
+    if len(single_anchor_anchor_module_ids) == 1:
+        anchor_module_id = int(single_anchor_anchor_module_ids[0])
+        single_anchor_qualified_supported_item_ids = [
+            item_id
+            for item_id in MODULE_TO_ITEMS.get(anchor_module_id, [])
+            if int(item_beliefs[item_id].support_count) >= 1
+            and (
+                float(item_beliefs[item_id].expected_score) >= 1.5
+                or int(item_beliefs[item_id].support_count) >= 2
+                or bool(item_evidence_summary.get(item_id, {}).get("has_strong_row", False))
+            )
+        ]
+        single_anchor_activation_eligible = (
+            (int(raw_predicted_bdi_score) >= 18 or float(observed_mean_severity) >= 1.6)
+            and len(corroborated_nonrisk_item_ids) >= 4
+            and len(corroborated_nonrisk_module_ids) >= 3
+            and len(single_anchor_qualified_supported_item_ids) >= 2
+        )
+
     severe_recovery_mode_active = False
     severe_recovery_reason = ""
     if len(strong_anchor_module_ids) >= 2 and cognitive_affective_anchor:
         severe_recovery_mode_active = True
         severe_recovery_reason = "multiple_strong_anchor_modules"
-    elif (
-        len(corroborated_nonrisk_item_ids) >= 3
-        and len(corroborated_nonrisk_module_ids) >= 2
-        and len(strong_anchor_module_ids) >= 1
-    ):
+    elif single_anchor_activation_eligible:
         severe_recovery_mode_active = True
-        severe_recovery_reason = "corroborated_observed_plus_strong_anchor"
+        severe_recovery_reason = "single_strong_anchor_with_severity_support"
 
     return {
         "severe_recovery_mode_active": severe_recovery_mode_active,
@@ -678,8 +714,65 @@ def _severe_anchor_context(
         "severe_anchor_module_ids": sorted(severe_anchor_module_ids),
         "severe_strong_anchor_module_ids": sorted(strong_anchor_module_ids),
         "severe_recovery_reason": severe_recovery_reason,
+        "severe_recovery_activation_path": severe_recovery_reason if severe_recovery_reason else "none",
         "corroborated_nonrisk_item_ids": corroborated_nonrisk_item_ids,
         "corroborated_nonrisk_module_ids": corroborated_nonrisk_module_ids,
+        "single_anchor_activation_eligible": bool(single_anchor_activation_eligible),
+        "single_anchor_anchor_module_ids": single_anchor_anchor_module_ids,
+        "single_anchor_qualified_supported_item_ids": sorted(single_anchor_qualified_supported_item_ids),
+    }
+
+
+def _somatic_cluster_context(
+    item_beliefs: Dict[int, ItemBelief],
+    *,
+    item_evidence_summary: Dict[int, Dict[str, object]],
+    low_signal_guardrail_active: bool,
+    raw_predicted_bdi_score: int,
+    observed_mean_severity: float,
+) -> Dict[str, object]:
+    somatic_observed_positive_item_ids: List[int] = []
+    somatic_observed_module_ids: set[int] = set()
+    somatic_strong_item_ids: List[int] = []
+    somatic_qualifying_module_ids: set[int] = set()
+
+    for item_id in range(1, 22):
+        somatic_modules = [
+            module_id
+            for module_id in ITEM_TO_MODULES.get(item_id, [])
+            if module_id in LOW_SIGNAL_SOMATIC_INTERPERSONAL_MODULES
+        ]
+        if not somatic_modules:
+            continue
+        support_count = int(item_beliefs[item_id].support_count)
+        expected_score = float(item_beliefs[item_id].expected_score)
+        evidence_summary = dict(item_evidence_summary.get(item_id, {}))
+        has_strong_row = bool(evidence_summary.get("has_strong_row", False))
+
+        if support_count >= 1 and expected_score >= 1.0:
+            somatic_observed_positive_item_ids.append(item_id)
+            somatic_observed_module_ids.update(somatic_modules)
+
+        if support_count >= 1 and (support_count >= 2 or expected_score >= 1.5 or has_strong_row):
+            somatic_strong_item_ids.append(item_id)
+            somatic_qualifying_module_ids.update(somatic_modules)
+
+    somatic_observed_module_ids_list = sorted(somatic_observed_module_ids)
+    somatic_cluster_recovery_active = (
+        low_signal_guardrail_active
+        and (int(raw_predicted_bdi_score) >= 18 or float(observed_mean_severity) >= 1.5)
+        and len(somatic_observed_positive_item_ids) >= 3
+        and len(somatic_observed_module_ids_list) >= 2
+        and len(somatic_strong_item_ids) >= 2
+    )
+
+    return {
+        "somatic_cluster_recovery_active": bool(somatic_cluster_recovery_active),
+        "somatic_observed_positive_item_ids": sorted(somatic_observed_positive_item_ids),
+        "somatic_observed_module_ids": somatic_observed_module_ids_list,
+        "somatic_observed_module_breadth": len(somatic_observed_module_ids_list),
+        "somatic_strong_item_ids": sorted(somatic_strong_item_ids),
+        "somatic_qualifying_module_ids": sorted(somatic_qualifying_module_ids),
     }
 
 
@@ -820,6 +913,10 @@ def finalize_outputs(state: AgentState) -> Dict:
     severe_anchor_context = _severe_anchor_context(
         state,
         low_signal_context=low_signal_context,
+        item_beliefs=beliefs,
+        item_evidence_summary=item_evidence_summary,
+        raw_predicted_bdi_score=raw_predicted_bdi_score,
+        observed_mean_severity=float(low_signal_context.get("observed_mean_severity", 0.0) or 0.0),
     )
     severe_recovery_mode_active = bool(severe_anchor_context["severe_recovery_mode_active"])
     support_geometry_candidate_bypass = bool(low_signal_context["support_geometry_candidate_bypass"])
@@ -827,6 +924,24 @@ def finalize_outputs(state: AgentState) -> Dict:
     # Keep the low-signal guardrail active globally and let severe recovery
     # operate through narrower item-level bypasses/restores instead.
     low_signal_guardrail_active = True
+    somatic_cluster_context = _somatic_cluster_context(
+        beliefs,
+        item_evidence_summary=item_evidence_summary,
+        low_signal_guardrail_active=low_signal_guardrail_active,
+        raw_predicted_bdi_score=raw_predicted_bdi_score,
+        observed_mean_severity=float(low_signal_context.get("observed_mean_severity", 0.0) or 0.0),
+    )
+    somatic_cluster_recovery_active = bool(somatic_cluster_context["somatic_cluster_recovery_active"])
+    broad_shallow_profile_active = (
+        low_signal_guardrail_active
+        and not severe_recovery_mode_active
+        and not somatic_cluster_recovery_active
+        and int(low_signal_context["observed_positive_breadth"]) >= 4
+        and int(low_signal_context["strong_observed_item_count"]) <= 1
+        and int(low_signal_context["total_observed_support_count"])
+        <= int(low_signal_context["observed_positive_breadth"]) + 2
+        and float(low_signal_context["dominant_support_share"]) < 0.40
+    )
     guardrail_bypass_source = "item_local_severe_recovery" if severe_recovery_mode_active else "none"
     module_stats = _module_stats_from_beliefs(beliefs)
     final_item_scores: Dict[int, int] = {}
@@ -847,6 +962,14 @@ def finalize_outputs(state: AgentState) -> Dict:
     severe_amplitude_observed_to_three_item_ids: List[int] = []
     severe_amplitude_imputed_item_ids: List[int] = []
     strong_anchor_local_bypass_item_ids: List[int] = []
+    single_anchor_local_bypass_blocked_item_ids: List[int] = []
+    broad_shallow_observed_keep_budget = (
+        2 if broad_shallow_profile_active and raw_predicted_bdi_score < 14 else 3 if broad_shallow_profile_active else 0
+    )
+    broad_shallow_observed_trimmed_item_ids: List[int] = []
+    somatic_cluster_floor_item_ids: List[int] = []
+    somatic_cluster_imputed_restored_item_ids: List[int] = []
+    single_anchor_module3_restore_blocked = False
     item21_mild_observed_retained = False
     item21_imputed_restored = False
     severe_item9_rescued = False
@@ -855,6 +978,8 @@ def finalize_outputs(state: AgentState) -> Dict:
     severe_strong_anchor_module_id_set = {
         int(module_id) for module_id in severe_anchor_context["severe_strong_anchor_module_ids"]
     }
+    severe_recovery_reason = str(severe_anchor_context.get("severe_recovery_reason", "") or "")
+    severe_recovery_activation_path = str(severe_anchor_context.get("severe_recovery_activation_path", "none") or "none")
     recent_worthlessness_priority_hit = _recent_persona_hit(state, ITEM14_WORTHLESSNESS_PRIORITY_PHRASES)
     recent_item14_latent_restore_hit = _recent_persona_hit(state, ITEM14_LATENT_RESTORE_PHRASES, limit=6)
     recent_item21_mild_direct_hit = _recent_persona_hit(state, ITEM21_MILD_DIRECT_PHRASES, limit=8)
@@ -966,17 +1091,24 @@ def finalize_outputs(state: AgentState) -> Dict:
             low_signal_observed_cap_applied = False
             item9_guardrail_applied = False
             strong_anchor_local_bypass_applied = False
-            strong_anchor_local_eligible = (
-                severe_recovery_mode_active
-                and item_id != 9
-                and bool(strong_anchor_modules)
-                and (
+            somatic_cluster_floor_applied = False
+            strong_anchor_local_eligible = False
+            if severe_recovery_mode_active and item_id != 9 and bool(strong_anchor_modules):
+                strong_anchor_local_eligible = (
                     bool(severe_anchor_hit)
                     or support_count >= 2
                     or bool(evidence_summary.get("has_strong_row", False))
-                    or bool(is_corroborated_item)
+                    or (
+                        severe_recovery_reason != "single_strong_anchor_with_severity_support"
+                        and bool(is_corroborated_item)
+                    )
                 )
-            )
+                if (
+                    severe_recovery_reason == "single_strong_anchor_with_severity_support"
+                    and not strong_anchor_local_eligible
+                    and bool(is_corroborated_item)
+                ):
+                    single_anchor_local_bypass_blocked_item_ids.append(item_id)
             if item_id == 9 and (low_signal_guardrail_active or severe_recovery_mode_active):
                 item9_guardrail_applied = True
                 if risk_reason == "active self-harm cue match":
@@ -1018,6 +1150,34 @@ def finalize_outputs(state: AgentState) -> Dict:
                         final_int = 1
                         low_signal_observed_cap_applied = True
                         low_signal_observed_cap_item_ids.append(item_id)
+
+            if (
+                somatic_cluster_recovery_active
+                and item_id in SOMATIC_CLUSTER_RECOVERY_OBSERVED_ITEM_IDS
+                and support_count >= 1
+                and int(evidence_summary.get("evidence_turn_count", 0) or 0) >= 1
+            ):
+                somatic_adjusted = False
+                if final_int == 0:
+                    final_int = 1
+                    somatic_adjusted = True
+                if (
+                    observed_float >= 1.75
+                    and (
+                        int(item_support_geometry.get("same_module_supported_item_count", 0) or 0) >= 1
+                        or int(somatic_cluster_context["somatic_observed_module_breadth"]) >= 3
+                    )
+                    and (
+                        float(evidence_summary.get("max_confidence", 0.0) or 0.0) >= 0.50
+                        or bool(evidence_summary.get("has_strong_row", False))
+                    )
+                    and final_int < 2
+                ):
+                    final_int = 2
+                    somatic_adjusted = True
+                if somatic_adjusted:
+                    somatic_cluster_floor_applied = True
+                    somatic_cluster_floor_item_ids.append(item_id)
 
             if (
                 strong_anchor_local_eligible
@@ -1100,6 +1260,9 @@ def finalize_outputs(state: AgentState) -> Dict:
                 "item14_latent_restore_applied": False,
                 "item21_mild_observed_retained": bool(item_id == 21 and item21_mild_observed_retained),
                 "item21_imputed_restore_applied": False,
+                "broad_shallow_budget_trim_applied": False,
+                "somatic_cluster_floor_applied": bool(somatic_cluster_floor_applied),
+                "somatic_cluster_imputed_restore_applied": False,
                 "pre_trim_score": round(pre_trim_score, 6),
                 "post_trim_score": final_int,
                 "weak_positive_trim_applied": bool(low_signal_observed_cap_applied or item9_guardrail_applied),
@@ -1169,6 +1332,9 @@ def finalize_outputs(state: AgentState) -> Dict:
             "item14_latent_restore_applied": False,
             "item21_mild_observed_retained": False,
             "item21_imputed_restore_applied": False,
+            "broad_shallow_budget_trim_applied": False,
+            "somatic_cluster_floor_applied": False,
+            "somatic_cluster_imputed_restore_applied": False,
             "module_estimate_float": round(float(imputed_float), 6),
             "best_module_conf": round(
                 max((float(c.get("module_conf", 0.0)) for c in contributions), default=0.0),
@@ -1191,6 +1357,60 @@ def finalize_outputs(state: AgentState) -> Dict:
             "contributions": contributions,
         }
 
+    if broad_shallow_profile_active:
+        broad_shallow_candidates: List[Tuple[int, float, int, float, int]] = []
+        candidate_item_ids: List[int] = []
+        for item_id in range(1, 22):
+            detail = item_details.get(str(item_id), {})
+            if str(detail.get("source", "")) not in {"observed", "observed_blended"}:
+                continue
+            if int(detail.get("support_count", 0) or 0) != 1 or item_id == 9:
+                continue
+            if int(detail.get("evidence_turn_count", 0) or 0) > 2:
+                continue
+            if bool(detail.get("has_strong_row", False)) or bool(detail.get("has_very_strong_row", False)):
+                continue
+            if float(detail.get("max_confidence", 0.0) or 0.0) > 0.45:
+                continue
+            broad_shallow_candidates.append(
+                (
+                    1 if bool(detail.get("is_corroborated_item", False)) else 0,
+                    float(detail.get("pre_trim_score", 0.0) or 0.0),
+                    int(detail.get("same_module_corroborated_item_count", 0) or 0),
+                    float(detail.get("max_confidence", 0.0) or 0.0),
+                    item_id,
+                )
+            )
+            candidate_item_ids.append(item_id)
+
+        broad_shallow_candidates.sort(key=lambda row: (-row[0], -row[1], -row[2], -row[3], row[4]))
+        keep_item_ids: set[int] = set()
+        used_module_ids: set[int] = set()
+        for _, _, _, _, item_id in broad_shallow_candidates:
+            candidate_module_ids = {int(module_id) for module_id in ITEM_TO_MODULES.get(item_id, [])}
+            if used_module_ids.intersection(candidate_module_ids):
+                continue
+            keep_item_ids.add(item_id)
+            used_module_ids.update(candidate_module_ids)
+            if len(keep_item_ids) >= broad_shallow_observed_keep_budget:
+                break
+
+        for item_id in candidate_item_ids:
+            if item_id in keep_item_ids:
+                continue
+            detail = item_details[str(item_id)]
+            current_score = int(final_item_scores[item_id])
+            capped_score = 0 if float(detail.get("pre_trim_score", 0.0) or 0.0) < 1.5 else 1
+            updated_score = min(current_score, capped_score)
+            if updated_score >= current_score:
+                continue
+            final_item_scores[item_id] = updated_score
+            detail["broad_shallow_budget_trim_applied"] = True
+            detail["weak_positive_trim_applied"] = True
+            detail["post_trim_score"] = updated_score
+            detail["final_score"] = updated_score
+            broad_shallow_observed_trimmed_item_ids.append(item_id)
+
     imputed_points_before_guardrail = sum(
         int(final_item_scores[item_id])
         for item_id in range(1, 22)
@@ -1198,6 +1418,7 @@ def finalize_outputs(state: AgentState) -> Dict:
     )
     suppressed_imputed_item_ids: List[int] = []
     somatic_corroboration_blocked_item_ids: List[int] = []
+    solo_module_blocked_item_ids: List[int] = []
     imputed_point_budget: int | None = None
 
     if low_signal_guardrail_active:
@@ -1241,7 +1462,6 @@ def finalize_outputs(state: AgentState) -> Dict:
                 somatic_corroboration_blocked_item_ids.append(item_id)
                 suppressed_imputed_item_ids.append(item_id)
 
-        solo_module_blocked_item_ids: List[int] = []
         for item_id in range(1, 22):
             detail = item_details.get(str(item_id), {})
             if str(detail.get("source", "")) != "imputed" or final_item_scores[item_id] <= 0:
@@ -1370,7 +1590,17 @@ def finalize_outputs(state: AgentState) -> Dict:
             int(item_id) not in module3_item_ids
             for item_id in list(severe_anchor_context.get("corroborated_nonrisk_item_ids", []))
         )
+        allow_module3_restore = False
         if module3_observed_severe_item_ids and corroborated_nonrisk_outside_module3:
+            if severe_recovery_reason != "single_strong_anchor_with_severity_support":
+                allow_module3_restore = True
+            elif 3 in severe_strong_anchor_module_id_set:
+                allow_module3_restore = True
+            elif len(module3_observed_severe_item_ids) >= 2 and int(raw_predicted_bdi_score) >= 18:
+                allow_module3_restore = True
+            else:
+                single_anchor_module3_restore_blocked = True
+        if allow_module3_restore:
             severe_module3_restore_budget = 2
             module3_restore_candidates: List[Tuple[int, float, float, int]] = []
             for item_id in sorted(module3_item_ids):
@@ -1508,6 +1738,73 @@ def finalize_outputs(state: AgentState) -> Dict:
             item9_detail["severe_item9_rescued"] = True
             severe_item9_rescued = True
 
+    if somatic_cluster_recovery_active:
+        qualifying_module_ids = {
+            int(module_id)
+            for module_id in list(somatic_cluster_context.get("somatic_qualifying_module_ids", []))
+            if int(module_id) in LOW_SIGNAL_SOMATIC_INTERPERSONAL_MODULES
+        }
+        somatic_restore_candidates: List[Tuple[float, float, float, int, int]] = []
+        for item_id in sorted(SOMATIC_CLUSTER_RECOVERY_IMPUTED_ITEM_IDS):
+            detail = item_details.get(str(item_id), {})
+            if str(detail.get("source", "")) != "imputed" or int(final_item_scores.get(item_id, 0)) > 0:
+                continue
+            if item_id in denied_item_id_set:
+                continue
+            imputed_float = float(detail.get("imputed_float", 0.0) or 0.0)
+            if imputed_float < 1.25:
+                continue
+            contribution_by_module = {
+                int(contribution.get("module_id", 0) or 0): contribution
+                for contribution in list(detail.get("contributions", []))
+            }
+            best_candidate: Tuple[float, float, int] | None = None
+            for module_id in ITEM_TO_MODULES.get(item_id, []):
+                if module_id not in qualifying_module_ids:
+                    continue
+                contribution = contribution_by_module.get(int(module_id), {})
+                contribution_weight = float(contribution.get("weight", 0.0) or 0.0)
+                if not (
+                    bool(contribution.get("eligible", False))
+                    or contribution_weight > 0.0
+                ):
+                    continue
+                module_mean = float(module_stats.get(int(module_id), {}).get("module_mean", 0.0) or 0.0)
+                candidate_row = (contribution_weight, module_mean, int(module_id))
+                if best_candidate is None or candidate_row > best_candidate:
+                    best_candidate = candidate_row
+            if best_candidate is None:
+                continue
+            contribution_weight, module_mean, module_id = best_candidate
+            somatic_restore_candidates.append(
+                (
+                    imputed_float,
+                    contribution_weight,
+                    module_mean,
+                    module_id,
+                    item_id,
+                )
+            )
+
+        somatic_restore_candidates.sort(key=lambda row: (-row[0], -row[1], -row[2], row[4]))
+        used_restore_modules: set[int] = set()
+        for _, _, _, module_id, item_id in somatic_restore_candidates:
+            if module_id in used_restore_modules:
+                continue
+            detail = item_details[str(item_id)]
+            final_item_scores[item_id] = 1
+            detail["somatic_cluster_imputed_restore_applied"] = True
+            detail["post_trim_score"] = 1
+            detail["final_score"] = 1
+            _clear_imputed_suppression_tracking(
+                item_id=item_id,
+                detail=detail,
+                suppressed_imputed_item_ids=suppressed_imputed_item_ids,
+                somatic_corroboration_blocked_item_ids=somatic_corroboration_blocked_item_ids,
+            )
+            somatic_cluster_imputed_restored_item_ids.append(item_id)
+            used_restore_modules.add(module_id)
+
     module3_latent_companion_count = sum(
         1 for companion_item_id in (5, 7, 8) if int(final_item_scores.get(companion_item_id, 0)) >= 1
     )
@@ -1588,6 +1885,7 @@ def finalize_outputs(state: AgentState) -> Dict:
     somatic_corroboration_blocked_item_ids = sorted(set(somatic_corroboration_blocked_item_ids))
     low_signal_observed_cap_item_ids = sorted(set(low_signal_observed_cap_item_ids))
     low_signal_singleton_trimmed_item_ids = sorted(set(low_signal_singleton_trimmed_item_ids))
+    broad_shallow_observed_trimmed_item_ids = sorted(set(broad_shallow_observed_trimmed_item_ids))
     severe_recovered_item_ids = sorted(set(severe_recovered_item_ids))
     severe_module3_restored_item_ids = sorted(set(severe_module3_restored_item_ids))
     item14_latent_restored_item_ids = sorted(set(item14_latent_restored_item_ids))
@@ -1595,6 +1893,8 @@ def finalize_outputs(state: AgentState) -> Dict:
     severe_amplitude_observed_to_three_item_ids = sorted(set(severe_amplitude_observed_to_three_item_ids))
     severe_amplitude_imputed_item_ids = sorted(set(severe_amplitude_imputed_item_ids))
     strong_anchor_local_bypass_item_ids = sorted(set(strong_anchor_local_bypass_item_ids))
+    somatic_cluster_floor_item_ids = sorted(set(somatic_cluster_floor_item_ids))
+    somatic_cluster_imputed_restored_item_ids = sorted(set(somatic_cluster_imputed_restored_item_ids))
 
     for item_id in range(1, 22):
         detail = item_details.get(str(item_id), {})
@@ -1649,12 +1949,24 @@ def finalize_outputs(state: AgentState) -> Dict:
             "dominant_support_item_id": int(low_signal_context["dominant_support_item_id"]),
             "dominant_support_share": round(float(low_signal_context["dominant_support_share"]), 6),
             "support_concentration_dominant": bool(low_signal_context["support_concentration_dominant"]),
+            "broad_shallow_profile_active": bool(broad_shallow_profile_active),
+            "broad_shallow_observed_keep_budget": int(broad_shallow_observed_keep_budget),
+            "broad_shallow_observed_trimmed_item_ids": broad_shallow_observed_trimmed_item_ids,
             "low_signal_observed_cap_item_ids": low_signal_observed_cap_item_ids,
             "low_signal_item9_cap_reason": low_signal_item9_cap_reason,
             "severe_recovery_mode_active": severe_recovery_mode_active,
+            "somatic_cluster_recovery_active": bool(somatic_cluster_recovery_active),
+            "somatic_observed_module_breadth": int(somatic_cluster_context["somatic_observed_module_breadth"]),
+            "somatic_cluster_floor_item_ids": somatic_cluster_floor_item_ids,
+            "somatic_cluster_imputed_restored_item_ids": somatic_cluster_imputed_restored_item_ids,
             "severe_anchor_item_ids": list(severe_anchor_context["severe_anchor_item_ids"]),
             "severe_anchor_module_ids": list(severe_anchor_context["severe_anchor_module_ids"]),
-            "severe_recovery_reason": str(severe_anchor_context["severe_recovery_reason"]),
+            "severe_recovery_reason": severe_recovery_reason,
+            "severe_recovery_activation_path": severe_recovery_activation_path,
+            "single_anchor_activation_eligible": bool(severe_anchor_context["single_anchor_activation_eligible"]),
+            "single_anchor_anchor_module_ids": list(severe_anchor_context["single_anchor_anchor_module_ids"]),
+            "single_anchor_module3_restore_blocked": bool(single_anchor_module3_restore_blocked),
+            "single_anchor_local_bypass_blocked_item_ids": sorted(set(single_anchor_local_bypass_blocked_item_ids)),
             "severe_recovered_item_ids": severe_recovered_item_ids,
             "severe_recovered_item_ids_by_module": severe_recovered_item_ids_by_module,
             "severe_module3_restored_item_ids": severe_module3_restored_item_ids,
@@ -1728,6 +2040,9 @@ def finalize_outputs(state: AgentState) -> Dict:
         "dominant_support_item_id": int(low_signal_context["dominant_support_item_id"]),
         "dominant_support_share": round(float(low_signal_context["dominant_support_share"]), 6),
         "support_concentration_dominant": bool(low_signal_context["support_concentration_dominant"]),
+        "broad_shallow_profile_active": bool(broad_shallow_profile_active),
+        "broad_shallow_observed_keep_budget": int(broad_shallow_observed_keep_budget),
+        "broad_shallow_observed_trimmed_item_ids": broad_shallow_observed_trimmed_item_ids,
         "total_observed_support_count": int(low_signal_context["total_observed_support_count"]),
         "imputed_point_budget": imputed_point_budget,
         "imputed_points_before_guardrail": imputed_points_before_guardrail,
@@ -1739,9 +2054,21 @@ def finalize_outputs(state: AgentState) -> Dict:
         "low_signal_singleton_trimmed_item_ids": low_signal_singleton_trimmed_item_ids,
         "low_signal_item9_cap_reason": low_signal_item9_cap_reason,
         "severe_recovery_mode_active": severe_recovery_mode_active,
+        "somatic_cluster_recovery_active": bool(somatic_cluster_recovery_active),
+        "somatic_observed_positive_item_ids": list(somatic_cluster_context["somatic_observed_positive_item_ids"]),
+        "somatic_observed_module_ids": list(somatic_cluster_context["somatic_observed_module_ids"]),
+        "somatic_observed_module_breadth": int(somatic_cluster_context["somatic_observed_module_breadth"]),
+        "somatic_strong_item_ids": list(somatic_cluster_context["somatic_strong_item_ids"]),
+        "somatic_cluster_floor_item_ids": somatic_cluster_floor_item_ids,
+        "somatic_cluster_imputed_restored_item_ids": somatic_cluster_imputed_restored_item_ids,
         "severe_anchor_item_ids": list(severe_anchor_context["severe_anchor_item_ids"]),
         "severe_anchor_module_ids": list(severe_anchor_context["severe_anchor_module_ids"]),
-        "severe_recovery_reason": str(severe_anchor_context["severe_recovery_reason"]),
+        "severe_recovery_reason": severe_recovery_reason,
+        "severe_recovery_activation_path": severe_recovery_activation_path,
+        "single_anchor_activation_eligible": bool(severe_anchor_context["single_anchor_activation_eligible"]),
+        "single_anchor_anchor_module_ids": list(severe_anchor_context["single_anchor_anchor_module_ids"]),
+        "single_anchor_module3_restore_blocked": bool(single_anchor_module3_restore_blocked),
+        "single_anchor_local_bypass_blocked_item_ids": sorted(set(single_anchor_local_bypass_blocked_item_ids)),
         "severe_recovered_item_ids": severe_recovered_item_ids,
         "severe_recovered_item_ids_by_module": severe_recovered_item_ids_by_module,
         "severe_module3_restored_item_ids": severe_module3_restored_item_ids,

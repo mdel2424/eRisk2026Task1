@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 from core.bdi_modules import MODULE_GOALS, MODULE_NAMES, MODULE_TO_ITEMS, choose_target_module
 from core.llm import get_llm
-from core.prompts import OPENING_MESSAGE_FIXED, get_prompt
+from core.prompts import OPENING_MESSAGE_FIXED, get_fallback_questions, get_prompt
 from core.state import AgentState, BDI_ITEM_NAMES, OutgoingState
 
 
@@ -57,13 +57,26 @@ def _probe_goal_from_style(style: str) -> str:
     return mapping.get(style, "exemplar")
 
 
+def _fallback_question(
+    *,
+    route: str,
+    target_item_id: int,
+    turn_index: int,
+) -> str:
+    options = get_fallback_questions(route)
+    if not options:
+        return "Could you tell me a little more about how that has been affecting you lately?"
+    index = (max(0, int(turn_index)) + max(1, int(target_item_id))) % len(options)
+    return str(options[index]).strip()
+
+
 def _build_llm_question(
     state: AgentState,
     *,
     route: str,
     style: str,
     target_item_id: int,
-) -> tuple[str, int, str]:
+) -> tuple[str, int, str, bool, str]:
     prompt_template = get_prompt("specialist_question")
     if not prompt_template.strip():
         raise RuntimeError("Detector question generation failed: missing 'specialist_question' prompt template.")
@@ -101,12 +114,15 @@ def _build_llm_question(
         raw = raw[1:-1].strip()
     cleaned = " ".join(raw.split())
     if not cleaned:
-        raise RuntimeError(
-            f"Detector question generation failed for node '{route}' and item '{target_item_id}': empty model output."
+        fallback = _fallback_question(
+            route=route,
+            target_item_id=target_item_id,
+            turn_index=int(state.get("turn_index", 0)),
         )
+        return fallback, module_id, probe_goal, True, "empty_model_output"
     if not cleaned.endswith("?"):
         cleaned = cleaned.rstrip(".!") + "?"
-    return cleaned, module_id, probe_goal
+    return cleaned, module_id, probe_goal, False, ""
 
 
 def question_generator(state: AgentState) -> Dict:
@@ -121,12 +137,14 @@ def question_generator(state: AgentState) -> Dict:
         rationale = "opening bootstrap"
         target_module_id = 2
         probe_goal = "exemplar"
+        used_fallback = False
+        fallback_reason = ""
     else:
         target_item_id = int(_next_action_value(state, "target_item_id", 2) or 2)
         route = str(_next_action_value(state, "route", "cognitive") or "cognitive")
         style = str(_next_action_value(state, "style", "gentle_probe") or "gentle_probe")
         rationale = str(_next_action_value(state, "rationale", "targeted follow-up") or "targeted follow-up")
-        question, target_module_id, probe_goal = _build_llm_question(
+        question, target_module_id, probe_goal, used_fallback, fallback_reason = _build_llm_question(
             state,
             route=route,
             style=style,
@@ -144,7 +162,8 @@ def question_generator(state: AgentState) -> Dict:
         "target_module_name": MODULE_NAMES.get(target_module_id, "General Screening"),
         "probe_goal": style,
         "probe_goal_kind": probe_goal,
-        "used_fallback": False,
+        "used_fallback": used_fallback,
+        "fallback_reason": fallback_reason,
         "llm_generated": not (turn_index == 0 and not _has_detector_message(messages)),
         "question_preview": question[:120],
     }

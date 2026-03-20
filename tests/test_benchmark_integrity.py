@@ -13,13 +13,17 @@ class BenchmarkIntegrityTests(unittest.TestCase):
         from app.eval_artifacts import write_eval_artifacts
 
         manifest_payload = {
-            "run_config": {"manifest_schema_version": 3, "persona_count": 2, "seed": 42},
+            "run_config": {"manifest_schema_version": 4, "persona_count": 2, "seed": 42},
             "persona_count": 2,
             "profiles": [
                 {
                     "persona_id": "alpha",
                     "split": "eval",
                     "family": "control_neutral",
+                    "severity_tier": "minimal",
+                    "subtype_tag": "routine_stable",
+                    "context_tag": "routine_stable",
+                    "style_tag": "open_but_flat",
                     "source": "synthetic",
                     "has_ground_truth": True,
                     "depressed": False,
@@ -35,6 +39,10 @@ class BenchmarkIntegrityTests(unittest.TestCase):
                     "persona_id": "beta",
                     "split": "eval",
                     "family": "control_stressed",
+                    "severity_tier": "minimal",
+                    "subtype_tag": "workload_strained",
+                    "context_tag": "workload",
+                    "style_tag": "minimizing_practical",
                     "source": "synthetic",
                     "has_ground_truth": True,
                     "depressed": False,
@@ -82,7 +90,6 @@ class BenchmarkIntegrityTests(unittest.TestCase):
                 manifest_hash="abc123",
                 manifest_payload=manifest_payload,
                 prior_manifest_info={"exists": False, "hash": None, "profile_count": 0, "read_error": None},
-                prompt_version="v1",
                 seed=42,
                 persona_count=2,
                 processed_profiles=1,
@@ -105,13 +112,17 @@ class BenchmarkIntegrityTests(unittest.TestCase):
         from app.eval_artifacts import write_eval_artifacts
 
         manifest_payload = {
-            "run_config": {"manifest_schema_version": 3, "persona_count": 1, "seed": 42},
+            "run_config": {"manifest_schema_version": 4, "persona_count": 1, "seed": 42},
             "persona_count": 1,
             "profiles": [
                 {
                     "persona_id": "alpha",
                     "split": "eval",
                     "family": "control_neutral",
+                    "severity_tier": "minimal",
+                    "subtype_tag": "routine_stable",
+                    "context_tag": "routine_stable",
+                    "style_tag": "open_but_flat",
                     "source": "synthetic",
                     "has_ground_truth": True,
                     "depressed": False,
@@ -158,7 +169,6 @@ class BenchmarkIntegrityTests(unittest.TestCase):
                 manifest_hash="newhash",
                 manifest_payload=manifest_payload,
                 prior_manifest_info={"exists": True, "hash": "oldhash", "profile_count": 1, "read_error": None},
-                prompt_version="v1",
                 seed=42,
                 persona_count=1,
                 processed_profiles=1,
@@ -180,13 +190,17 @@ class BenchmarkIntegrityTests(unittest.TestCase):
         from app.eval_artifacts import write_eval_artifacts
 
         manifest_payload = {
-            "run_config": {"manifest_schema_version": 3, "persona_count": 1, "seed": 42},
+            "run_config": {"manifest_schema_version": 4, "persona_count": 1, "seed": 42},
             "persona_count": 1,
             "profiles": [
                 {
                     "persona_id": "alpha",
                     "split": "eval",
                     "family": "control_neutral",
+                    "severity_tier": "minimal",
+                    "subtype_tag": "routine_stable",
+                    "context_tag": "routine_stable",
+                    "style_tag": "open_but_flat",
                     "source": "synthetic",
                     "has_ground_truth": True,
                     "depressed": False,
@@ -209,8 +223,36 @@ class BenchmarkIntegrityTests(unittest.TestCase):
                 output_dir=Path(tmp_dir),
                 conversations=[],
                 results=results,
-                diagnostics_payload=[],
-                overall_rows=[],
+                diagnostics_payload=[
+                    {
+                        "final_state": {
+                            "sim_style_stats": {
+                                "responses_total": 4,
+                                "response_words_total": 88,
+                                "qualifier_response_count": 2,
+                                "hedged_response_count": 2,
+                                "context_anchor_count": 1,
+                                "mixed_answer_count": 1,
+                                "soft_denial_count": 1,
+                                "deflect_response_count": 0,
+                                "baseline_comparison_count": 2,
+                            }
+                        }
+                    }
+                ],
+                overall_rows=[
+                    {
+                        "family": "control_neutral",
+                        "subtype_tag": "routine_stable",
+                        "context_tag": "routine_stable",
+                        "style_tag": "open_but_flat",
+                        "bdi_true": 0,
+                        "bdi_pred": 0,
+                        "turns": 1,
+                        "item_scores_true": {"1": 0},
+                        "item_scores_pred": {"1": 0},
+                    }
+                ],
                 route_distribution=Counter(),
                 turns_total=1,
                 evidence_turns_nonempty=0,
@@ -236,7 +278,6 @@ class BenchmarkIntegrityTests(unittest.TestCase):
                 manifest_hash="abc123",
                 manifest_payload=manifest_payload,
                 prior_manifest_info={"exists": False, "hash": None, "profile_count": 0, "read_error": None},
-                prompt_version="v2",
                 seed=42,
                 persona_count=1,
                 processed_profiles=1,
@@ -253,6 +294,11 @@ class BenchmarkIntegrityTests(unittest.TestCase):
 
         self.assertEqual(int(failure_report_payload["extract_parse_fail_log_count"]), 1)
         self.assertEqual(int(failure_report_payload["extract_non_failure_log_count"]), 1)
+        self.assertEqual(failure_report_payload["subtype_count"], {"routine_stable": 1})
+        self.assertEqual(failure_report_payload["context_count"], {"routine_stable": 1})
+        self.assertEqual(failure_report_payload["style_count"], {"open_but_flat": 1})
+        self.assertEqual(int(failure_report_payload["sim_style_summary"]["responses_total"]), 4)
+        self.assertAlmostEqual(float(failure_report_payload["sim_style_summary"]["avg_response_words"]), 22.0)
 
 
 if __name__ == "__main__":

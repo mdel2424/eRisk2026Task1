@@ -54,7 +54,6 @@ def run_eval_multi_seed(
     persona_count: int,
     seeds_raw: str,
     fallback_seed: int,
-    prompt_version: str,
     save_diagnostics: bool,
     max_api_calls: int,
     trace_level: str,
@@ -74,7 +73,6 @@ def run_eval_multi_seed(
         result = run_eval(
             persona_count=persona_count,
             seed=seed,
-            prompt_version=prompt_version,
             save_diagnostics=save_diagnostics,
             max_api_calls=max_api_calls,
             trace_level=trace_level,
@@ -119,7 +117,6 @@ def run_eval_multi_seed(
             "personas": persona_count,
             "seeds": seeds,
             "evaluation_mode": "synthetic",
-            "prompt_version": prompt_version,
             "max_api_calls_per_seed": max_api_calls,
             "trace_level": trace_level,
             "save_diagnostics": bool(save_diagnostics),

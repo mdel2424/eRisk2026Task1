@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Tuple
 from core.evaluation import compute_metrics
 from persona import PersonaProfile
 
-MANIFEST_SCHEMA_VERSION = 3
+MANIFEST_SCHEMA_VERSION = 4
 
 
 def _objective(metrics: Dict[str, Any], max_turns: int, latency_lambda: float = 0.15) -> float:
@@ -48,6 +48,10 @@ def _manifest_payload(
             "persona_id": profile.persona_id,
             "split": profile.split,
             "family": profile.family,
+            "severity_tier": profile.severity_tier,
+            "subtype_tag": profile.subtype_tag,
+            "context_tag": profile.context_tag,
+            "style_tag": profile.style_tag,
             "source": profile.source,
             "has_ground_truth": profile.has_ground_truth,
             "depressed": profile.depressed,
@@ -107,8 +111,20 @@ def _load_previous_manifest_info(manifest_path: Path) -> Dict[str, Any]:
 
 def _family_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    subtype_count: Dict[str, int] = defaultdict(int)
+    context_count: Dict[str, int] = defaultdict(int)
+    style_count: Dict[str, int] = defaultdict(int)
     for row in rows:
         grouped[str(row.get("family", "unknown"))].append(row)
+        subtype = str(row.get("subtype_tag", "")).strip()
+        context = str(row.get("context_tag", "")).strip()
+        style = str(row.get("style_tag", "")).strip()
+        if subtype:
+            subtype_count[subtype] += 1
+        if context:
+            context_count[context] += 1
+        if style:
+            style_count[style] += 1
 
     family_count = {family: len(items) for family, items in grouped.items()}
     item_f1_by_family: Dict[str, float] = {}
@@ -119,6 +135,9 @@ def _family_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         bdi_mae_by_family[family] = float(metrics.get("bdi_mae", 0.0))
     return {
         "family_count": family_count,
+        "subtype_count": dict(sorted(subtype_count.items(), key=lambda pair: pair[0])),
+        "context_count": dict(sorted(context_count.items(), key=lambda pair: pair[0])),
+        "style_count": dict(sorted(style_count.items(), key=lambda pair: pair[0])),
         "item_f1_by_family": item_f1_by_family,
         "bdi_mae_by_family": bdi_mae_by_family,
     }
@@ -128,6 +147,10 @@ def _profile_meta(profile: PersonaProfile) -> Dict[str, Any]:
     return {
         "split": profile.split,
         "family": profile.family,
+        "severity_tier": profile.severity_tier,
+        "subtype_tag": profile.subtype_tag,
+        "context_tag": profile.context_tag,
+        "style_tag": profile.style_tag,
         "generation_seed": profile.generation_seed,
         "template_bank": profile.template_bank,
         "behavior_params": dict(profile.behavior_params),

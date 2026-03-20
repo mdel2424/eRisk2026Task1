@@ -29,6 +29,58 @@ def _predicted_key_pairs(item_ids: List[int], symptom_names: List[str]) -> List[
     return pairs
 
 
+def _aggregate_sim_style_summary(diagnostics_payload: List[Dict[str, Any]]) -> Dict[str, Any]:
+    totals = {
+        "responses_total": 0,
+        "response_words_total": 0,
+        "qualifier_response_count": 0,
+        "hedged_response_count": 0,
+        "context_anchor_count": 0,
+        "mixed_answer_count": 0,
+        "soft_denial_count": 0,
+        "deflect_response_count": 0,
+        "baseline_comparison_count": 0,
+        "opening_summary_count": 0,
+        "contrastive_negative_count": 0,
+    }
+
+    for entry in diagnostics_payload:
+        if not isinstance(entry, dict):
+            continue
+        final_state_payload = dict(entry.get("final_state", {}) or {})
+        style_stats = dict(final_state_payload.get("sim_style_stats", {}) or {})
+        for key in list(totals.keys()):
+            try:
+                totals[key] += int(style_stats.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                continue
+
+    responses_total = int(totals["responses_total"])
+
+    def _rate(key: str) -> float:
+        if responses_total <= 0:
+            return 0.0
+        return round(float(totals[key]) / float(responses_total), 4)
+
+    avg_response_words = (
+        round(float(totals["response_words_total"]) / float(responses_total), 4) if responses_total > 0 else 0.0
+    )
+
+    return {
+        **totals,
+        "avg_response_words": avg_response_words,
+        "qualifier_rate": _rate("qualifier_response_count"),
+        "hedge_rate": _rate("hedged_response_count"),
+        "context_anchor_rate": _rate("context_anchor_count"),
+        "mixed_answer_rate": _rate("mixed_answer_count"),
+        "soft_denial_rate": _rate("soft_denial_count"),
+        "deflect_rate": _rate("deflect_response_count"),
+        "baseline_comparison_rate": _rate("baseline_comparison_count"),
+        "opening_summary_rate": _rate("opening_summary_count"),
+        "contrastive_negative_rate": _rate("contrastive_negative_count"),
+    }
+
+
 def _f1_from_counts(tp: int, fp: int, fn: int) -> float:
     if tp + fp + fn <= 0:
         return 0.0
@@ -217,7 +269,6 @@ def _build_benchmark_integrity(
     eval_ids: List[str],
     manifest_hash: str,
     prior_manifest_info: Dict[str, Any],
-    prompt_version: str,
 ) -> Dict[str, Any]:
     profiles = list(manifest_payload.get("profiles", []) or [])
     manifest_persona_ids = [str(profile.get("persona_id", "")).strip() for profile in profiles if str(profile.get("persona_id", "")).strip()]
@@ -303,7 +354,6 @@ def _build_benchmark_integrity(
         "evaluation_mode": "synthetic",
         "persona_regeneration_policy": "always_regenerate",
         "manifest_hash": manifest_hash,
-        "prompt_version": prompt_version,
         "detector": {
             "backend": resolve_detector_backend(),
             "target": _detector_target(),
@@ -378,7 +428,6 @@ def write_eval_artifacts(
     manifest_hash: str,
     manifest_payload: Dict[str, Any],
     prior_manifest_info: Dict[str, Any],
-    prompt_version: str,
     seed: int,
     persona_count: int,
     processed_profiles: int,
@@ -403,7 +452,6 @@ def write_eval_artifacts(
 
     metrics_payload: Dict[str, Any] = {
         "evaluation_mode": "synthetic",
-        "prompt_version": prompt_version,
         "persona_count": len(all_profiles),
         "overall_labeled": overall_metrics_payload,
         "primary_eval_split": primary_split,
@@ -476,12 +524,12 @@ def write_eval_artifacts(
     blended_observed_mean = (
         float(blended_observed_total) / float(processed_profiles) if processed_profiles > 0 else 0.0
     )
+    sim_style_summary = _aggregate_sim_style_summary(diagnostics_payload)
     if debug_outputs:
         family_summary = _family_summary(overall_rows)
         failure_report_payload = {
             "run_summary": {
                 "evaluation_mode": "synthetic",
-                "prompt_version": prompt_version,
                 "personas_requested": persona_count,
                 "profiles_evaluated": processed_profiles,
                 "turns_total": turns_total,
@@ -514,6 +562,7 @@ def write_eval_artifacts(
             ),
             "blended_observed_item_count_total": int(blended_observed_total),
             "blended_observed_item_count_mean_per_profile": round(blended_observed_mean, 4),
+            "sim_style_summary": sim_style_summary,
             "post_floor_productivity": {
                 "min_turns_threshold": int(min_turns_for_productivity),
                 "turns_after_min_turns": int(post_floor_turns_total),
@@ -535,7 +584,6 @@ def write_eval_artifacts(
         eval_ids=eval_ids,
         manifest_hash=manifest_hash,
         prior_manifest_info=prior_manifest_info,
-        prompt_version=prompt_version,
     )
     _write_json(output_dir / "benchmark_integrity_run_local.json", benchmark_integrity_payload)
 
@@ -547,7 +595,6 @@ def write_eval_artifacts(
             "mode": "eval",
             "personas": persona_count,
             "seed": seed,
-            "prompt_version": prompt_version,
             "save_diagnostics_requested": bool(requested_save_diagnostics),
             "save_diagnostics_effective": bool(save_diagnostics),
             "trace_level_requested": requested_trace_level,

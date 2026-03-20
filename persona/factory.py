@@ -11,6 +11,8 @@ def create_persona(profile: PersonaProfile) -> PersonaResponder:
         evasive=True,
         family=profile.family,
         split=profile.split,
+        context_tag=profile.context_tag,
+        style_tag=profile.style_tag,
         behavior_params=dict(profile.behavior_params),
         template_bank=profile.template_bank,
     )

@@ -40,6 +40,10 @@ def _result_record(profile: PersonaProfile, state: Dict) -> Dict:
     return {
         "llm": profile.persona_id,
         "family": profile.family,
+        "severity_tier": profile.severity_tier,
+        "subtype_tag": profile.subtype_tag,
+        "context_tag": profile.context_tag,
+        "style_tag": profile.style_tag,
         "split": profile.split,
         "bdi_true": profile.bdi_total,
         "bdi_pred": predicted_bdi,
@@ -54,7 +58,6 @@ def _result_record(profile: PersonaProfile, state: Dict) -> Dict:
 def run_eval(
     persona_count: int,
     seed: int,
-    prompt_version: str,
     save_diagnostics: bool,
     max_api_calls: int,
     trace_level: str,
@@ -69,7 +72,6 @@ def run_eval(
     if ci_mode:
         live_status = False
 
-    os.environ["PROMPT_VERSION"] = prompt_version
     _assert_detector_backend_ready()
     set_llm_call_budget(max_api_calls if max_api_calls > 0 else None)
     reset_llm_usage()
@@ -104,9 +106,7 @@ def run_eval(
     run_profile = "debug" if effective_debug_outputs else "lean"
 
     if verbose_console and effective_debug_outputs:
-        print(
-            f"--- Synthetic Eval | personas={persona_count} | seed={seed} | prompts={prompt_version} ---"
-        )
+        print(f"--- Synthetic Eval | personas={persona_count} | seed={seed} ---")
         _print_backend_info(max_api_calls=max_api_calls if max_api_calls > 0 else None, trace_level=trace_level_effective)
         print(
             "Stop policy: "
@@ -121,10 +121,7 @@ def run_eval(
             + " | ".join(f"{key}={value}" for key, value in risk_policy.items())
         )
     elif live_status:
-        print(
-            f"Running synthetic eval: personas={persona_count}, "
-            f"prompt={prompt_version}, live_status=on"
-        )
+        print(f"Running synthetic eval: personas={persona_count}, live_status=on")
         if effective_debug_outputs:
             print(
                 "Stop policy: "
@@ -389,7 +386,6 @@ def run_eval(
                             failure_reason = "parsed_but_no_usable_evidence"
                         extract_parse_fail_log_entries.append(
                             {
-                                "prompt_version": prompt_version,
                                 "llm": profile.persona_id,
                                 "split": profile.split,
                                 "family": profile.family,
@@ -567,7 +563,6 @@ def run_eval(
             manifest_hash=manifest_hash,
             manifest_payload=manifest_payload,
             prior_manifest_info=prior_manifest_info,
-            prompt_version=prompt_version,
             seed=seed,
             persona_count=persona_count,
             processed_profiles=processed_profiles,

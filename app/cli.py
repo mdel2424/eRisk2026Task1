@@ -29,7 +29,6 @@ def parse_args() -> argparse.Namespace:
         default="false",
         help="Show hidden synthetic BDI metadata at interactive startup",
     )
-    parser.add_argument("--prompt_version", default="v1")
     parser.add_argument("--save_diagnostics", default="false")
     parser.add_argument("--debug_outputs", default="false")
     parser.add_argument("--max_api_calls", type=int, default=180)
@@ -49,7 +48,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tune_max_api_calls", type=int, default=800)
     parser.add_argument("--tune_save_diagnostics", default="false")
     parser.add_argument("--tune_trace_level", choices=["compact", "off"], default="off")
-    parser.add_argument("--tune_prompt_version", default="")
     parser.add_argument("--tune_top_k", type=int, default=1)
     return parser.parse_args()
 
@@ -67,7 +65,6 @@ def main() -> None:
         run_eval(
             persona_count=args.personas,
             seed=args.seed,
-            prompt_version=args.prompt_version,
             save_diagnostics=_parse_bool(args.save_diagnostics),
             max_api_calls=args.max_api_calls,
             trace_level=args.trace_level,
@@ -78,7 +75,6 @@ def main() -> None:
             persona_count=args.personas,
             seeds_raw=args.multi_seeds,
             fallback_seed=args.seed,
-            prompt_version=args.prompt_version,
             save_diagnostics=_parse_bool(args.save_diagnostics),
             max_api_calls=args.max_api_calls,
             trace_level=args.trace_level,
@@ -86,14 +82,12 @@ def main() -> None:
             debug_outputs=_parse_bool(args.debug_outputs),
         )
     else:
-        tune_prompt_version = args.tune_prompt_version.strip() or args.prompt_version
         run_tune(
             tune_personas=args.tune_personas,
             tune_seed=args.tune_seed,
             tune_max_api_calls=args.tune_max_api_calls,
             tune_save_diagnostics=_parse_bool(args.tune_save_diagnostics),
             tune_trace_level=args.tune_trace_level,
-            tune_prompt_version=tune_prompt_version,
             tune_top_k=args.tune_top_k,
             debug_outputs=_parse_bool(args.debug_outputs),
         )

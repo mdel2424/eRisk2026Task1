@@ -92,7 +92,7 @@ class FinalizeOutputsTests(unittest.TestCase):
     def test_single_repeated_weak_item_does_not_disable_guardrail(self) -> None:
         state = _finalizing_state("repeated-weak-item")
         _set_item_belief(state, item_id=4, expected_score=2.1, support_count=2, entropy=0.80)
-        _add_evidence(state, item_id=4, turn=1)
+        _add_evidence(state, item_id=4, turn=1, confidence=0.4, intensity=1.0)
 
         result = finalize_outputs(state)
         module_imputation = result["module_imputation"]
@@ -104,13 +104,15 @@ class FinalizeOutputsTests(unittest.TestCase):
 
     def test_broad_mild_support_without_anchors_keeps_guardrail_active(self) -> None:
         state = _finalizing_state("anchor-gated-guardrail")
-        _set_item_belief(state, item_id=4, expected_score=2.2, support_count=1, entropy=0.20)
+        _set_item_belief(state, item_id=4, expected_score=2.2, support_count=2, entropy=0.20)
         _set_item_belief(state, item_id=10, expected_score=1.2, support_count=1, entropy=0.20)
-        _set_item_belief(state, item_id=5, expected_score=2.1, support_count=1, entropy=0.20)
+        _set_item_belief(state, item_id=5, expected_score=2.1, support_count=2, entropy=0.20)
         _set_item_belief(state, item_id=14, expected_score=2.0, support_count=1, entropy=0.20)
         _add_evidence(state, item_id=4, turn=1)
+        _add_evidence(state, item_id=4, turn=2)
         _add_evidence(state, item_id=10, turn=1)
-        _add_evidence(state, item_id=5, turn=2)
+        _add_evidence(state, item_id=5, turn=3)
+        _add_evidence(state, item_id=5, turn=4)
         _add_evidence(state, item_id=14, turn=2)
 
         result = finalize_outputs(state)
@@ -124,6 +126,18 @@ class FinalizeOutputsTests(unittest.TestCase):
         self.assertGreaterEqual(int(module_imputation["corroborated_affective_cognitive_module_breadth"]), 2)
         self.assertEqual(module_imputation["guardrail_bypass_source"], "none")
         self.assertIsNotNone(module_imputation["imputed_point_budget"])
+
+    def test_diffuse_weak_breadth_does_not_trigger_support_geometry_bypass(self) -> None:
+        state = _finalizing_state("diffuse-weak-breadth")
+        for turn, item_id in enumerate([2, 3, 5, 14], start=1):
+            _set_item_belief(state, item_id=item_id, expected_score=1.2, support_count=1, entropy=0.20)
+            _add_evidence(state, item_id=item_id, turn=turn, confidence=0.40, intensity=1.0)
+
+        result = finalize_outputs(state)
+        module_imputation = result["module_imputation"]
+
+        self.assertFalse(bool(module_imputation["support_geometry_candidate_bypass"]))
+        self.assertFalse(bool(module_imputation["anchor_gated_guardrail_blocked"]))
 
     def test_few_mild_supported_items_still_keep_guardrail_active(self) -> None:
         state = _finalizing_state("few-mild-items")
@@ -202,7 +216,7 @@ class FinalizeOutputsTests(unittest.TestCase):
     def test_low_signal_observed_nonrisk_two_without_corroboration_is_capped_to_one(self) -> None:
         state = _finalizing_state("observed-two-capped")
         _set_item_belief(state, item_id=6, expected_score=2.2, support_count=2, entropy=0.90)
-        _add_evidence(state, item_id=6, turn=1)
+        _add_evidence(state, item_id=6, turn=1, confidence=0.4, intensity=1.0)
 
         result = finalize_outputs(state)
         detail = result["module_imputation"]["item_details"]["6"]
@@ -361,6 +375,104 @@ class FinalizeOutputsTests(unittest.TestCase):
         self.assertEqual(module_imputation["severe_recovery_reason"], "multiple_strong_anchor_modules")
         self.assertIn(14, module_imputation["strong_anchor_local_bypass_item_ids"])
         self.assertIn(15, module_imputation["strong_anchor_local_bypass_item_ids"])
+
+    def test_single_anchor_recovery_does_not_activate_for_minimal_cognitive_profile(self) -> None:
+        state = _finalizing_state("single-anchor-minimal-cognitive")
+        state["raw_predicted_bdi_score"] = 4
+        fixtures = [
+            (5, 1.6),
+            (14, 1.2),
+            (12, 1.6),
+            (17, 1.2),
+            (13, 1.6),
+            (19, 1.2),
+        ]
+        for turn, (item_id, expected_score) in enumerate(fixtures, start=1):
+            _set_item_belief(state, item_id=item_id, expected_score=expected_score, support_count=1, entropy=0.90)
+            _add_evidence(state, item_id=item_id, turn=turn, confidence=0.7, intensity=1.3)
+        _add_persona_reply(state, "Social stuff feels like way more effort lately.")
+
+        result = finalize_outputs(state)
+        module_imputation = result["module_imputation"]
+
+        self.assertFalse(bool(module_imputation["severe_recovery_mode_active"]))
+        self.assertFalse(bool(module_imputation["single_anchor_activation_eligible"]))
+        self.assertEqual(module_imputation["severe_recovery_activation_path"], "none")
+
+    def test_single_anchor_recovery_can_activate_with_stronger_severity_support(self) -> None:
+        state = _finalizing_state("single-anchor-activation")
+        state["raw_predicted_bdi_score"] = 20
+        fixtures = [
+            (5, 1.8, 1),
+            (14, 2.0, 1),
+            (12, 1.8, 2),
+            (17, 1.2),
+            (13, 1.8, 2),
+            (19, 1.2),
+        ]
+        turn = 1
+        for fixture in fixtures:
+            item_id = int(fixture[0])
+            expected_score = float(fixture[1])
+            support_count = int(fixture[2]) if len(fixture) > 2 else 1
+            _set_item_belief(state, item_id=item_id, expected_score=expected_score, support_count=support_count, entropy=0.90)
+            _add_evidence(
+                state,
+                item_id=item_id,
+                turn=turn,
+                confidence=0.75,
+                intensity=1.8 if item_id in {5, 14, 12, 13} else 1.3,
+            )
+            turn += 1
+            if support_count >= 2:
+                _add_evidence(
+                    state,
+                    item_id=item_id,
+                    turn=turn,
+                    confidence=0.78,
+                    intensity=1.8,
+                )
+                turn += 1
+        _add_persona_reply(state, "I genuinely feel worthless and like I do not contribute anything that matters.")
+
+        result = finalize_outputs(state)
+        module_imputation = result["module_imputation"]
+
+        self.assertTrue(bool(module_imputation["severe_recovery_mode_active"]))
+        self.assertTrue(bool(module_imputation["single_anchor_activation_eligible"]))
+        self.assertEqual(module_imputation["severe_recovery_reason"], "single_strong_anchor_with_severity_support")
+        self.assertEqual(module_imputation["single_anchor_anchor_module_ids"], [3])
+
+    def test_single_anchor_mode_records_local_bypass_blocks_from_mere_corroboration(self) -> None:
+        state = _finalizing_state("single-anchor-local-block")
+        state["raw_predicted_bdi_score"] = 20
+        fixtures = [
+            (5, 1.8, 1),
+            (14, 2.0, 1),
+            (6, 1.2, 1),
+            (12, 1.8, 2),
+            (17, 1.2),
+            (13, 1.8, 2),
+            (19, 1.2),
+        ]
+        turn = 1
+        for fixture in fixtures:
+            item_id = int(fixture[0])
+            expected_score = float(fixture[1])
+            support_count = int(fixture[2]) if len(fixture) > 2 else 1
+            _set_item_belief(state, item_id=item_id, expected_score=expected_score, support_count=support_count, entropy=0.90)
+            intensity = 1.8 if item_id in {5, 14, 12, 13} else 1.2
+            _add_evidence(state, item_id=item_id, turn=turn, confidence=0.72, intensity=intensity)
+            turn += 1
+            if support_count >= 2:
+                _add_evidence(state, item_id=item_id, turn=turn, confidence=0.75, intensity=1.8)
+                turn += 1
+        _add_persona_reply(state, "I genuinely feel worthless and like I do not contribute anything that matters.")
+
+        result = finalize_outputs(state)
+
+        self.assertTrue(bool(result["module_imputation"]["severe_recovery_mode_active"]))
+        self.assertIn(6, result["module_imputation"]["single_anchor_local_bypass_blocked_item_ids"])
 
     def test_severe_amplitude_observed_item_recovers_to_two(self) -> None:
         state = _finalizing_state("severe-amplitude-observed")
@@ -539,6 +651,70 @@ class FinalizeOutputsTests(unittest.TestCase):
 
         self.assertTrue(bool(result["module_imputation"]["severe_module3_item14_priority_applied"]))
         self.assertIn(14, result["module_imputation"]["severe_module3_restored_item_ids"])
+
+    def test_single_anchor_module_one_blocks_module_three_restore_without_deeper_module_three_severity(self) -> None:
+        state = _finalizing_state("single-anchor-module1-blocks-module3-restore")
+        state["raw_predicted_bdi_score"] = 20
+        fixtures = [
+            (12, 2.0),
+            (17, 1.6),
+            (5, 2.0),
+            (6, 1.2),
+            (13, 1.6),
+            (19, 1.2),
+        ]
+        for turn, (item_id, expected_score) in enumerate(fixtures, start=1):
+            _set_item_belief(state, item_id=item_id, expected_score=expected_score, support_count=1, entropy=0.90)
+            _add_evidence(state, item_id=item_id, turn=turn, confidence=0.75, intensity=1.8 if item_id in {5, 12} else 1.3)
+        _add_persona_reply(state, "Social stuff feels like way more effort lately.")
+
+        result = finalize_outputs(state)
+        module_imputation = result["module_imputation"]
+
+        self.assertTrue(bool(module_imputation["severe_recovery_mode_active"]))
+        self.assertEqual(module_imputation["severe_recovery_reason"], "single_strong_anchor_with_severity_support")
+        self.assertEqual(module_imputation["single_anchor_anchor_module_ids"], [1])
+        self.assertTrue(bool(module_imputation["single_anchor_module3_restore_blocked"]))
+        self.assertEqual(module_imputation["severe_module3_restored_item_ids"], [])
+
+    def test_single_anchor_module_three_can_still_restore_module_three_items(self) -> None:
+        state = _finalizing_state("single-anchor-module3-restore")
+        state["raw_predicted_bdi_score"] = 20
+        fixtures = [
+            (5, 2.2, 1),
+            (14, 2.0, 1),
+            (12, 1.8, 2),
+            (17, 1.2),
+            (13, 1.8, 2),
+            (19, 1.2),
+        ]
+        turn = 1
+        for fixture in fixtures:
+            item_id = int(fixture[0])
+            expected_score = float(fixture[1])
+            support_count = int(fixture[2]) if len(fixture) > 2 else 1
+            _set_item_belief(state, item_id=item_id, expected_score=expected_score, support_count=support_count, entropy=0.90)
+            _add_evidence(
+                state,
+                item_id=item_id,
+                turn=turn,
+                confidence=0.75,
+                intensity=1.8 if item_id in {5, 14, 12, 13} else 1.3,
+            )
+            turn += 1
+            if support_count >= 2:
+                _add_evidence(state, item_id=item_id, turn=turn, confidence=0.78, intensity=1.8)
+                turn += 1
+        _add_persona_reply(state, "I genuinely feel worthless and like I do not contribute anything that matters.")
+
+        result = finalize_outputs(state)
+        module_imputation = result["module_imputation"]
+
+        self.assertTrue(bool(module_imputation["severe_recovery_mode_active"]))
+        self.assertEqual(module_imputation["severe_recovery_reason"], "single_strong_anchor_with_severity_support")
+        self.assertEqual(module_imputation["single_anchor_anchor_module_ids"], [3])
+        self.assertFalse(bool(module_imputation["single_anchor_module3_restore_blocked"]))
+        self.assertTrue(module_imputation["severe_module3_restored_item_ids"])
 
     def test_non_strong_anchor_module_imputed_candidate_is_not_restored(self) -> None:
         state = _finalizing_state("non-strong-anchor-imputed")
@@ -778,8 +954,8 @@ class FinalizeOutputsTests(unittest.TestCase):
         state = _finalizing_state("weak-pairs-not-corroborated")
         _set_item_belief(state, item_id=3, expected_score=1.2, support_count=1, entropy=0.90)
         _set_item_belief(state, item_id=5, expected_score=1.2, support_count=1, entropy=0.90)
-        _add_evidence(state, item_id=3, turn=1)
-        _add_evidence(state, item_id=5, turn=2)
+        _add_evidence(state, item_id=3, turn=1, confidence=0.4, intensity=1.0)
+        _add_evidence(state, item_id=5, turn=2, confidence=0.4, intensity=1.0)
 
         result = finalize_outputs(state)
         item_three = result["module_imputation"]["item_details"]["3"]
@@ -793,9 +969,10 @@ class FinalizeOutputsTests(unittest.TestCase):
     def test_same_module_stronger_pair_can_still_corroborate(self) -> None:
         state = _finalizing_state("stronger-pair-corroborated")
         _set_item_belief(state, item_id=3, expected_score=1.2, support_count=1, entropy=0.90)
-        _set_item_belief(state, item_id=5, expected_score=1.6, support_count=1, entropy=0.90)
-        _add_evidence(state, item_id=3, turn=1)
+        _set_item_belief(state, item_id=5, expected_score=1.8, support_count=2, entropy=0.90)
+        _add_evidence(state, item_id=3, turn=1, confidence=0.4, intensity=1.0)
         _add_evidence(state, item_id=5, turn=2)
+        _add_evidence(state, item_id=5, turn=3, confidence=0.8, intensity=1.8)
 
         result = finalize_outputs(state)
         item_three = result["module_imputation"]["item_details"]["3"]
@@ -804,7 +981,116 @@ class FinalizeOutputsTests(unittest.TestCase):
         self.assertTrue(bool(item_three["is_corroborated_item"]))
         self.assertTrue(bool(item_five["is_corroborated_item"]))
         self.assertIn(5, item_three["same_module_corroborated_item_ids"])
-        self.assertIn(3, item_five["same_module_corroborated_item_ids"])
+        self.assertEqual(item_five["same_module_corroborated_item_ids"], [])
+
+    def test_broad_shallow_profile_trims_diffuse_observed_breadth(self) -> None:
+        state = _finalizing_state("broad-shallow-profile")
+        for turn, item_id in enumerate([1, 4, 2, 3, 13, 19], start=1):
+            _set_item_belief(state, item_id=item_id, expected_score=1.8, support_count=1, entropy=0.80)
+            _add_evidence(state, item_id=item_id, turn=turn, confidence=0.4, intensity=1.2)
+
+        result = finalize_outputs(state)
+        module_imputation = result["module_imputation"]
+
+        self.assertTrue(bool(module_imputation["broad_shallow_profile_active"]))
+        self.assertEqual(int(module_imputation["broad_shallow_observed_keep_budget"]), 2)
+        self.assertTrue(module_imputation["broad_shallow_observed_trimmed_item_ids"])
+        kept_high = sum(1 for item_id in [1, 4, 2, 3, 13, 19] if int(result["final_item_scores"][item_id]) >= 2)
+        self.assertLessEqual(kept_high, 2)
+
+    def test_broad_shallow_budget_keeps_at_most_one_item_per_module(self) -> None:
+        state = _finalizing_state("broad-shallow-per-module")
+        for turn, item_id in enumerate([1, 4, 2, 3, 13, 19], start=1):
+            _set_item_belief(state, item_id=item_id, expected_score=1.8, support_count=1, entropy=0.80)
+            _add_evidence(state, item_id=item_id, turn=turn, confidence=0.4, intensity=1.2)
+
+        result = finalize_outputs(state)
+
+        self.assertLessEqual(sum(1 for item_id in [1, 4] if int(result["final_item_scores"][item_id]) >= 2), 1)
+        self.assertLessEqual(sum(1 for item_id in [13, 19] if int(result["final_item_scores"][item_id]) >= 2), 1)
+
+    def test_somatic_cluster_recovery_blocks_broad_shallow_profile_mode(self) -> None:
+        state = _finalizing_state("somatic-cluster-no-broad-shallow")
+        state["raw_predicted_bdi_score"] = 20
+        for turn, (item_id, expected_score) in enumerate([(15, 2.0), (20, 2.0), (16, 1.2)], start=1):
+            _set_item_belief(state, item_id=item_id, expected_score=expected_score, support_count=1, entropy=0.90)
+            _add_evidence(state, item_id=item_id, turn=turn)
+
+        result = finalize_outputs(state)
+        module_imputation = result["module_imputation"]
+
+        self.assertTrue(bool(module_imputation["somatic_cluster_recovery_active"]))
+        self.assertFalse(bool(module_imputation["broad_shallow_profile_active"]))
+
+    def test_somatic_cluster_recovery_floors_item_sixteen_back_to_one(self) -> None:
+        state = _finalizing_state("somatic-cluster-floor")
+        state["raw_predicted_bdi_score"] = 20
+        for turn, (item_id, expected_score) in enumerate([(15, 2.0), (20, 2.0), (16, 1.2)], start=1):
+            _set_item_belief(state, item_id=item_id, expected_score=expected_score, support_count=1, entropy=0.90)
+            if item_id == 16:
+                _add_evidence(state, item_id=item_id, turn=turn, confidence=0.4, intensity=1.0)
+            else:
+                _add_evidence(state, item_id=item_id, turn=turn)
+
+        result = finalize_outputs(state)
+        detail = result["module_imputation"]["item_details"]["16"]
+
+        self.assertTrue(bool(result["module_imputation"]["somatic_cluster_recovery_active"]))
+        self.assertFalse(bool(result["module_imputation"]["severe_recovery_mode_active"]))
+        self.assertEqual(int(result["final_item_scores"][16]), 1)
+        self.assertTrue(bool(detail["somatic_cluster_floor_applied"]))
+        self.assertIn(16, result["module_imputation"]["somatic_cluster_floor_item_ids"])
+
+    def test_somatic_cluster_recovery_can_lift_item_sixteen_to_two(self) -> None:
+        state = _finalizing_state("somatic-cluster-to-two")
+        state["raw_predicted_bdi_score"] = 20
+        fixtures = [(15, 2.0), (20, 2.0), (21, 1.0), (16, 1.8)]
+        for turn, (item_id, expected_score) in enumerate(fixtures, start=1):
+            _set_item_belief(state, item_id=item_id, expected_score=expected_score, support_count=1, entropy=0.90)
+            if item_id == 16:
+                _add_evidence(state, item_id=item_id, turn=turn, confidence=0.52, intensity=1.6)
+            else:
+                _add_evidence(state, item_id=item_id, turn=turn, confidence=0.7, intensity=1.5)
+
+        result = finalize_outputs(state)
+        detail = result["module_imputation"]["item_details"]["16"]
+
+        self.assertTrue(bool(result["module_imputation"]["somatic_cluster_recovery_active"]))
+        self.assertFalse(bool(result["module_imputation"]["severe_recovery_mode_active"]))
+        self.assertEqual(int(result["final_item_scores"][16]), 2)
+        self.assertTrue(bool(detail["somatic_cluster_floor_applied"]))
+        self.assertFalse(bool(detail["severe_amplitude_observed_to_three"]))
+
+    def test_somatic_cluster_imputed_restore_recovers_item_eighteen_to_one(self) -> None:
+        state = _finalizing_state("somatic-cluster-imputed-restore")
+        state["raw_predicted_bdi_score"] = 20
+        for turn, (item_id, expected_score) in enumerate([(15, 2.0), (20, 2.0), (16, 2.2)], start=1):
+            _set_item_belief(state, item_id=item_id, expected_score=expected_score, support_count=1, entropy=0.90)
+            _add_evidence(state, item_id=item_id, turn=turn, confidence=0.7, intensity=2.0 if item_id == 16 else 1.5)
+
+        result = finalize_outputs(state)
+        detail = result["module_imputation"]["item_details"]["18"]
+
+        self.assertTrue(bool(result["module_imputation"]["somatic_cluster_recovery_active"]))
+        self.assertEqual(int(result["final_item_scores"][18]), 1)
+        self.assertTrue(bool(detail["somatic_cluster_imputed_restore_applied"]))
+        self.assertIn(18, result["module_imputation"]["somatic_cluster_imputed_restored_item_ids"])
+
+    def test_item_eleven_does_not_get_somatic_cluster_recovery(self) -> None:
+        state = _finalizing_state("somatic-cluster-no-item11")
+        state["raw_predicted_bdi_score"] = 20
+        fixtures = [(15, 2.0), (20, 2.0), (16, 1.2), (11, 1.2)]
+        for turn, (item_id, expected_score) in enumerate(fixtures, start=1):
+            _set_item_belief(state, item_id=item_id, expected_score=expected_score, support_count=1, entropy=0.90)
+            _add_evidence(state, item_id=item_id, turn=turn)
+
+        result = finalize_outputs(state)
+        detail = result["module_imputation"]["item_details"]["11"]
+
+        self.assertTrue(bool(result["module_imputation"]["somatic_cluster_recovery_active"]))
+        self.assertEqual(int(result["final_item_scores"][11]), 1)
+        self.assertFalse(bool(detail["somatic_cluster_floor_applied"]))
+        self.assertNotIn(11, result["module_imputation"]["somatic_cluster_floor_item_ids"])
 
 
 if __name__ == "__main__":

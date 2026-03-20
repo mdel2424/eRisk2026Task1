@@ -12,7 +12,10 @@ from app.notebook_eval import (
     PERSONA_ERROR_COLUMNS,
     build_item_error_table,
     build_persona_error_table,
+    compare_style_summaries,
     load_eval_records,
+    summarize_simulated_style,
+    summarize_transcript_style,
 )
 from core.io_schema import PersonaResult
 from core.state import symptom_name_from_item
@@ -53,6 +56,10 @@ class NotebookEvalTests(unittest.TestCase):
                             "persona_id": "alpha",
                             "split": "val",
                             "family": "cognitive_ruminative",
+                            "severity_tier": "moderate",
+                            "subtype_tag": "worthlessness_heavy",
+                            "context_tag": "school",
+                            "style_tag": "contextual_reflective",
                             "source": "synthetic",
                             "bdi_scores": {"1": 0, "2": 1},
                             "bdi_total": 1,
@@ -62,6 +69,10 @@ class NotebookEvalTests(unittest.TestCase):
                             "persona_id": "beta",
                             "split": "test",
                             "family": "somatic_fatigue",
+                            "severity_tier": "mild",
+                            "subtype_tag": "sleep_heavy",
+                            "context_tag": "workload",
+                            "style_tag": "minimizing_practical",
                             "source": "synthetic",
                             "bdi_scores": {"1": 1, "2": 0},
                             "bdi_total": 1,
@@ -105,6 +116,10 @@ class NotebookEvalTests(unittest.TestCase):
         self.assertEqual(records_df.loc[0, "persona_id"], "alpha")
         self.assertEqual(records_df.loc[0, "split"], "val")
         self.assertEqual(records_df.loc[0, "family"], "cognitive_ruminative")
+        self.assertEqual(records_df.loc[0, "severity_tier"], "moderate")
+        self.assertEqual(records_df.loc[0, "subtype_tag"], "worthlessness_heavy")
+        self.assertEqual(records_df.loc[0, "context_tag"], "school")
+        self.assertEqual(records_df.loc[0, "style_tag"], "contextual_reflective")
         self.assertEqual(records_df.loc[0, "bdi_true"], 1)
         self.assertEqual(records_df.loc[0, "bdi_pred"], 2)
         self.assertEqual(records_df.loc[0, "item_1_true"], 0)
@@ -134,6 +149,10 @@ class NotebookEvalTests(unittest.TestCase):
                             "persona_id": "alpha",
                             "split": "eval",
                             "family": "control_neutral",
+                            "severity_tier": "minimal",
+                            "subtype_tag": "routine_stable",
+                            "context_tag": "routine_stable",
+                            "style_tag": "open_but_flat",
                             "source": "synthetic",
                             "bdi_scores": {"1": 0},
                             "bdi_total": 0,
@@ -203,6 +222,54 @@ class NotebookEvalTests(unittest.TestCase):
 
         self.assertTrue(item_error_df.empty)
         self.assertEqual(list(item_error_df.columns), ITEM_ERROR_COLUMNS)
+
+    def test_summarize_transcript_style_extracts_patient_lines(self) -> None:
+        transcript = """
+Patient: I think it has been more up and down than usual lately.
+Patient: That part feels pretty close to normal for me.
+Patient: It is a bit of both, honestly; getting started takes effort and I get less out of it.
+"""
+
+        summary = summarize_transcript_style(transcript)
+
+        self.assertEqual(summary["response_count"], 3)
+        self.assertGreater(float(summary["qualifier_rate"]), 0.0)
+        self.assertGreater(float(summary["mixed_answer_rate"]), 0.0)
+        self.assertGreaterEqual(float(summary["soft_denial_rate"]), 0.0)
+
+    def test_summarize_simulated_style_returns_expected_keys(self) -> None:
+        summary = summarize_simulated_style(persona_count=4, seed=42)
+
+        self.assertEqual(summary["persona_count"], 4)
+        self.assertGreater(int(summary["response_count"]), 0)
+        self.assertIn("avg_response_words", summary)
+        self.assertIn("qualifier_rate", summary)
+        self.assertIn("mixed_answer_rate", summary)
+        self.assertIn("soft_denial_rate", summary)
+
+    def test_summarize_simulated_style_falls_within_calibration_envelope(self) -> None:
+        summary = summarize_simulated_style(persona_count=8, seed=42)
+
+        self.assertGreaterEqual(float(summary["avg_response_words"]), 20.0)
+        self.assertLessEqual(float(summary["avg_response_words"]), 24.0)
+        self.assertGreaterEqual(float(summary["qualifier_rate"]), 0.40)
+        self.assertLessEqual(float(summary["qualifier_rate"]), 0.60)
+        self.assertGreaterEqual(float(summary["baseline_comparison_rate"]), 0.06)
+        self.assertLessEqual(float(summary["baseline_comparison_rate"]), 0.22)
+        self.assertLess(float(summary["soft_denial_rate"]), 0.40)
+        self.assertGreaterEqual(float(summary["mixed_answer_rate"]), 0.04)
+        self.assertLessEqual(float(summary["mixed_answer_rate"]), 0.10)
+
+    def test_compare_style_summaries_returns_deltas(self) -> None:
+        reference = {"response_count": 8, "avg_response_words": 20.0, "qualifier_rate": 0.4, "hedge_rate": 0.4, "context_anchor_rate": 0.3, "mixed_answer_rate": 0.2, "soft_denial_rate": 0.1, "baseline_comparison_rate": 0.25}
+        simulated = {"response_count": 10, "avg_response_words": 24.0, "qualifier_rate": 0.5, "hedge_rate": 0.5, "context_anchor_rate": 0.4, "mixed_answer_rate": 0.35, "soft_denial_rate": 0.05, "baseline_comparison_rate": 0.3}
+
+        comparison = compare_style_summaries(reference, simulated)
+
+        self.assertEqual(comparison["reference_response_count"], 8)
+        self.assertEqual(comparison["simulated_response_count"], 10)
+        self.assertAlmostEqual(float(comparison["delta_avg_response_words"]), 4.0)
+        self.assertAlmostEqual(float(comparison["delta_mixed_answer_rate"]), 0.15)
 
     def test_build_persona_error_table_sorts_by_absolute_bdi_error(self) -> None:
         records_df = pd.DataFrame(

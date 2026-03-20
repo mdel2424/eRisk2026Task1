@@ -24,6 +24,10 @@ class RuntimeCleanupTests(unittest.TestCase):
             persona_id="1",
             split="eval",
             family="control_neutral",
+            severity_tier="minimal",
+            subtype_tag="routine_stable",
+            context_tag="routine_stable",
+            style_tag="open_but_flat",
             bdi_scores={item_id: 0 for item_id in range(1, 22)},
             depressed=False,
         )
@@ -37,6 +41,10 @@ class RuntimeCleanupTests(unittest.TestCase):
             persona_id="1",
             split="eval",
             family="control_neutral",
+            severity_tier="minimal",
+            subtype_tag="routine_stable",
+            context_tag="routine_stable",
+            style_tag="open_but_flat",
             bdi_scores={item_id: 0 for item_id in range(1, 22)},
             depressed=False,
         )
@@ -45,6 +53,8 @@ class RuntimeCleanupTests(unittest.TestCase):
 
         self.assertNotIn("generator_version", payload["run_config"])
         self.assertNotIn("generator_version", payload["profiles"][0])
+        self.assertEqual(payload["profiles"][0]["severity_tier"], "minimal")
+        self.assertEqual(payload["profiles"][0]["subtype_tag"], "routine_stable")
 
 
 if __name__ == "__main__":
