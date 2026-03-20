@@ -181,6 +181,19 @@ class ControlState(BaseModel):
     stop_reason: str = ""
 
 
+class ConversationThreadState(BaseModel):
+    active: bool = False
+    route: Literal["somatic", "cognitive", "risk"] = "cognitive"
+    module_id: int = Field(default=0, ge=0, le=9)
+    source_item_id: int = Field(default=0, ge=0, le=21)
+    question_count: int = Field(default=0, ge=0)
+    denial_streak: int = Field(default=0, ge=0)
+    last_question_kind: str = ""
+    timeframe_introduced: bool = False
+    anchor_text: str = ""
+    exit_reason: str = ""
+
+
 class NextAction(BaseModel):
     target_item_id: int = Field(default=2, ge=1, le=21)
     route: Literal["somatic", "cognitive", "risk"] = "cognitive"
@@ -189,6 +202,12 @@ class NextAction(BaseModel):
     directness: Literal["indirect", "direct"] = "indirect"
     priority: float = Field(default=0.5, ge=0.0, le=1.0)
     rationale: str = ""
+    question_kind: str = "topic_open"
+    thread_turn_index: int = Field(default=0, ge=0)
+    thread_module_id: int = Field(default=0, ge=0, le=9)
+    thread_source_item_id: int = Field(default=0, ge=0, le=21)
+    timeframe_mode: str = "introduce"
+    anchor_text: str = ""
 
 
 class OutgoingState(BaseModel):
@@ -236,6 +255,7 @@ class AgentState(TypedDict):
     beliefs: BeliefState
     metrics: PolicyMetricsState
     control: ControlState
+    conversation_thread: ConversationThreadState
     next_action: NextAction
     outgoing: OutgoingState
     final: FinalState
@@ -342,6 +362,7 @@ def build_initial_state(persona_id: Optional[str] = None) -> AgentState:
         beliefs=BeliefState(items=beliefs),
         metrics=PolicyMetricsState(),
         control=ControlState(),
+        conversation_thread=ConversationThreadState(),
         next_action=NextAction(),
         outgoing=OutgoingState(),
         final=FinalState(),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Dict
 
 from core.bdi_modules import MODULE_GOALS, MODULE_NAMES, MODULE_TO_ITEMS, choose_target_module
@@ -57,13 +58,55 @@ def _probe_goal_from_style(style: str) -> str:
     return mapping.get(style, "exemplar")
 
 
+def _sanitize_anchor_text(value: str, limit_words: int = 12) -> str:
+    cleaned = " ".join(str(value or "").strip().split())
+    if not cleaned:
+        return ""
+    words = cleaned.split()
+    if len(words) > limit_words:
+        cleaned = " ".join(words[:limit_words]).rstrip(" ,;:.")
+    return cleaned
+
+
+def _strip_timeframe_lead(text: str) -> str:
+    cleaned = str(text or "").strip()
+    patterns = (
+        r"^(in|over|during)\s+the\s+(last|past)\s+two\s+weeks[,:\-\s]+",
+        r"^(in|over|during)\s+the\s+last\s+couple\s+of\s+weeks[,:\-\s]+",
+    )
+    for pattern in patterns:
+        cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE).strip()
+    return cleaned
+
+
+def _sanitize_question_text(
+    text: str,
+    *,
+    question_kind: str,
+) -> tuple[str, bool]:
+    cleaned = " ".join(str(text or "").split()).strip()
+    blocked_repeated_timeframe = False
+    if question_kind in {"same_item_followup", "same_module_followup", "contrastive_pivot"}:
+        stripped = _strip_timeframe_lead(cleaned)
+        blocked_repeated_timeframe = stripped != cleaned
+        cleaned = stripped
+    if cleaned.startswith('"') and cleaned.endswith('"'):
+        cleaned = cleaned[1:-1].strip()
+    if cleaned and cleaned[0].isalpha():
+        cleaned = cleaned[0].upper() + cleaned[1:]
+    if cleaned and not cleaned.endswith("?"):
+        cleaned = cleaned.rstrip(".!") + "?"
+    return cleaned, blocked_repeated_timeframe
+
+
 def _fallback_question(
     *,
     route: str,
     target_item_id: int,
     turn_index: int,
+    question_kind: str,
 ) -> str:
-    options = get_fallback_questions(route)
+    options = get_fallback_questions(route, question_kind=question_kind)
     if not options:
         return "Could you tell me a little more about how that has been affecting you lately?"
     index = (max(0, int(turn_index)) + max(1, int(target_item_id))) % len(options)
@@ -76,7 +119,11 @@ def _build_llm_question(
     route: str,
     style: str,
     target_item_id: int,
-) -> tuple[str, int, str, bool, str]:
+    question_kind: str,
+    timeframe_mode: str,
+    anchor_text: str,
+    thread_turn_index: int,
+) -> tuple[str, int, str, bool, str, bool]:
     prompt_template = get_prompt("specialist_question")
     if not prompt_template.strip():
         raise RuntimeError("Detector question generation failed: missing 'specialist_question' prompt template.")
@@ -106,23 +153,25 @@ def _build_llm_question(
         target_module_items=module_items,
         target_item_id=target_item_id,
         target_item_name=target_item_name,
+        question_kind=question_kind,
+        timeframe_mode=timeframe_mode,
+        anchor_text=anchor_text or "none",
+        thread_turn_index=int(thread_turn_index),
     )
 
     llm = get_llm()
     raw = str(llm.invoke([("system", prompt)]).content or "").strip()
-    if raw.startswith('"') and raw.endswith('"'):
-        raw = raw[1:-1].strip()
-    cleaned = " ".join(raw.split())
+    cleaned, blocked_repeated_timeframe = _sanitize_question_text(raw, question_kind=question_kind)
     if not cleaned:
         fallback = _fallback_question(
             route=route,
             target_item_id=target_item_id,
             turn_index=int(state.get("turn_index", 0)),
+            question_kind=question_kind,
         )
-        return fallback, module_id, probe_goal, True, "empty_model_output"
-    if not cleaned.endswith("?"):
-        cleaned = cleaned.rstrip(".!") + "?"
-    return cleaned, module_id, probe_goal, False, ""
+        fallback, fallback_blocked_timeframe = _sanitize_question_text(fallback, question_kind=question_kind)
+        return fallback, module_id, probe_goal, True, "empty_model_output", fallback_blocked_timeframe
+    return cleaned, module_id, probe_goal, False, "", blocked_repeated_timeframe
 
 
 def question_generator(state: AgentState) -> Dict:
@@ -133,23 +182,44 @@ def question_generator(state: AgentState) -> Dict:
         question = OPENING_MESSAGE_FIXED
         route = "cognitive"
         style = "opening"
+        question_kind = "opening"
+        timeframe_mode = "introduce"
+        thread_turn_index = 0
+        anchor_text = ""
         target_item_id = 2
         rationale = "opening bootstrap"
         target_module_id = 2
         probe_goal = "exemplar"
         used_fallback = False
         fallback_reason = ""
+        repeated_timeframe_lead_blocked = False
     else:
         target_item_id = int(_next_action_value(state, "target_item_id", 2) or 2)
         route = str(_next_action_value(state, "route", "cognitive") or "cognitive")
         style = str(_next_action_value(state, "style", "gentle_probe") or "gentle_probe")
+        question_kind = str(_next_action_value(state, "question_kind", "topic_open") or "topic_open")
+        timeframe_mode = str(_next_action_value(state, "timeframe_mode", "introduce") or "introduce")
+        thread_turn_index = int(_next_action_value(state, "thread_turn_index", 0) or 0)
+        anchor_text = _sanitize_anchor_text(str(_next_action_value(state, "anchor_text", "") or ""))
         rationale = str(_next_action_value(state, "rationale", "targeted follow-up") or "targeted follow-up")
-        question, target_module_id, probe_goal, used_fallback, fallback_reason = _build_llm_question(
+        question, target_module_id, probe_goal, used_fallback, fallback_reason, repeated_timeframe_lead_blocked = _build_llm_question(
             state,
             route=route,
             style=style,
             target_item_id=target_item_id,
+            question_kind=question_kind,
+            timeframe_mode=timeframe_mode,
+            anchor_text=anchor_text,
+            thread_turn_index=thread_turn_index,
         )
+
+    question_starts_with_timeframe = bool(
+        re.match(
+            r"^(in|over|during)\s+the\s+(last|past)\s+two\s+weeks",
+            str(question or "").strip(),
+            flags=re.IGNORECASE,
+        )
+    )
 
     turn_trace = dict(state.get("turn_trace", {}))
     specialist_trace = {
@@ -162,8 +232,15 @@ def question_generator(state: AgentState) -> Dict:
         "target_module_name": MODULE_NAMES.get(target_module_id, "General Screening"),
         "probe_goal": style,
         "probe_goal_kind": probe_goal,
+        "conversation_thread_active": bool(question_kind in {"topic_open", "same_item_followup", "same_module_followup", "contrastive_pivot"}),
+        "question_kind": question_kind,
+        "thread_turn_index": int(thread_turn_index),
+        "timeframe_mode": timeframe_mode,
+        "anchor_text": anchor_text,
         "used_fallback": used_fallback,
         "fallback_reason": fallback_reason,
+        "repeated_timeframe_lead_blocked": bool(repeated_timeframe_lead_blocked),
+        "question_starts_with_timeframe": bool(question_starts_with_timeframe),
         "llm_generated": not (turn_index == 0 and not _has_detector_message(messages)),
         "question_preview": question[:120],
     }
@@ -172,7 +249,8 @@ def question_generator(state: AgentState) -> Dict:
 
     debug = (
         f"Question generator: route={route}; target_item={target_item_id}; "
-        f"style={style}; rationale={rationale}; llm_generated={specialist_trace['llm_generated']}"
+        f"style={style}; question_kind={question_kind}; rationale={rationale}; "
+        f"llm_generated={specialist_trace['llm_generated']}"
     )
 
     return {

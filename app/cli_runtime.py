@@ -21,6 +21,12 @@ def _build_probe_intent(state: Dict[str, Any]) -> Dict[str, Any]:
     mode = getattr(next_action, "mode", None)
     directness = getattr(next_action, "directness", None)
     priority = getattr(next_action, "priority", None)
+    question_kind = getattr(next_action, "question_kind", "topic_open")
+    thread_turn_index = getattr(next_action, "thread_turn_index", 0)
+    thread_module_id = getattr(next_action, "thread_module_id", 0)
+    thread_source_item_id = getattr(next_action, "thread_source_item_id", 0)
+    timeframe_mode = getattr(next_action, "timeframe_mode", "introduce")
+    anchor_text = getattr(next_action, "anchor_text", "")
 
     if target_item_id is None or route is None or style is None:
         raise RuntimeError("Missing probe_intent for persona handoff: incomplete next_action payload.")
@@ -55,6 +61,13 @@ def _build_probe_intent(state: Dict[str, Any]) -> Dict[str, Any]:
     if priority < 0.0 or priority > 1.0:
         raise RuntimeError("Missing probe_intent for persona handoff: priority is out of range.")
 
+    try:
+        thread_turn_index = int(thread_turn_index or 0)
+        thread_module_id = int(thread_module_id or 0)
+        thread_source_item_id = int(thread_source_item_id or 0)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Missing probe_intent for persona handoff: thread metadata is invalid.") from exc
+
     return {
         "target_item_id": target_item_id,
         "route": route,
@@ -62,6 +75,12 @@ def _build_probe_intent(state: Dict[str, Any]) -> Dict[str, Any]:
         "mode": mode,
         "directness": directness,
         "priority": priority,
+        "question_kind": str(question_kind or "topic_open").strip() or "topic_open",
+        "thread_turn_index": max(0, thread_turn_index),
+        "thread_module_id": max(0, min(9, thread_module_id)),
+        "thread_source_item_id": max(0, min(21, thread_source_item_id)),
+        "timeframe_mode": str(timeframe_mode or "introduce").strip() or "introduce",
+        "anchor_text": str(anchor_text or "").strip(),
     }
 
 

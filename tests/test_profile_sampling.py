@@ -367,6 +367,78 @@ class ProfileSamplingTests(unittest.TestCase):
         self.assertIn("irritability", reply.lower())
         self.assertEqual(int(persona.style_stats()["contrastive_negative_count"]), 1)
 
+    def test_same_item_followup_elaborates_instead_of_resetting(self) -> None:
+        probe_intent = {
+            "target_item_id": 14,
+            "route": "cognitive",
+            "style": "clarify_frequency",
+            "mode": "normal",
+            "directness": "direct",
+            "priority": 0.8,
+            "question_kind": "same_item_followup",
+            "thread_turn_index": 2,
+            "thread_module_id": 3,
+            "thread_source_item_id": 14,
+            "timeframe_mode": "carry",
+            "anchor_text": "I feel like a burden",
+        }
+        scores = {item_id: 0 for item_id in range(1, 22)}
+        scores[14] = 2
+
+        persona = SimulatedPersona(
+            persona_id="214",
+            bdi_scores=scores,
+            family="cognitive_ruminative",
+            split="eval",
+            context_tag="workload",
+            style_tag="contextual_reflective",
+        )
+
+        history = [
+            {"role": "user", "content": "Lately, what do you tend to tell yourself when things feel heavy?"},
+            {"role": "assistant", "content": "I feel like a burden, especially when messages pile up."},
+        ]
+        reply = persona.reply(history, dict(probe_intent))
+
+        self.assertNotIn("seems a little different", reply.lower())
+        self.assertTrue("most days" in reply.lower() or "hours" in reply.lower() or "messages" in reply.lower())
+
+    def test_repeated_denial_followup_stays_brief_and_consistent(self) -> None:
+        probe_intent = {
+            "target_item_id": 18,
+            "route": "somatic",
+            "style": "gentle_probe",
+            "mode": "normal",
+            "directness": "indirect",
+            "priority": 0.5,
+            "question_kind": "same_item_followup",
+            "thread_turn_index": 3,
+            "thread_module_id": 6,
+            "thread_source_item_id": 18,
+            "timeframe_mode": "carry",
+            "anchor_text": "appetite feels normal",
+        }
+        scores = {item_id: 0 for item_id in range(1, 22)}
+
+        persona = SimulatedPersona(
+            persona_id="215",
+            bdi_scores=scores,
+            family="control_stressed",
+            split="eval",
+            context_tag="routine_stable",
+            style_tag="minimizing_practical",
+        )
+
+        history = [
+            {"role": "user", "content": "Has your appetite changed much lately?"},
+            {"role": "assistant", "content": "Not really, that still feels about the same."},
+        ]
+        reply = persona.reply(history, dict(probe_intent))
+
+        self.assertLessEqual(len(reply.split()), 12)
+        self.assertTrue("same" in reply.lower() or "normal" in reply.lower() or "not really" in reply.lower())
+        self.assertNotIn("seems a little different", reply.lower())
+
     def test_simulated_persona_soft_denial_still_exists_for_low_signal_control_case(self) -> None:
         probe_intent = {
             "target_item_id": 18,

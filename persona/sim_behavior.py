@@ -44,6 +44,12 @@ def _coerce_probe_intent(probe_intent: Dict[str, object] | None) -> Dict[str, ob
     mode = str(probe_intent.get("mode", "normal")).strip().lower()
     directness = str(probe_intent.get("directness", "indirect")).strip().lower()
     priority_raw = probe_intent.get("priority", 0.5)
+    question_kind = str(probe_intent.get("question_kind", "topic_open")).strip().lower()
+    timeframe_mode = str(probe_intent.get("timeframe_mode", "introduce")).strip().lower()
+    thread_turn_index_raw = probe_intent.get("thread_turn_index", 0)
+    thread_module_id_raw = probe_intent.get("thread_module_id", 0)
+    thread_source_item_id_raw = probe_intent.get("thread_source_item_id", 0)
+    anchor_text = str(probe_intent.get("anchor_text", "") or "").strip()
 
     try:
         target_item = int(target_item_id)
@@ -59,11 +65,27 @@ def _coerce_probe_intent(probe_intent: Dict[str, object] | None) -> Dict[str, ob
         raise RuntimeError("Invalid probe_intent.mode for deterministic persona generation.")
     if directness not in {"indirect", "direct"}:
         raise RuntimeError("Invalid probe_intent.directness for deterministic persona generation.")
+    if question_kind not in {"opening", "topic_open", "same_item_followup", "same_module_followup", "contrastive_pivot", "risk_check"}:
+        raise RuntimeError("Invalid probe_intent.question_kind for deterministic persona generation.")
+    if timeframe_mode not in {"introduce", "carry", "clarify"}:
+        raise RuntimeError("Invalid probe_intent.timeframe_mode for deterministic persona generation.")
     try:
         priority = float(priority_raw)
     except (TypeError, ValueError) as exc:
         raise RuntimeError("Invalid probe_intent.priority for deterministic persona generation.") from exc
     priority = max(0.0, min(1.0, priority))
+    try:
+        thread_turn_index = int(thread_turn_index_raw)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Invalid probe_intent.thread_turn_index for deterministic persona generation.") from exc
+    try:
+        thread_module_id = int(thread_module_id_raw)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Invalid probe_intent.thread_module_id for deterministic persona generation.") from exc
+    try:
+        thread_source_item_id = int(thread_source_item_id_raw)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Invalid probe_intent.thread_source_item_id for deterministic persona generation.") from exc
 
     return {
         "target_item_id": target_item,
@@ -72,6 +94,12 @@ def _coerce_probe_intent(probe_intent: Dict[str, object] | None) -> Dict[str, ob
         "mode": mode,
         "directness": directness,
         "priority": priority,
+        "question_kind": question_kind,
+        "timeframe_mode": timeframe_mode,
+        "thread_turn_index": max(0, thread_turn_index),
+        "thread_module_id": max(0, min(9, thread_module_id)),
+        "thread_source_item_id": max(0, min(21, thread_source_item_id)),
+        "anchor_text": anchor_text,
     }
 
 
@@ -457,6 +485,66 @@ def _concrete_example(item_id: int, context_tag: str, target_score: int, rng) ->
     return rng.choice(choices)
 
 
+def _latest_assistant_text(history: List[dict]) -> str:
+    for message in reversed(history):
+        if str(message.get("role", "")).strip().lower() == "assistant":
+            return str(message.get("content") or message.get("message") or "").strip()
+    return ""
+
+
+def _reused_thread_context(history: List[dict]) -> str:
+    last_reply = _latest_assistant_text(history).lower()
+    if not last_reply:
+        return ""
+    candidates = list(ALL_CONTEXT_ANCHORS)
+    for values in CONTEXT_RESPONSE_EXAMPLES.values():
+        candidates.extend(list(values))
+    for values in ITEM_CONCRETE_EXAMPLES.values():
+        candidates.extend(list(values))
+    for phrase in sorted({str(value).strip() for value in candidates if str(value).strip()}, key=len, reverse=True):
+        if phrase.lower() in last_reply:
+            return phrase
+    return ""
+
+
+def _thread_followup_detail(style: str, target_score: int, item_id: int, context_tag: str, rng) -> str:
+    clipped = max(0, min(3, int(target_score)))
+    if style == "clarify_frequency":
+        bank = {
+            1: [
+                "It comes and goes a few times during the week rather than staying all day",
+                "It shows up in patches more than constantly",
+            ],
+            2: [
+                "It is there on most days and can hang around for hours when it starts",
+                "It tends to show up most days rather than only once in a while",
+            ],
+            3: [
+                "It is there almost every day and lasts for big stretches of the day",
+                "It shows up most days and usually sticks around for a long stretch",
+            ],
+        }
+        return rng.choice(bank.get(clipped, bank[1]))
+    if style == "functional_impact":
+        example = _concrete_example(item_id, context_tag, clipped, rng)
+        if example:
+            return example
+        return "It tends to change what I can get through in a pretty ordinary day"
+    return _item_sentence(item_id, clipped)
+
+
+def _thread_denial_reply(target_item: int, bdi_scores: Dict[int, int], rng) -> str:
+    redirect = _soft_denial_redirect(target_item, bdi_scores)
+    if redirect:
+        return _safe_join(["Not really, that still feels about the same", redirect], limit_words=20)
+    terse_denials = [
+        "Not really, that still feels about the same",
+        "No, that part still feels pretty normal for me",
+        "Not really, that part feels pretty normal",
+    ]
+    return _safe_join([rng.choice(terse_denials)], limit_words=16)
+
+
 def _minimization_fragment(style_tag: str, normalization_rate: float, question_turns: int, rng) -> str:
     progress = _disclosure_progress(question_turns)
     base_rate = normalization_rate * max(0.25, 1.0 - (0.55 * progress))
@@ -585,6 +673,10 @@ def _build_deterministic_reply_payload(
     style = str(intent_payload["style"])
     directness = str(intent_payload["directness"])
     priority = float(intent_payload["priority"])
+    question_kind = str(intent_payload.get("question_kind", "topic_open") or "topic_open")
+    thread_turn_index = int(intent_payload.get("thread_turn_index", 0) or 0)
+    thread_source_item_id = int(intent_payload.get("thread_source_item_id", 0) or 0)
+    anchor_text = str(intent_payload.get("anchor_text", "") or "").strip()
 
     evasiveness = float(behavior_params.get("evasiveness", 0.45))
     hedge_rate = float(behavior_params.get("hedge_rate", 0.52))
@@ -610,6 +702,37 @@ def _build_deterministic_reply_payload(
             bdi_scores=bdi_scores,
             rng=rng,
         ), "opening_summary"
+
+    if question_kind in {"same_item_followup", "same_module_followup", "contrastive_pivot"} and route != "risk":
+        reused_context = _reused_thread_context(history) or anchor_text
+        if target_score <= 0:
+            if question_kind == "contrastive_pivot":
+                claim = _contrastive_negative_claim(target_item, bdi_scores, rng)
+                if claim:
+                    parts = [claim]
+                    if reused_context:
+                        parts.append(reused_context)
+                    return _safe_join(parts, limit_words=22), "contrastive_negative"
+            if _recent_soft_denial(history, window=1):
+                return _thread_denial_reply(target_item, bdi_scores, rng), "thread_soft_denial"
+            return _thread_denial_reply(target_item, bdi_scores, rng), "thread_soft_denial"
+
+        direct_claim = _item_sentence(target_item, target_score)
+        if question_kind == "contrastive_pivot" and 1 <= thread_source_item_id <= 21 and thread_source_item_id != target_item:
+            source_name = BDI_ITEM_NAMES.get(thread_source_item_id, "that")
+            primary = f"More than {source_name.lower()}, {direct_claim.lower()}"
+        elif question_kind == "same_module_followup" and 1 <= thread_source_item_id <= 21 and thread_source_item_id != target_item:
+            primary = f"That part shows up too, and {direct_claim.lower()}"
+        else:
+            primary = direct_claim
+
+        detail = _thread_followup_detail(style, target_score, target_item, context_tag, rng)
+        parts = [primary]
+        if detail and detail.lower() != primary.lower():
+            parts.append(detail)
+        if reused_context and reused_context.lower() not in " ".join(parts).lower():
+            parts.append(reused_context)
+        return _safe_join(parts, limit_words=30), question_kind
 
     mode_name = _response_mode(
         family=family,

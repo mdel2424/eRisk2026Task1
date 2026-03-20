@@ -63,3 +63,65 @@ class QuestionGeneratorTests(unittest.TestCase):
         self.assertFalse(bool(trace["used_fallback"]))
         self.assertEqual(trace["fallback_reason"], "")
 
+    def test_same_thread_followup_strips_repeated_timeframe_lead(self) -> None:
+        state = {
+            "turn_index": 2,
+            "messages": [
+                {"role": "user", "content": "Over the last couple of weeks, what thought has felt loudest lately?"},
+                {"role": "assistant", "content": "I keep expecting the worst and it hangs over the whole day."},
+            ],
+            "next_action": {
+                "target_item_id": 2,
+                "route": "cognitive",
+                "style": "clarify_frequency",
+                "question_kind": "same_item_followup",
+                "timeframe_mode": "carry",
+                "thread_turn_index": 2,
+                "anchor_text": "expecting the worst",
+                "rationale": "threaded follow-up",
+            },
+            "item_beliefs": {},
+        }
+
+        with patch(
+            "agents.question_generator.get_llm",
+            return_value=_FakeLLM("In the last two weeks, when that happens, does it linger most of the day"),
+        ):
+            result = question_generator(state)
+
+        asked = result["messages"][0]["content"]
+        trace = result["turn_trace"]["question_generator"]
+
+        self.assertEqual(asked, "When that happens, does it linger most of the day?")
+        self.assertTrue(bool(trace["repeated_timeframe_lead_blocked"]))
+        self.assertFalse(bool(trace["question_starts_with_timeframe"]))
+
+    def test_followup_fallback_stays_conversational_without_timeframe_lead(self) -> None:
+        state = {
+            "turn_index": 3,
+            "messages": [
+                {"role": "user", "content": "Lately, what thought has been loudest?"},
+                {"role": "assistant", "content": "I keep feeling like I let people down."},
+            ],
+            "next_action": {
+                "target_item_id": 5,
+                "route": "cognitive",
+                "style": "clarify_frequency",
+                "question_kind": "same_item_followup",
+                "timeframe_mode": "carry",
+                "thread_turn_index": 2,
+                "anchor_text": "let people down",
+                "rationale": "threaded follow-up",
+            },
+            "item_beliefs": {},
+        }
+
+        with patch("agents.question_generator.get_llm", return_value=_FakeLLM("   ")):
+            result = question_generator(state)
+
+        asked = result["messages"][0]["content"]
+        trace = result["turn_trace"]["question_generator"]
+
+        self.assertTrue(bool(trace["used_fallback"]))
+        self.assertFalse(asked.lower().startswith("in the last two weeks"))
+        self.assertEqual(str(trace["question_kind"]), "same_item_followup")

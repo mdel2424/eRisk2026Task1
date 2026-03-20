@@ -42,6 +42,12 @@ def _aggregate_sim_style_summary(diagnostics_payload: List[Dict[str, Any]]) -> D
         "baseline_comparison_count": 0,
         "opening_summary_count": 0,
         "contrastive_negative_count": 0,
+        "threaded_followup_count": 0,
+        "timeframe_intro_count": 0,
+        "repeated_timeframe_lead_count": 0,
+        "contrastive_pivot_count": 0,
+        "thread_start_count": 0,
+        "thread_question_total": 0,
     }
 
     for entry in diagnostics_payload:
@@ -50,10 +56,43 @@ def _aggregate_sim_style_summary(diagnostics_payload: List[Dict[str, Any]]) -> D
         final_state_payload = dict(entry.get("final_state", {}) or {})
         style_stats = dict(final_state_payload.get("sim_style_stats", {}) or {})
         for key in list(totals.keys()):
+            if key in {
+                "threaded_followup_count",
+                "timeframe_intro_count",
+                "repeated_timeframe_lead_count",
+                "contrastive_pivot_count",
+                "thread_start_count",
+                "thread_question_total",
+            }:
+                continue
             try:
                 totals[key] += int(style_stats.get(key, 0) or 0)
             except (TypeError, ValueError):
                 continue
+        timeline = list(entry.get("timeline", []) or [])
+        for snapshot in timeline:
+            if not isinstance(snapshot, dict):
+                continue
+            turn_trace = dict(snapshot.get("turn_trace", {}) or {})
+            specialist = dict(turn_trace.get("specialist", {}) or {})
+            question_kind = str(specialist.get("question_kind", "") or "")
+            timeframe_mode = str(specialist.get("timeframe_mode", "") or "")
+            if timeframe_mode == "introduce":
+                totals["timeframe_intro_count"] += 1
+            if bool(specialist.get("question_starts_with_timeframe", False)) and question_kind in {
+                "same_item_followup",
+                "same_module_followup",
+                "contrastive_pivot",
+            }:
+                totals["repeated_timeframe_lead_count"] += 1
+            if question_kind == "topic_open":
+                totals["thread_start_count"] += 1
+                totals["thread_question_total"] += 1
+            elif question_kind in {"same_item_followup", "same_module_followup", "contrastive_pivot"}:
+                totals["threaded_followup_count"] += 1
+                totals["thread_question_total"] += 1
+            if question_kind == "contrastive_pivot":
+                totals["contrastive_pivot_count"] += 1
 
     responses_total = int(totals["responses_total"])
 
@@ -65,10 +104,16 @@ def _aggregate_sim_style_summary(diagnostics_payload: List[Dict[str, Any]]) -> D
     avg_response_words = (
         round(float(totals["response_words_total"]) / float(responses_total), 4) if responses_total > 0 else 0.0
     )
+    avg_thread_length = (
+        round(float(totals["thread_question_total"]) / float(totals["thread_start_count"]), 4)
+        if int(totals["thread_start_count"]) > 0
+        else 0.0
+    )
 
     return {
         **totals,
         "avg_response_words": avg_response_words,
+        "avg_thread_length": avg_thread_length,
         "qualifier_rate": _rate("qualifier_response_count"),
         "hedge_rate": _rate("hedged_response_count"),
         "context_anchor_rate": _rate("context_anchor_count"),
@@ -78,6 +123,7 @@ def _aggregate_sim_style_summary(diagnostics_payload: List[Dict[str, Any]]) -> D
         "baseline_comparison_rate": _rate("baseline_comparison_count"),
         "opening_summary_rate": _rate("opening_summary_count"),
         "contrastive_negative_rate": _rate("contrastive_negative_count"),
+        "threaded_followup_rate": _rate("threaded_followup_count"),
     }
 
 

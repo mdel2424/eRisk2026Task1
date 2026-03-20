@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Sequence, Tuple
 
 from core.bdi_modules import MODULE_NAMES, MODULE_TO_ITEMS, NODE_ALLOWED_MODULES, choose_target_module, modules_for_item
-from core.state import AgentState, NextAction, RouteDecision
+from core.state import AgentState, ConversationThreadState, NextAction, RouteDecision
 
 
 STYLE_CYCLE = ("gentle_probe", "clarify_frequency", "functional_impact")
-FOLLOWUP_POLICIES = {"evidence_followup_same_item", "evidence_followup_same_module"}
+FOLLOWUP_POLICIES = {
+    "evidence_followup_same_item",
+    "evidence_followup_same_module",
+    "conversation_contrastive_pivot",
+}
 FOLLOWUP_WINDOW = 3
 RECENT_COUNT_WINDOW = 6
+THREAD_MAX_QUESTIONS = 3
+THREAD_EXIT_DENIALS = 2
 
 GLOBAL_IG_WEIGHT = 1.0
 GLOBAL_ENTROPY_WEIGHT = 0.60
@@ -18,7 +25,7 @@ GLOBAL_MODULE_UNRESOLVED_WEIGHT = 0.20
 ITEM_REPETITION_PENALTY = 0.75
 MODULE_REPETITION_PENALTY = 0.35
 SAME_ITEM_EXPECTED_MIN = 1.0
-SAME_ITEM_EXPECTED_MAX = 1.75
+SAME_ITEM_EXPECTED_MAX = 2.35
 RISK_GLOBAL_DAMPENER = 8.0
 RISK_REENTRY_LOOKBACK = 6
 RISK_REENTRY_TOTAL_BDI_THRESHOLD = 18.0
@@ -30,10 +37,101 @@ MODULE_SATURATION_MAX_UNRESOLVED_RATIO = 0.40
 MANDATORY_COVERAGE_ITEMS = {14, 16, 18, 21}
 MANDATORY_COVERAGE_MIN_TURN = 15
 
+EXPLICIT_DENIAL_PATTERNS = (
+    "not really",
+    "pretty close to normal",
+    "about normal",
+    "about the same",
+    "has been fine",
+    "hasnt really been an issue",
+    "hasn't really been an issue",
+    "nothing different there",
+    "not much change there",
+    "no real change",
+    "havent noticed much change",
+    "haven't noticed much change",
+    "that part feels normal",
+)
+
+CONTRASTIVE_REPLY_PATTERNS = (
+    "more than",
+    "more toward",
+    "a bit of both",
+    "both show up",
+    "both are in there",
+    "more as",
+)
+
 
 def _priority_from_gain(expected_gain: float) -> float:
     gain = max(0.0, float(expected_gain))
     return max(0.0, min(1.0, gain / (gain + 2.0)))
+
+
+def _thread_value(thread: Any, key: str, default: Any) -> Any:
+    if isinstance(thread, dict):
+        return thread.get(key, default)
+    return getattr(thread, key, default)
+
+
+def _current_thread_state(state: AgentState) -> Dict[str, Any]:
+    thread = state.get("conversation_thread")
+    return {
+        "active": bool(_thread_value(thread, "active", False)),
+        "route": str(_thread_value(thread, "route", "cognitive") or "cognitive"),
+        "module_id": int(_thread_value(thread, "module_id", 0) or 0),
+        "source_item_id": int(_thread_value(thread, "source_item_id", 0) or 0),
+        "question_count": int(_thread_value(thread, "question_count", 0) or 0),
+        "denial_streak": int(_thread_value(thread, "denial_streak", 0) or 0),
+        "last_question_kind": str(_thread_value(thread, "last_question_kind", "") or ""),
+        "timeframe_introduced": bool(_thread_value(thread, "timeframe_introduced", False)),
+        "anchor_text": str(_thread_value(thread, "anchor_text", "") or ""),
+        "exit_reason": str(_thread_value(thread, "exit_reason", "") or ""),
+    }
+
+
+def _latest_persona_message(state: AgentState) -> str:
+    for msg in reversed(state.get("messages", [])):
+        if str(msg.get("role", "")).strip().lower() == "assistant":
+            return str(msg.get("content", "") or "").strip()
+    return ""
+
+
+def _normalize_text(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "").strip().lower())
+
+
+def _is_explicit_denial_reply(text: str) -> bool:
+    lowered = _normalize_text(text)
+    if not lowered:
+        return False
+    return any(pattern in lowered for pattern in EXPLICIT_DENIAL_PATTERNS)
+
+
+def _has_contrastive_reply(text: str) -> bool:
+    lowered = _normalize_text(text)
+    if not lowered:
+        return False
+    return any(pattern in lowered for pattern in CONTRASTIVE_REPLY_PATTERNS)
+
+
+def _anchor_text_for_item(state: AgentState, item_id: int) -> str:
+    latest_evidence = list(state.get("latest_turn_evidence", []))
+    for row in latest_evidence:
+        try:
+            row_item_id = int(getattr(row, "item_id", 0) or 0)
+        except (TypeError, ValueError):
+            row_item_id = 0
+        if row_item_id != int(item_id):
+            continue
+        text = str(getattr(row, "evidence_text", "") or "").strip()
+        if text:
+            return text
+    latest_message = _latest_persona_message(state)
+    if not latest_message:
+        return ""
+    sentence = re.split(r"[.!?]", latest_message, maxsplit=1)[0].strip()
+    return " ".join(sentence.split()[:14]).strip(" ,;:")
 
 
 def _route_history_target_items(row: Any) -> List[int]:
@@ -208,6 +306,29 @@ def _latest_productive_context(state: AgentState, item_beliefs: Dict[int, Any]) 
     elif target_module_id not in modules_for_item(target_item_id):
         target_module_id = int(choose_target_module(route, [target_item_id], item_beliefs))
 
+    supported_updated_item_ids = [
+        int(item_id)
+        for item_id in updated_item_ids
+        if _belief_support(item_beliefs, int(item_id)) > 0
+    ]
+    if supported_updated_item_ids:
+        target_item_id = max(
+            supported_updated_item_ids,
+            key=lambda item_id: (
+                float(_belief_expected(item_beliefs, item_id)),
+                int(_belief_support(item_beliefs, item_id)),
+                -int(item_id),
+            ),
+        )
+        if int(target_item_id) == 9:
+            route = "risk"
+            target_module_id = 9
+        else:
+            module_candidates = modules_for_item(target_item_id)
+            if module_candidates:
+                route = _route_for_module(int(module_candidates[0]))
+                target_module_id = int(choose_target_module(route, [target_item_id], item_beliefs))
+
     return {
         "productive_turn": productive_turn,
         "updated_item_ids": updated_item_ids,
@@ -215,6 +336,69 @@ def _latest_productive_context(state: AgentState, item_beliefs: Dict[int, Any]) 
         "route": route,
         "target_item_id": target_item_id,
         "target_module_id": target_module_id,
+    }
+
+
+def _thread_seed_context(state: AgentState, item_beliefs: Dict[int, Any], productive_context: Dict[str, Any]) -> Dict[str, Any]:
+    latest_turn_evidence = list(state.get("latest_turn_evidence", []))
+    candidate_item_ids: List[int] = []
+    for row in latest_turn_evidence:
+        try:
+            item_id = int(getattr(row, "item_id", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= item_id <= 21 and item_id not in candidate_item_ids:
+            candidate_item_ids.append(item_id)
+
+    for item_id in productive_context.get("updated_item_ids", []):
+        try:
+            candidate = int(item_id)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= candidate <= 21 and candidate not in candidate_item_ids:
+            candidate_item_ids.append(candidate)
+
+    if not candidate_item_ids and 1 <= int(productive_context.get("target_item_id", 0) or 0) <= 21:
+        candidate_item_ids.append(int(productive_context["target_item_id"]))
+
+    if not candidate_item_ids:
+        return {
+            "source_item_id": 0,
+            "module_id": 0,
+            "route": str(productive_context.get("route", "cognitive") or "cognitive"),
+            "anchor_text": "",
+        }
+
+    source_item_id = max(
+        candidate_item_ids,
+        key=lambda item_id: (
+            int(_belief_support(item_beliefs, int(item_id))) > 0,
+            float(_belief_expected(item_beliefs, int(item_id))),
+            int(_belief_support(item_beliefs, int(item_id))),
+            -int(item_id),
+        ),
+    )
+    if int(source_item_id) == 9:
+        return {
+            "source_item_id": 9,
+            "module_id": 9,
+            "route": "risk",
+            "anchor_text": _anchor_text_for_item(state, 9),
+        }
+
+    module_candidates = modules_for_item(source_item_id)
+    if module_candidates:
+        route = _route_for_module(int(module_candidates[0]))
+        module_id = int(choose_target_module(route, [source_item_id], item_beliefs))
+    else:
+        route = str(productive_context.get("route", "cognitive") or "cognitive")
+        module_id = int(productive_context.get("target_module_id", 0) or 0)
+
+    return {
+        "source_item_id": int(source_item_id),
+        "module_id": int(module_id),
+        "route": str(route),
+        "anchor_text": _anchor_text_for_item(state, int(source_item_id)),
     }
 
 
@@ -428,7 +612,7 @@ def _same_item_followup_candidate(
     module_id = int(context["target_module_id"])
     if item_id not in set(context["updated_item_ids"]):
         return None
-    if _belief_support(item_beliefs, item_id) != 1:
+    if _belief_support(item_beliefs, item_id) <= 0:
         return None
 
     expected_score = _belief_expected(item_beliefs, item_id)
@@ -668,11 +852,16 @@ def target_selector(state: AgentState) -> Dict:
     has_new_persona_input = bool(state.get("has_new_persona_input", False))
     item_beliefs = dict(state.get("item_beliefs", {}))
     route_history = list(state.get("route_history", []))
+    current_thread = _current_thread_state(state)
     metrics = state.get("metrics")
     ig_estimates = dict(getattr(metrics, "last_ig_estimates", {}) or {})
     recent_item_counts = _recent_target_counts(route_history)
     recent_module_counts = _recent_module_counts(route_history, item_beliefs)
     productive_context = _latest_productive_context(state, item_beliefs)
+    thread_seed = _thread_seed_context(state, item_beliefs, productive_context)
+    latest_persona_text = _latest_persona_message(state)
+    latest_reply_denial = _is_explicit_denial_reply(latest_persona_text)
+    latest_reply_contrastive = _has_contrastive_reply(latest_persona_text)
     base_risk_recent_attempted = _recent_risk_attempted(route_history)
     base_risk_reentry_reason = _risk_reentry_reason(
         state,
@@ -680,11 +869,20 @@ def target_selector(state: AgentState) -> Dict:
         route_history=route_history,
     )
     base_risk_reentry_eligible = bool(base_risk_reentry_reason)
+    question_kind = "topic_open"
+    timeframe_mode = "introduce"
+    thread_turn_index = 0
+    anchor_text = ""
+    thread_exit_reason = ""
+    thread_source_item_id = 0
+    forced_risk_interrupt = False
 
     if turn_index == 0 and not has_new_persona_input:
         target_item_id = 2
         route = "cognitive"
         style = "opening"
+        question_kind = "opening"
+        timeframe_mode = "introduce"
         policy = "opening_bootstrap"
         selected_module_id = int(choose_target_module(route, [target_item_id], item_beliefs))
         expected_gain = 0.0
@@ -711,15 +909,18 @@ def target_selector(state: AgentState) -> Dict:
         risk_reentry_reason = str(base_risk_reentry_reason)
         risk_recent_attempted = bool(base_risk_recent_attempted)
     else:
-        style = STYLE_CYCLE[turn_index % len(STYLE_CYCLE)]
+        style = "gentle_probe"
         followup_source_item_id = 0
         followup_source_module_id = 0
         global_risk_dampener_applied = False
         risk_reentry_eligible = bool(base_risk_reentry_eligible)
         risk_reentry_reason = str(base_risk_reentry_reason)
         risk_recent_attempted = bool(base_risk_recent_attempted)
-
         same_module_candidate = None
+        same_item_candidate = None
+        same_module_followup_eligible = False
+        same_item_followup_eligible = False
+
         if has_new_persona_input:
             same_module_candidate = _same_module_followup_candidate(
                 state,
@@ -729,10 +930,6 @@ def target_selector(state: AgentState) -> Dict:
                 recent_module_counts=recent_module_counts,
                 ig_estimates=ig_estimates,
             )
-        same_module_followup_eligible = same_module_candidate is not None
-
-        same_item_candidate = None
-        if has_new_persona_input:
             same_item_candidate = _same_item_followup_candidate(
                 state,
                 item_beliefs=item_beliefs,
@@ -741,22 +938,79 @@ def target_selector(state: AgentState) -> Dict:
                 recent_module_counts=recent_module_counts,
                 ig_estimates=ig_estimates,
             )
+        same_module_followup_eligible = same_module_candidate is not None
         same_item_followup_eligible = same_item_candidate is not None
 
-        if same_module_candidate is not None:
-            (
-                target_item_id,
-                expected_gain,
-                rationale,
-                selected_module_id,
-                ranking_top_candidates,
-                followup_source_item_id,
-                followup_source_module_id,
-            ) = same_module_candidate
-            route = str(productive_context["route"])
-            policy = "evidence_followup_same_module"
-        else:
-            if same_item_candidate is not None:
+        active_thread = bool(current_thread["active"])
+        thread_denial_streak = int(current_thread["denial_streak"])
+
+        if has_new_persona_input and base_risk_reentry_eligible and not base_risk_recent_attempted:
+            if bool(state.get("risk_flag", False)) or int(thread_seed["source_item_id"]) == 9 or int(productive_context["target_item_id"]) == 9:
+                forced_risk_interrupt = True
+
+        if active_thread:
+            if forced_risk_interrupt:
+                thread_exit_reason = "risk_interruption"
+                active_thread = False
+            elif int(current_thread["question_count"]) >= THREAD_MAX_QUESTIONS:
+                thread_exit_reason = "thread_budget_reached"
+                active_thread = False
+            else:
+                if latest_reply_denial:
+                    thread_denial_streak += 1
+                else:
+                    thread_denial_streak = 0
+                if thread_denial_streak >= THREAD_EXIT_DENIALS:
+                    thread_exit_reason = "consecutive_denials"
+                    active_thread = False
+                elif not productive_context["productive_turn"] and not latest_reply_contrastive:
+                    thread_exit_reason = "uninformative_no_update"
+                    active_thread = False
+
+        if forced_risk_interrupt:
+            target_item_id = 9
+            route = "risk"
+            selected_module_id = 9
+            expected_gain = float(ig_estimates.get(9, _belief_entropy(item_beliefs, 9)))
+            rationale = "risk interruption from recent signal"
+            policy = "evidence_weighted_global"
+            question_kind = "risk_check"
+            timeframe_mode = "introduce"
+            style = "gentle_probe"
+            ranking_top_candidates = [
+                _candidate_entry(
+                    item_id=9,
+                    route="risk",
+                    module_id=9,
+                    score=expected_gain,
+                    item_beliefs=item_beliefs,
+                    ig_estimates=ig_estimates,
+                    recent_item_counts=recent_item_counts,
+                    recent_module_counts=recent_module_counts,
+                    score_components={"risk_interrupt": expected_gain},
+                )
+            ]
+            anchor_text = thread_seed["anchor_text"]
+            thread_turn_index = 0
+        elif active_thread:
+            thread_source_item_id = int(current_thread["source_item_id"] or thread_seed["source_item_id"] or productive_context["target_item_id"])
+            if latest_reply_contrastive and same_module_candidate is not None:
+                (
+                    target_item_id,
+                    expected_gain,
+                    rationale,
+                    selected_module_id,
+                    ranking_top_candidates,
+                    followup_source_item_id,
+                    followup_source_module_id,
+                ) = same_module_candidate
+                route = str(current_thread["route"] or productive_context["route"])
+                policy = "conversation_contrastive_pivot"
+                question_kind = "contrastive_pivot"
+                style = "gentle_probe"
+                timeframe_mode = "carry"
+                thread_turn_index = int(current_thread["question_count"]) + 1
+            elif same_item_candidate is not None:
                 (
                     target_item_id,
                     expected_gain,
@@ -766,8 +1020,71 @@ def target_selector(state: AgentState) -> Dict:
                     followup_source_item_id,
                     followup_source_module_id,
                 ) = same_item_candidate
-                route = str(productive_context["route"])
+                route = str(current_thread["route"] or productive_context["route"])
                 policy = "evidence_followup_same_item"
+                question_kind = "same_item_followup"
+                style = "clarify_frequency" if int(current_thread["question_count"]) <= 1 else "functional_impact"
+                timeframe_mode = "clarify" if style == "clarify_frequency" else "carry"
+                thread_turn_index = int(current_thread["question_count"]) + 1
+            elif same_module_candidate is not None:
+                (
+                    target_item_id,
+                    expected_gain,
+                    rationale,
+                    selected_module_id,
+                    ranking_top_candidates,
+                    followup_source_item_id,
+                    followup_source_module_id,
+                ) = same_module_candidate
+                route = str(current_thread["route"] or productive_context["route"])
+                policy = "evidence_followup_same_module"
+                question_kind = "same_module_followup"
+                style = "functional_impact" if int(current_thread["question_count"]) >= 2 else "gentle_probe"
+                timeframe_mode = "carry"
+                thread_turn_index = int(current_thread["question_count"]) + 1
+            else:
+                active_thread = False
+                thread_exit_reason = thread_exit_reason or "thread_exhausted"
+
+            if active_thread:
+                if int(followup_source_item_id or 0) > 0:
+                    thread_source_item_id = int(followup_source_item_id)
+                anchor_text = thread_seed["anchor_text"] or current_thread["anchor_text"]
+
+        if not forced_risk_interrupt and not active_thread:
+            start_new_thread = (
+                has_new_persona_input
+                and productive_context["productive_turn"]
+                and int(thread_seed["source_item_id"]) > 0
+                and str(thread_seed["route"]) != "risk"
+                and not bool(thread_exit_reason)
+            )
+            if start_new_thread:
+                target_item_id = int(thread_seed["source_item_id"])
+                route = str(thread_seed["route"])
+                selected_module_id = int(thread_seed["module_id"])
+                expected_gain = float(ig_estimates.get(target_item_id, _belief_entropy(item_beliefs, target_item_id)))
+                rationale = f"conversation thread start from item {target_item_id}"
+                policy = "conversation_topic_open"
+                question_kind = "topic_open"
+                timeframe_mode = "introduce"
+                style = "gentle_probe"
+                thread_turn_index = 1
+                thread_source_item_id = int(target_item_id)
+                anchor_text = str(thread_seed["anchor_text"])
+                ranking_top_candidates = [
+                    _candidate_entry(
+                        item_id=target_item_id,
+                        route=route,
+                        module_id=selected_module_id,
+                        score=expected_gain,
+                        item_beliefs=item_beliefs,
+                        ig_estimates=ig_estimates,
+                        recent_item_counts=recent_item_counts,
+                        recent_module_counts=recent_module_counts,
+                        score_components={"thread_start": expected_gain},
+                    )
+                ]
             else:
                 mandatory_candidate = _mandatory_coverage_candidate(
                     turn_index=turn_index,
@@ -813,14 +1130,39 @@ def target_selector(state: AgentState) -> Dict:
                     ranking_top_candidates = ranked_candidates[:5]
                     policy = "evidence_weighted_global"
 
+                if str(route) == "risk":
+                    question_kind = "risk_check"
+                    timeframe_mode = "introduce"
+                    style = "gentle_probe"
+                    thread_turn_index = 0
+                    thread_source_item_id = 0
+                    anchor_text = thread_seed["anchor_text"]
+                else:
+                    question_kind = "topic_open"
+                    timeframe_mode = "introduce"
+                    style = "gentle_probe"
+                    thread_turn_index = 1
+                    thread_source_item_id = int(target_item_id)
+                    anchor_text = thread_seed["anchor_text"] or _anchor_text_for_item(state, int(target_item_id))
+
     next_action = NextAction(
         target_item_id=target_item_id,
         route=route,
         style=style,
         mode="normal",
-        directness="indirect",
+        directness=(
+            "direct"
+            if question_kind == "risk_check" or (question_kind == "same_item_followup" and style == "clarify_frequency")
+            else "indirect"
+        ),
         priority=_priority_from_gain(expected_gain),
         rationale=rationale,
+        question_kind=question_kind,
+        thread_turn_index=int(thread_turn_index),
+        thread_module_id=int(selected_module_id),
+        thread_source_item_id=int(thread_source_item_id or target_item_id),
+        timeframe_mode=timeframe_mode,
+        anchor_text=str(anchor_text or ""),
     )
 
     decision = RouteDecision(
@@ -849,6 +1191,12 @@ def target_selector(state: AgentState) -> Dict:
         "expected_gain": round(float(expected_gain), 4),
         "selected_module_id": int(selected_module_id),
         "selected_module_name": MODULE_NAMES.get(int(selected_module_id), f"Module {int(selected_module_id)}"),
+        "conversation_thread_active": bool(question_kind in {"topic_open", "same_item_followup", "same_module_followup", "contrastive_pivot"}),
+        "question_kind": question_kind,
+        "thread_turn_index": int(thread_turn_index),
+        "thread_exit_reason": thread_exit_reason,
+        "timeframe_mode": timeframe_mode,
+        "anchor_text": str(anchor_text or ""),
         "productive_turn": bool(productive_context["productive_turn"]),
         "updated_item_ids": list(productive_context["updated_item_ids"]),
         "same_module_followup_eligible": bool(same_module_followup_eligible),
@@ -870,11 +1218,29 @@ def target_selector(state: AgentState) -> Dict:
 
     debug = (
         f"Target selector -> {route}; target_item={target_item_id}; module={selected_module_id}; "
-        f"style={style}; policy={policy}; gain={expected_gain:.2f}"
+        f"style={style}; question_kind={question_kind}; policy={policy}; gain={expected_gain:.2f}"
     )
+
+    conversation_thread = ConversationThreadState(
+        active=bool(question_kind in {"topic_open", "same_item_followup", "same_module_followup", "contrastive_pivot"}),
+        route=route if route in {"somatic", "cognitive", "risk"} else "cognitive",
+        module_id=int(selected_module_id),
+        source_item_id=int(thread_source_item_id or target_item_id),
+        question_count=int(thread_turn_index if question_kind != "opening" else 0),
+        denial_streak=0 if not latest_reply_denial else min(THREAD_EXIT_DENIALS, int(current_thread["denial_streak"]) + 1),
+        last_question_kind=question_kind,
+        timeframe_introduced=bool(timeframe_mode in {"introduce", "clarify"} or current_thread["timeframe_introduced"]),
+        anchor_text=str(anchor_text or ""),
+        exit_reason=str(thread_exit_reason),
+    )
+    if route == "risk" or question_kind == "opening":
+        conversation_thread.active = False
+        conversation_thread.question_count = 0
+        conversation_thread.denial_streak = 0
 
     return {
         "next_action": next_action,
+        "conversation_thread": conversation_thread,
         "next_node": route,
         "active_node": route,
         "route_history": [decision],

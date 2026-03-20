@@ -15,8 +15,8 @@ Write exactly one naturalistic, clinically grounded follow-up question.
 Hard constraints:
 - Use a conversational but clinically purposeful tone, like a skilled therapist.
 - Keep it under 50 words.
-- Anchor to a concrete detail from the persona's latest message when possible.
-- Focus on a two-week timeframe when clinically relevant; vary the phrasing naturally.
+- Anchor to a concrete detail from the persona's latest message when possible, especially anchor_text when it is provided.
+- Build the question around question_kind and timeframe_mode instead of defaulting to questionnaire phrasing.
 - Probe exactly one goal: {probe_goal} (frequency | duration | impact | exemplar).
 - When probing frequency or duration, offer concrete anchors the persona can choose from
   (e.g., "hours or most of the day", "a few nights or most nights").
@@ -24,6 +24,14 @@ Hard constraints:
 - Stay inside the selected module and target-item domain.
 - Do not reassure, praise, or offer therapeutic advice.
 - Do not repeat or closely paraphrase the previous detector question.
+- For topic_open questions, introduce the timeframe naturally once if clinically useful.
+- For same_item_followup, same_module_followup, and contrastive_pivot, do not begin with
+  "In the last two weeks" or "In the past two weeks". Use a short bridge like
+  "You mentioned...", "When that happens...", "With that...", or "Between the two...".
+- For same_item_followup, ask about one axis only: exemplar, impact, frequency, or duration.
+- For same_module_followup, stay anchored to the last answer rather than asking a cold new symptom screen.
+- For contrastive_pivot, ask the persona to compare the two experiences directly.
+- For risk_check, keep the question direct and clinically clear, but avoid boilerplate repetition.
 - Return only the question text.
 
 Target module:
@@ -33,6 +41,10 @@ Target module:
 - module_items={target_module_items}
 - target_item_id={target_item_id}
 - target_item_name={target_item_name}
+- question_kind={question_kind}
+- timeframe_mode={timeframe_mode}
+- thread_turn_index={thread_turn_index}
+- anchor_text={anchor_text}
 
 Previous detector question:
 {previous_question}
@@ -321,6 +333,50 @@ Latest persona message:
 """,
 }
 
+FOLLOWUP_FALLBACK_QUESTIONS: Dict[str, Dict[str, List[str]]] = {
+    "cognitive": {
+        "same_item_followup": [
+            "When that shows up, what does it sound like in your head?",
+            "When that hits, how much does it shape the rest of your day?",
+            "When that feeling is there, does it pass quickly or linger for hours?",
+        ],
+        "same_module_followup": [
+            "You mentioned that part pretty clearly. What tends to sit alongside it most?",
+            "With that going on, what related shift have you noticed most around it?",
+            "Staying with that theme, what nearby change stands out next?",
+        ],
+        "contrastive_pivot": [
+            "Between those two, which one feels more central lately?",
+            "If you compare the two, which one has been driving the harder days more?",
+            "When you put them side by side, which one feels stronger for you?",
+        ],
+    },
+    "somatic": {
+        "same_item_followup": [
+            "When that happens, what does it look like in your routine?",
+            "When that hits, is it brief or does it hang around most of the day?",
+            "When that shows up, what feels most different in your day-to-day?",
+        ],
+        "same_module_followup": [
+            "Staying with that, what other body-level shift has been closest to it?",
+            "Alongside that change, what else in your routine has felt most off?",
+            "With that in mind, what related physical change stands out next?",
+        ],
+        "contrastive_pivot": [
+            "Between those two, which one has been more noticeable lately?",
+            "If you compare them, which one has been affecting you more?",
+            "When both show up, which one is usually stronger?",
+        ],
+    },
+    "risk": {
+        "risk_check": [
+            "When that feels especially heavy, what happens in your mind at the worst point?",
+            "When those thoughts get strongest, what are you most worried might happen?",
+            "When things feel that dark, what keeps it from moving closer to action?",
+        ],
+    },
+}
+
 
 def get_prompt(key: str) -> str:
     value = PROMPT_REGISTRY.get(key)
@@ -329,10 +385,15 @@ def get_prompt(key: str) -> str:
     return ""
 
 
-def get_fallback_questions(node_name: str) -> List[str]:
+def get_fallback_questions(node_name: str, question_kind: str = "topic_open") -> List[str]:
+    question_key = str(question_kind or "topic_open").strip().lower() or "topic_open"
+    route_key = str(node_name or "cognitive").strip().lower() or "cognitive"
+    followup_options = FOLLOWUP_FALLBACK_QUESTIONS.get(route_key, {}).get(question_key, [])
+    if followup_options:
+        return [str(item) for item in followup_options]
     value = PROMPT_REGISTRY.get("fallback_questions", {})
     if isinstance(value, dict):
-        options = value.get(node_name, [])
+        options = value.get(route_key, [])
         if isinstance(options, list):
             return [str(item) for item in options]
     return []
