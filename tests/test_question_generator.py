@@ -125,3 +125,61 @@ class QuestionGeneratorTests(unittest.TestCase):
         self.assertTrue(bool(trace["used_fallback"]))
         self.assertFalse(asked.lower().startswith("in the last two weeks"))
         self.assertEqual(str(trace["question_kind"]), "same_item_followup")
+
+    def test_same_thread_followup_strips_stock_you_mentioned_lead(self) -> None:
+        state = {
+            "turn_index": 2,
+            "messages": [
+                {"role": "user", "content": "What has been weighing on you most lately?"},
+                {"role": "assistant", "content": "I keep feeling like I let people down."},
+            ],
+            "next_action": {
+                "target_item_id": 5,
+                "route": "cognitive",
+                "style": "functional_impact",
+                "question_kind": "same_item_followup",
+                "timeframe_mode": "carry",
+                "thread_turn_index": 2,
+                "anchor_text": "let people down",
+                "rationale": "threaded follow-up",
+            },
+            "item_beliefs": {},
+        }
+
+        with patch(
+            "agents.question_generator.get_llm",
+            return_value=_FakeLLM(
+                "You mentioned feeling like you let people down—how much does that shape the rest of your day"
+            ),
+        ):
+            result = question_generator(state)
+
+        asked = result["messages"][0]["content"]
+        self.assertEqual(asked, "How much does that shape the rest of your day?")
+
+    def test_same_module_fallback_no_longer_defaults_to_you_mentioned(self) -> None:
+        state = {
+            "turn_index": 3,
+            "messages": [
+                {"role": "user", "content": "What has that looked like lately?"},
+                {"role": "assistant", "content": "I keep feeling like I let people down."},
+            ],
+            "next_action": {
+                "target_item_id": 5,
+                "route": "cognitive",
+                "style": "gentle_probe",
+                "question_kind": "same_module_followup",
+                "timeframe_mode": "carry",
+                "thread_turn_index": 2,
+                "anchor_text": "let people down",
+                "rationale": "threaded module follow-up",
+            },
+            "item_beliefs": {},
+        }
+
+        with patch("agents.question_generator.get_llm", return_value=_FakeLLM("   ")):
+            result = question_generator(state)
+
+        asked = result["messages"][0]["content"]
+        self.assertTrue(bool(result["turn_trace"]["question_generator"]["used_fallback"]))
+        self.assertFalse(asked.startswith("You mentioned"))

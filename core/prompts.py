@@ -26,8 +26,9 @@ Hard constraints:
 - Do not repeat or closely paraphrase the previous detector question.
 - For topic_open questions, introduce the timeframe naturally once if clinically useful.
 - For same_item_followup, same_module_followup, and contrastive_pivot, do not begin with
-  "In the last two weeks" or "In the past two weeks". Use a short bridge like
-  "You mentioned...", "When that happens...", "With that...", or "Between the two...".
+  "In the last two weeks" or "In the past two weeks".
+- For follow-ups, vary the opening naturally and do not default to stock bridges like
+  "You mentioned..." or "When that happens..." unless the wording genuinely needs it.
 - For same_item_followup, ask about one axis only: exemplar, impact, frequency, or duration.
 - For same_module_followup, stay anchored to the last answer rather than asking a cold new symptom screen.
 - For contrastive_pivot, ask the persona to compare the two experiences directly.
@@ -173,7 +174,7 @@ Return STRICT JSON ONLY, exactly one top-level object with this schema:
     {{
       "item_id": 14,
       "symptom_name": "Worthlessness",
-      "supported": true,
+      "assertion": "present",
       "intensity": 0.0,
       "confidence": 0.0,
       "anchor_quote": "short grounded quote",
@@ -186,46 +187,61 @@ Constraints:
 - Score every item in allowed_item_ids exactly once.
 - Never omit an allowed item from the scores list.
 - Do not score any item outside allowed_item_ids.
+- assertion must be exactly one of: present, absent, uncertain, contrastive, conditional.
 - Prefer candidate_item_ids when supported by the message, but still score all allowed items.
-- For indirect but plausible in-scope signals, set supported=true with low confidence/low intensity only when the reply still names or concretely describes the symptom. Generic uncertainty alone is not enough.
+- anchor_quote must be a short verbatim quote from the latest persona message.
+- Use present for direct or indirect support.
+- Use absent for explicit denial, explicit no-change, or clearly negative answers for that item.
+- Use uncertain for vague or insufficient signal.
+- Use contrastive for direct comparative answers like "more irritability than sadness".
+- Use conditional for intermittent, mixed, or context-bound endorsement that still indicates the symptom is present.
+- For indirect but plausible in-scope signals, use present or conditional with low confidence/low intensity only when the reply still names or concretely describes the symptom. Generic uncertainty alone is not enough.
 - For module-3 items, treat explicit self-blame, guilt, shame, failure, self-dislike, self-criticalness, burden, or worthlessness language as support even when phrased indirectly or conversationally.
+- For self-evaluation items 7, 8, and 14, prefer one dominant item unless the reply clearly contains separate cue families for more than one item.
+- Item 7 (Self-Dislike) should be preferred for explicit self-dislike or reduced self-regard, such as "I don't like myself lately", "I've lost confidence in myself", or "I hate who I've been."
+- Item 8 (Self-Criticalness) should be preferred for self-criticism or internal judgment, such as "I'm hard on myself", "I keep thinking I should be doing better", or "I second-guess everything."
 - If allowed_item_ids include item 14, prefer worthlessness support when the reply is specifically about burden, mattering, worth, contribution, or identity-level failure, such as "I feel like a burden", "I do not contribute anything that matters", "I feel like a failure", or "I do not like who I am right now."
 - If allowed_item_ids include item 14 and the reply is only "It is my own fault" without worth or identity language, prefer guilt/self-blame items rather than item 14.
+- If the reply is generic uncertainty or weak ambiguity without explicit self-judgment, keep self-evaluation items uncertain rather than present.
 - If allowed_item_ids include item 21 and the detector question is explicitly about sexual interest, treat direct mild decrease phrasing like "That side of things is a little lower than usual, not a big change though" or "To put it simply, that side of things is a little lower than usual, not a big change though" as supported=true with low confidence/intensity.
-- If allowed_item_ids include item 21 and the detector question is explicitly about sexual interest, keep item 21 supported=false for direct no-change replies like "That side of things has been fine" or "That has not really been an issue."
-- If allowed_item_ids include item 18, require direct appetite or eating change evidence. Keep item 18 supported=false for generic heaviness, fatigue, chores, or stress unless the reply explicitly describes appetite/eating change, including variability language like "it's been up and down", "not clearly one direction", or "some days food sounds fine and other days I barely bother."
-- If allowed_item_ids include item 16 and the detector question is about sleep, treat mixed sleep-instability phrasing like "sleep is a mess", "I'm up all night or sleeping too much", or "I wake in the night and can't get back to sleep" as supported=true with low-to-moderate confidence/intensity rather than unsupported.
+- If allowed_item_ids include item 21 and the detector question is explicitly about sexual interest, use absent for direct no-change replies like "That side of things has been fine" or "That has not really been an issue."
+- If allowed_item_ids include item 18, require direct appetite or eating change evidence. Use absent for generic heaviness, fatigue, chores, or stress unless the reply explicitly describes appetite/eating change, including variability language like "it's been up and down", "not clearly one direction", or "some days food sounds fine and other days I barely bother."
+- If allowed_item_ids include item 16 and the detector question is about sleep, treat mixed sleep-instability phrasing like "sleep is a mess", "I'm up all night or sleeping too much", or "I wake in the night and can't get back to sleep" as present with low-to-moderate confidence/intensity rather than uncertain.
 - For module-3 items, softer self-evaluation phrasing like "I've lost confidence in myself", "I'm hard on myself", "I keep thinking I should be doing better", or "I second-guess everything" still counts as support.
-- If the detector asked about sadness and the reply says it is "more irritability than sadness", support the irritability sibling if it is in allowed_item_ids.
+- If the detector asked about sadness and the reply says it is "more irritability than sadness", use contrastive for the irritability sibling if it is in allowed_item_ids.
 - If the detector asked about energy or interest and the reply says "it is a bit of both" or "both show up", support the in-scope sibling symptom named by the reply with low confidence rather than leaving it unsupported.
 - For module-3 items, do not map generic stress, busyness, pressure, or "everything feels heavier" to support unless the message also contains explicit self-evaluation, guilt, blame, shame, failure, or worthlessness language.
 - Do not treat phrases like "it seems a little different", "there has been some shift", "it feels a bit off compared with usual", or "it is hard to be exact" as support by themselves unless the reply also includes symptom-specific language, a concrete functional example, or a direct symptom-linked change from baseline.
-- Reserve supported=false for true denial, no-change, or unrelated/logistical content for that item.
+- Reserve absent for true denial, no-change, or unrelated/logistical content for that item.
 - symptom_name must be the exact canonical BDI label for the chosen item_id.
 - intensity must be in [0, 3], confidence in [0, 1].
-- If supported=false, use intensity=0 and confidence=0 unless the message contains weak contradictory context you need to mention.
+- If assertion=absent or assertion=uncertain, use intensity=0 and confidence=0 unless the message contains weak contradictory context you need to mention.
 - Do not emit markdown, prose, headings, or trailing text.
 - Output must start with "{{" and end with "}}".
 
 Examples:
-- If the detector asked about sleep and the reply is "a few nights, more than usual", mark the sleep item supported=true with low-to-moderate confidence/intensity, and mark the other allowed items supported=false.
-- If the allowed items include worthlessness/self-criticism and the reply is "I feel like a burden", mark worthlessness or self-critical items supported=true with low-to-moderate confidence rather than unsupported.
-- If the allowed items include item 14 and the reply is "I do not contribute anything that matters anymore", mark item 14 supported=true.
-- If the allowed items include item 14 and the reply is "I feel like a failure" or "I do not like who I am right now", mark item 14 supported=true.
+- If the detector asked about sleep and the reply is "a few nights, more than usual", mark the sleep item assertion=present with low-to-moderate confidence/intensity, and mark the other allowed items assertion=absent.
+- If the allowed items include items 7, 8, and 14 and the reply is "I feel like a burden", mark item 14 assertion=present and keep items 7 and 8 absent or uncertain.
+- If the allowed items include items 7, 8, and 14 and the reply is "I don't like myself lately" or "I've lost confidence in myself", mark item 7 assertion=present.
+- If the allowed items include items 7, 8, and 14 and the reply is "I'm hard on myself" or "I keep thinking I should be doing better", mark item 8 assertion=present.
+- If the allowed items include item 14 and the reply is "I do not contribute anything that matters anymore", mark item 14 assertion=present.
+- If the allowed items include item 14 and the reply is "I feel like a failure" or "I do not like who I am right now", mark item 14 assertion=present.
 - If the allowed items include item 14 and the reply is only "It is my own fault", prefer guilt/self-blame items over item 14.
-- If the allowed items include module-3 and the reply is "I feel like I'm falling behind and it's my own fault", mark guilt/self-blame items supported=true with low-to-moderate confidence rather than unsupported.
-- If the allowed items include module-3 and the reply is "Most days, guilt just shows up out of nowhere", mark guilt or related self-evaluation items supported=true.
-- If the detector asked about sexual interest and the reply is "That side of things is a little lower than usual, not a big change though", mark item 21 supported=true with low confidence/intensity rather than unsupported.
-- If the detector asked about sexual interest and the reply is "That side of things has been fine" or "That has not really been an issue", keep item 21 supported=false.
-- If the detector asked about appetite and the reply is "I'm not eating at all or just grabbing junk because I can't be bothered", mark item 18 supported=true.
-- If the detector asked about appetite and the reply is "it's been up and down rather than clearly one direction" or "some days food sounds fine and other days I barely bother", mark item 18 supported=true with low-to-moderate confidence/intensity.
-- If the detector asked about appetite and the reply is "I haven't noticed anything different there", keep item 18 supported=false.
-- If the detector asked about sleep and the reply is "sleep is a mess, I'm up all night or sleeping too much", mark item 16 supported=true with low-to-moderate confidence/intensity.
-- If the allowed items include self-dislike or self-criticalness and the reply is "I've lost confidence in myself" or "I keep thinking I should be doing better", mark the matching module-3 item supported=true with low confidence rather than unsupported.
-- If the detector asked about sadness and the reply is "it leans more toward irritability than outright sadness", support the irritability sibling if it is in allowed_item_ids.
-- If the detector asked about energy or interest and the reply is "it is a bit of both, honestly; starting things takes more effort and I get less out of them once I do", support the in-scope sibling symptom named by the reply with low confidence rather than unsupported.
-- If the allowed items include module-3 and the reply is only "work has been stressful" or "everything feels heavier" without self-judgment, keep the module-3 items supported=false.
-- If the reply is "not really, everything feels about normal", return the full scores list with every allowed item marked supported=false.
+- If the allowed items include module-3 and the reply is "I feel like I'm falling behind and it's my own fault", mark guilt/self-blame items assertion=present with low-to-moderate confidence rather than assertion=uncertain.
+- If the allowed items include module-3 and the reply is "Most days, guilt just shows up out of nowhere", mark guilt or related self-evaluation items assertion=present.
+- If the detector asked about sexual interest and the reply is "That side of things is a little lower than usual, not a big change though", mark item 21 assertion=conditional with low confidence/intensity rather than assertion=uncertain.
+- If the detector asked about sexual interest and the reply is "That side of things has been fine" or "That has not really been an issue", keep item 21 assertion=absent.
+- If the detector asked about appetite and the reply is "I'm not eating at all or just grabbing junk because I can't be bothered", mark item 18 assertion=present.
+- If the detector asked about appetite and the reply is "it's been up and down rather than clearly one direction" or "some days food sounds fine and other days I barely bother", mark item 18 assertion=conditional with low-to-moderate confidence/intensity.
+- If the detector asked about appetite and the reply is "I haven't noticed anything different there", keep item 18 assertion=absent.
+- If the detector asked about sleep and the reply is "sleep is a mess, I'm up all night or sleeping too much", mark item 16 assertion=present with low-to-moderate confidence/intensity.
+- If the allowed items include items 7, 8, and 14 and the reply is "I've lost confidence in myself", mark item 7 assertion=present with low confidence rather than assertion=uncertain.
+- If the allowed items include items 7, 8, and 14 and the reply is "I second-guess everything", mark item 8 assertion=present with low confidence rather than assertion=uncertain.
+- If the allowed items include items 7, 8, and 14 and the reply is "work has been stressful" or "I'm behind" without self-judgment, keep items 7, 8, and 14 uncertain or absent.
+- If the detector asked about sadness and the reply is "it leans more toward irritability than outright sadness", mark the irritability sibling assertion=contrastive if it is in allowed_item_ids.
+- If the detector asked about energy or interest and the reply is "it is a bit of both, honestly; starting things takes more effort and I get less out of them once I do", mark the in-scope sibling symptom assertion=contrastive or conditional rather than assertion=uncertain.
+- If the allowed items include module-3 and the reply is only "work has been stressful" or "everything feels heavier" without self-judgment, keep the module-3 items assertion=uncertain or assertion=absent.
+- If the reply is "not really, everything feels about normal", return the full scores list with every allowed item marked assertion=absent.
 
 Current specialist node: {node_name}
 Current detector question: {current_detector_question}
@@ -336,36 +352,36 @@ Latest persona message:
 FOLLOWUP_FALLBACK_QUESTIONS: Dict[str, Dict[str, List[str]]] = {
     "cognitive": {
         "same_item_followup": [
-            "When that shows up, what does it sound like in your head?",
-            "When that hits, how much does it shape the rest of your day?",
-            "When that feeling is there, does it pass quickly or linger for hours?",
+            "What does that sound like in your head when it shows up?",
+            "How much does that shape the rest of your day when it hits?",
+            "Does that feeling pass quickly or linger for hours?",
         ],
         "same_module_followup": [
-            "You mentioned that part pretty clearly. What tends to sit alongside it most?",
-            "With that going on, what related shift have you noticed most around it?",
-            "Staying with that theme, what nearby change stands out next?",
+            "What tends to sit alongside that most?",
+            "What related shift have you noticed most around it?",
+            "Staying with that for a second, what nearby change stands out next?",
         ],
         "contrastive_pivot": [
-            "Between those two, which one feels more central lately?",
+            "Which one feels more central lately?",
             "If you compare the two, which one has been driving the harder days more?",
-            "When you put them side by side, which one feels stronger for you?",
+            "Side by side, which one feels stronger for you?",
         ],
     },
     "somatic": {
         "same_item_followup": [
-            "When that happens, what does it look like in your routine?",
-            "When that hits, is it brief or does it hang around most of the day?",
-            "When that shows up, what feels most different in your day-to-day?",
+            "What does that look like in your routine?",
+            "Is it brief, or does it hang around most of the day?",
+            "What feels most different in your day-to-day when it shows up?",
         ],
         "same_module_followup": [
-            "Staying with that, what other body-level shift has been closest to it?",
-            "Alongside that change, what else in your routine has felt most off?",
-            "With that in mind, what related physical change stands out next?",
+            "What other body-level shift has been closest to it?",
+            "What else in your routine has felt most off alongside that change?",
+            "What related physical change stands out next there?",
         ],
         "contrastive_pivot": [
-            "Between those two, which one has been more noticeable lately?",
+            "Which one has been more noticeable lately?",
             "If you compare them, which one has been affecting you more?",
-            "When both show up, which one is usually stronger?",
+            "When both show up, which one usually feels stronger?",
         ],
     },
     "risk": {

@@ -260,6 +260,274 @@ class EvidenceExtractionPrecisionTests(unittest.TestCase):
 
 
 class EvidenceExtractionV2Tests(unittest.TestCase):
+    def test_targeted_assertion_schema_exact_binding_emits_bound_evidence(self) -> None:
+        allowed_item_ids = [5, 7, 8, 14]
+        state = _extract_state(
+            route="cognitive",
+            target_item_id=14,
+            target_module_id=3,
+            latest_message="I feel like a burden lately.",
+            previous_question="When things feel heavy, what do you tend to tell yourself?",
+        )
+        fake_llm = _FakeLLM(
+            [
+                '{"target_relevant": true, "candidate_item_ids": [14], "anchor_quote": "I feel like a burden", "confidence": 0.70, "reason": "worthlessness language"}',
+                json.dumps(
+                    {
+                        "scores": [
+                            {
+                                "item_id": item_id,
+                                "symptom_name": BDI_ITEM_NAMES[item_id],
+                                "assertion": "present" if item_id == 14 else "absent",
+                                "confidence": 0.72 if item_id == 14 else 0.0,
+                                "intensity": 1.4 if item_id == 14 else 0.0,
+                                "anchor_quote": "I feel like a burden" if item_id == 14 else "",
+                                "reason": "worthlessness language" if item_id == 14 else "not supported",
+                            }
+                            for item_id in allowed_item_ids
+                        ]
+                    }
+                ),
+            ]
+        )
+
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+            with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
+                result = extract_likelihoods(state)
+
+        self.assertEqual([int(record.item_id) for record in result["latest_turn_evidence"]], [14])
+        self.assertEqual(result["latest_turn_evidence"][0].assertion_label, "present")
+        self.assertEqual(result["latest_turn_evidence"][0].binding_status, "exact")
+        self.assertEqual(result["latest_turn_evidence"][0].evidence_text, "I feel like a burden")
+        self.assertEqual(len(result["latest_turn_assertions"]), 4)
+        trace = result["turn_trace"]["extract_evidence"]
+        self.assertEqual(int(trace["detail_assertion_emitted_evidence_count"]), 1)
+        self.assertEqual(int(trace["detail_assertion_counts"]["present"]), 1)
+        self.assertEqual(int(trace["detail_assertion_binding_counts"]["exact"]), 1)
+
+    def test_targeted_legacy_supported_payload_is_coerced_to_assertions(self) -> None:
+        allowed_item_ids = [5, 7, 8, 14]
+        state = _extract_state(
+            route="cognitive",
+            target_item_id=14,
+            target_module_id=3,
+            latest_message="I feel like a burden lately.",
+        )
+        fake_llm = _FakeLLM(
+            [
+                '{"target_relevant": true, "candidate_item_ids": [14], "anchor_quote": "I feel like a burden", "confidence": 0.70, "reason": "worthlessness language"}',
+                _scored_payload(
+                    allowed_item_ids,
+                    supported={
+                        14: {
+                            "confidence": 0.72,
+                            "intensity": 1.4,
+                            "anchor_quote": "I feel like a burden",
+                            "reason": "worthlessness language",
+                        }
+                    },
+                ),
+            ]
+        )
+
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+            with patch("agents.evidence_extraction.get_extractor_llm", return_value=fake_llm):
+                result = extract_likelihoods(state)
+
+        self.assertEqual([int(record.item_id) for record in result["latest_turn_evidence"]], [14])
+        self.assertEqual(result["latest_turn_evidence"][0].assertion_label, "present")
+        self.assertEqual(result["latest_turn_assertions"][3].assertion_label, "present")
+        trace = result["turn_trace"]["extract_evidence"]
+        self.assertGreaterEqual(int(trace["detail_assertion_legacy_payload_coerce_count"]), 1)
+
+    def test_targeted_assertion_normalized_binding_snaps_to_latest_message(self) -> None:
+        records, stats = _records_from_scored_items(
+            [
+                {
+                    "item_id": 14,
+                    "symptom_name": "Worthlessness",
+                    "assertion": "present",
+                    "confidence": 0.7,
+                    "intensity": 1.5,
+                    "anchor_quote": "i feel   like a burden",
+                    "reason": "worthlessness language",
+                },
+                {
+                    "item_id": 5,
+                    "symptom_name": "Guilty Feelings",
+                    "assertion": "absent",
+                    "confidence": 0.0,
+                    "intensity": 0.0,
+                    "anchor_quote": "",
+                    "reason": "not supported",
+                },
+            ],
+            allowed_item_ids=[5, 14],
+            node_name="cognitive",
+            turn=1,
+            latest_message="I FEEL like a burden lately.",
+            key_aliases_enabled=True,
+            strict_schema_coerce=True,
+            item1_strict_gate=False,
+            item1_weak_max_conf=0.55,
+            item1_weak_max_intensity=1.5,
+            method_override="llm_extractor",
+            stats_prefix="detail",
+            current_detector_question="What do you tend to tell yourself when things feel heavy?",
+        )
+
+        self.assertEqual([int(record.item_id) for record in records], [14])
+        self.assertEqual(records[0].binding_status, "normalized_exact")
+        self.assertEqual(records[0].evidence_text, "I FEEL like a burden")
+        self.assertEqual(int(stats["detail_assertion_binding_counts"]["normalized_exact"]), 1)
+
+    def test_targeted_positive_unbound_assertion_is_preserved_but_not_emitted(self) -> None:
+        records, stats = _records_from_scored_items(
+            [
+                {
+                    "item_id": 14,
+                    "symptom_name": "Worthlessness",
+                    "assertion": "present",
+                    "confidence": 0.7,
+                    "intensity": 1.4,
+                    "anchor_quote": "feeling like a burden somehow",
+                    "reason": "worthlessness language",
+                }
+            ],
+            allowed_item_ids=[14],
+            node_name="cognitive",
+            turn=1,
+            latest_message="I feel like a burden lately.",
+            key_aliases_enabled=True,
+            strict_schema_coerce=True,
+            item1_strict_gate=False,
+            item1_weak_max_conf=0.55,
+            item1_weak_max_intensity=1.5,
+            method_override="llm_extractor",
+            stats_prefix="detail",
+            current_detector_question="What do you tend to tell yourself when things feel heavy?",
+        )
+
+        self.assertEqual(records, [])
+        self.assertEqual(int(stats["detail_assertion_positive_unbound_dropped_count"]), 1)
+        self.assertEqual(int(stats["detail_assertion_binding_counts"]["unbound"]), 1)
+        assertions = list(stats["detail_assertions"])
+        self.assertEqual(len(assertions), 1)
+        self.assertEqual(assertions[0].assertion_label, "present")
+        self.assertEqual(assertions[0].binding_status, "unbound")
+
+    def test_targeted_absent_and_uncertain_assertions_are_preserved_only(self) -> None:
+        records, stats = _records_from_scored_items(
+            [
+                {
+                    "item_id": 16,
+                    "symptom_name": "Changes in Sleeping Pattern",
+                    "assertion": "absent",
+                    "confidence": 0.0,
+                    "intensity": 0.0,
+                    "anchor_quote": "sleep has been fine",
+                    "reason": "explicit denial",
+                },
+                {
+                    "item_id": 20,
+                    "symptom_name": "Tiredness or Fatigue",
+                    "assertion": "uncertain",
+                    "confidence": 0.0,
+                    "intensity": 0.0,
+                    "anchor_quote": "hard to be exact",
+                    "reason": "vague answer",
+                },
+            ],
+            allowed_item_ids=[16, 20],
+            node_name="somatic",
+            turn=1,
+            latest_message="Sleep has been fine, honestly; it's hard to be exact about the rest.",
+            key_aliases_enabled=True,
+            strict_schema_coerce=True,
+            item1_strict_gate=False,
+            item1_weak_max_conf=0.55,
+            item1_weak_max_intensity=1.5,
+            method_override="llm_extractor",
+            stats_prefix="detail",
+            current_detector_question="How have sleep and fatigue changed compared with usual?",
+        )
+
+        self.assertEqual(records, [])
+        assertions = list(stats["detail_assertions"])
+        self.assertEqual({row.assertion_label for row in assertions}, {"absent", "uncertain"})
+        self.assertEqual(int(stats["detail_assertion_emitted_evidence_count"]), 0)
+
+    def test_targeted_contrastive_assertion_emits_when_bound(self) -> None:
+        records, stats = _records_from_scored_items(
+            [
+                {
+                    "item_id": 17,
+                    "symptom_name": "Irritability",
+                    "assertion": "contrastive",
+                    "confidence": 0.58,
+                    "intensity": 1.0,
+                    "anchor_quote": "more toward irritability",
+                    "reason": "contrastive answer",
+                },
+                {
+                    "item_id": 1,
+                    "symptom_name": "Sadness",
+                    "assertion": "absent",
+                    "confidence": 0.0,
+                    "intensity": 0.0,
+                    "anchor_quote": "",
+                    "reason": "contrastive answer",
+                },
+            ],
+            allowed_item_ids=[1, 17],
+            node_name="cognitive",
+            turn=1,
+            latest_message="If I had to choose, it leans more toward irritability than outright sadness.",
+            key_aliases_enabled=True,
+            strict_schema_coerce=True,
+            item1_strict_gate=False,
+            item1_weak_max_conf=0.55,
+            item1_weak_max_intensity=1.5,
+            method_override="llm_extractor",
+            stats_prefix="detail",
+            current_detector_question="In the last two weeks, how often have you felt sad?",
+        )
+
+        self.assertEqual([int(record.item_id) for record in records], [17])
+        self.assertEqual(records[0].assertion_label, "contrastive")
+        self.assertEqual(int(stats["detail_assertion_counts"]["contrastive"]), 1)
+
+    def test_targeted_conditional_assertion_emits_low_strength_positive_evidence(self) -> None:
+        records, stats = _records_from_scored_items(
+            [
+                {
+                    "item_id": 18,
+                    "symptom_name": "Changes in Appetite",
+                    "assertion": "conditional",
+                    "confidence": 0.42,
+                    "intensity": 1.0,
+                    "anchor_quote": "up and down",
+                    "reason": "appetite variability",
+                }
+            ],
+            allowed_item_ids=[18],
+            node_name="somatic",
+            turn=1,
+            latest_message="It has been up and down rather than clearly one direction the whole time.",
+            key_aliases_enabled=True,
+            strict_schema_coerce=True,
+            item1_strict_gate=False,
+            item1_weak_max_conf=0.55,
+            item1_weak_max_intensity=1.5,
+            method_override="llm_extractor",
+            stats_prefix="detail",
+            current_detector_question="How has your appetite changed compared with usual?",
+        )
+
+        self.assertEqual([int(record.item_id) for record in records], [18])
+        self.assertEqual(records[0].assertion_label, "conditional")
+        self.assertEqual(int(stats["detail_assertion_counts"]["conditional"]), 1)
+
     def test_v2_gate_false_still_runs_stage_two_for_indirect_relevant_reply(self) -> None:
         allowed_item_ids = [3, 5, 6, 7, 8, 14]
         state = _extract_state(
@@ -953,18 +1221,18 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             route="cognitive",
             target_item_id=7,
             target_module_id=3,
-            latest_message="I don't like the person I've been lately.",
+            latest_message="I don't like myself lately.",
         )
         fake_llm = _FakeLLM(
             [
-                '{"target_relevant": true, "candidate_item_ids": [7], "anchor_quote": "I don\'t like the person I\'ve been", "confidence": 0.6, "reason": "self-dislike language"}',
+                '{"target_relevant": true, "candidate_item_ids": [7], "anchor_quote": "I don\'t like myself", "confidence": 0.6, "reason": "self-dislike language"}',
                 _scored_payload(
                     allowed_item_ids,
                     supported={
                         7: {
                             "confidence": 0.72,
                             "intensity": 2.0,
-                            "anchor_quote": "I don't like the person I've been",
+                            "anchor_quote": "I don't like myself",
                             "reason": "supported self-dislike statement",
                         }
                     },
@@ -1509,6 +1777,181 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
 
         self.assertEqual([int(record.item_id) for record in records], [8])
         self.assertEqual(int(stats["detail_item8_soft_self_criticism_applied"]), 1)
+
+    def test_v2_self_evaluation_quote_retargets_wrong_item_to_item7(self) -> None:
+        records, stats = _records_from_scored_items(
+            json.loads(
+                _scored_payload(
+                    [7, 8, 14],
+                    supported={
+                        14: {
+                            "assertion": "present",
+                            "confidence": 0.58,
+                            "intensity": 1.0,
+                            "anchor_quote": "I've lost confidence in myself",
+                            "reason": "self-evaluation language",
+                        }
+                    },
+                )
+            )["scores"],
+            allowed_item_ids=[7, 8, 14],
+            node_name="cognitive",
+            turn=1,
+            latest_message="I've lost confidence in myself lately.",
+            key_aliases_enabled=True,
+            strict_schema_coerce=True,
+            item1_strict_gate=False,
+            item1_weak_max_conf=0.55,
+            item1_weak_max_intensity=1.5,
+            method_override="llm_extractor",
+            stats_prefix="detail",
+            current_detector_question="In the past two weeks, how often have you felt badly about yourself?",
+        )
+
+        self.assertEqual([int(record.item_id) for record in records], [7])
+        self.assertEqual(int(stats["detail_self_evaluation_retarget_count"]), 1)
+        self.assertEqual(int(stats["detail_self_evaluation_suppressed_count"]), 1)
+
+    def test_v2_self_evaluation_quote_retargets_wrong_item_to_item8(self) -> None:
+        records, stats = _records_from_scored_items(
+            json.loads(
+                _scored_payload(
+                    [7, 8, 14],
+                    supported={
+                        14: {
+                            "assertion": "present",
+                            "confidence": 0.56,
+                            "intensity": 1.0,
+                            "anchor_quote": "I'm hard on myself",
+                            "reason": "self-evaluative phrasing",
+                        }
+                    },
+                )
+            )["scores"],
+            allowed_item_ids=[7, 8, 14],
+            node_name="cognitive",
+            turn=1,
+            latest_message="I'm hard on myself lately.",
+            key_aliases_enabled=True,
+            strict_schema_coerce=True,
+            item1_strict_gate=False,
+            item1_weak_max_conf=0.55,
+            item1_weak_max_intensity=1.5,
+            method_override="llm_extractor",
+            stats_prefix="detail",
+            current_detector_question="In the past two weeks, how often have you been hard on yourself or critical of your choices?",
+        )
+
+        self.assertEqual([int(record.item_id) for record in records], [8])
+        self.assertEqual(int(stats["detail_self_evaluation_retarget_count"]), 1)
+
+    def test_v2_self_evaluation_quote_retargets_wrong_item_to_item14(self) -> None:
+        records, stats = _records_from_scored_items(
+            json.loads(
+                _scored_payload(
+                    [7, 8, 14],
+                    supported={
+                        8: {
+                            "assertion": "present",
+                            "confidence": 0.6,
+                            "intensity": 1.0,
+                            "anchor_quote": "I don't measure up",
+                            "reason": "self-evaluative phrasing",
+                        }
+                    },
+                )
+            )["scores"],
+            allowed_item_ids=[7, 8, 14],
+            node_name="cognitive",
+            turn=1,
+            latest_message="I don't measure up lately.",
+            key_aliases_enabled=True,
+            strict_schema_coerce=True,
+            item1_strict_gate=False,
+            item1_weak_max_conf=0.55,
+            item1_weak_max_intensity=1.5,
+            method_override="llm_extractor",
+            stats_prefix="detail",
+            current_detector_question="In the past two weeks, how often have you felt worthless or like you do not matter?",
+        )
+
+        self.assertEqual([int(record.item_id) for record in records], [14])
+        self.assertEqual(int(stats["detail_self_evaluation_retarget_count"]), 1)
+
+    def test_v2_self_evaluation_cluster_suppresses_generic_stress_without_self_judgment(self) -> None:
+        records, stats = _records_from_scored_items(
+            json.loads(
+                _scored_payload(
+                    [7, 8, 14],
+                    supported={
+                        7: {
+                            "assertion": "present",
+                            "confidence": 0.55,
+                            "intensity": 1.0,
+                            "anchor_quote": "work has been stressful",
+                            "reason": "generic stress language",
+                        }
+                    },
+                )
+            )["scores"],
+            allowed_item_ids=[7, 8, 14],
+            node_name="cognitive",
+            turn=1,
+            latest_message="Work has been stressful lately.",
+            key_aliases_enabled=True,
+            strict_schema_coerce=True,
+            item1_strict_gate=False,
+            item1_weak_max_conf=0.55,
+            item1_weak_max_intensity=1.5,
+            method_override="llm_extractor",
+            stats_prefix="detail",
+            current_detector_question="In the past two weeks, how often have you felt badly about yourself?",
+        )
+
+        self.assertEqual(records, [])
+        self.assertEqual(int(stats["detail_self_evaluation_suppressed_count"]), 1)
+        self.assertEqual(int(stats["detail_self_evaluation_retarget_count"]), 0)
+
+    def test_v2_self_evaluation_cluster_allows_separable_multi_cue_support(self) -> None:
+        records, stats = _records_from_scored_items(
+            json.loads(
+                _scored_payload(
+                    [7, 8, 14],
+                    supported={
+                        7: {
+                            "assertion": "present",
+                            "confidence": 0.62,
+                            "intensity": 1.0,
+                            "anchor_quote": "I don't like myself",
+                            "reason": "explicit self-dislike",
+                        },
+                        8: {
+                            "assertion": "present",
+                            "confidence": 0.6,
+                            "intensity": 1.0,
+                            "anchor_quote": "I should be doing better",
+                            "reason": "self-critical phrasing",
+                        },
+                    },
+                )
+            )["scores"],
+            allowed_item_ids=[7, 8, 14],
+            node_name="cognitive",
+            turn=1,
+            latest_message="I don't like myself lately, and I keep thinking I should be doing better.",
+            key_aliases_enabled=True,
+            strict_schema_coerce=True,
+            item1_strict_gate=False,
+            item1_weak_max_conf=0.55,
+            item1_weak_max_intensity=1.5,
+            method_override="llm_extractor",
+            stats_prefix="detail",
+            current_detector_question="In the past two weeks, how often have you felt badly about yourself?",
+        )
+
+        self.assertEqual({int(record.item_id) for record in records}, {7, 8})
+        self.assertEqual(int(stats["detail_self_evaluation_suppressed_count"]), 0)
+        self.assertEqual(int(stats["detail_self_evaluation_multi_item_suppression_count"]), 0)
 
     def test_v2_sadness_contrastive_reply_supports_irritability_sibling_when_in_scope(self) -> None:
         allowed_item_ids = [1, 4, 10, 12, 17]

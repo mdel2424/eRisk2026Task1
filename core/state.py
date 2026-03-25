@@ -94,6 +94,8 @@ class LikelihoodEvidence(BaseModel):
     evidence_type: str = "llm_extractor"
     symptom_name: str = ""
     direction: Literal["increase", "decrease", "neutral"] = "neutral"
+    assertion_label: Optional[Literal["present", "absent", "uncertain", "contrastive", "conditional"]] = None
+    binding_status: Optional[Literal["exact", "normalized_exact", "unbound"]] = None
     evidence_id: str = ""
     method_weight_hint: float = Field(default=0.0, ge=0.0, le=2.0)
     precision_gate_action: str = "kept"
@@ -114,6 +116,8 @@ class EvidenceRecord(BaseModel):
     item_id: int = Field(ge=1, le=21)
     symptom_name: str
     direction: Literal["increase", "decrease", "neutral"] = "increase"
+    assertion_label: Optional[Literal["present", "absent", "uncertain", "contrastive", "conditional"]] = None
+    binding_status: Optional[Literal["exact", "normalized_exact", "unbound"]] = None
     intensity: float = Field(ge=0.0, le=3.0)
     confidence: float = Field(ge=0.0, le=1.0)
     evidence_text: str
@@ -121,6 +125,20 @@ class EvidenceRecord(BaseModel):
     method: str = "llm_extractor"
     precision_gate_action: str = "kept"
     support_increment_blocked: bool = False
+
+
+class AssertionRecord(BaseModel):
+    turn: int = Field(ge=1)
+    node: Literal["somatic", "cognitive", "risk"]
+    item_id: int = Field(ge=1, le=21)
+    symptom_name: str
+    assertion_label: Literal["present", "absent", "uncertain", "contrastive", "conditional"]
+    confidence: float = Field(ge=0.0, le=1.0)
+    intensity: float = Field(ge=0.0, le=3.0)
+    anchor_quote: str = ""
+    reason: str = ""
+    method: str = "llm_extractor"
+    binding_status: Literal["exact", "normalized_exact", "unbound"] = "unbound"
 
 
 class ItemBelief(BaseModel):
@@ -268,7 +286,9 @@ class AgentState(TypedDict):
     # Evidence + beliefs
     latest_turn_likelihoods: List[LikelihoodEvidence]
     latest_turn_evidence: List[EvidenceRecord]
+    latest_turn_assertions: List[AssertionRecord]
     evidence_log: Annotated[List[EvidenceRecord], operator.add]
+    assertion_log: Annotated[List[AssertionRecord], operator.add]
     item_beliefs: Dict[int, ItemBelief]
     item_evidence_memory: Dict[int, List[str]]
     item_direction_tally: Dict[int, Dict[str, int]]
@@ -390,8 +410,10 @@ def build_initial_state(persona_id: Optional[str] = None) -> AgentState:
         should_stop=False,
         persona_id=persona_id,
         evidence_log=[],
+        assertion_log=[],
         latest_turn_likelihoods=[],
         latest_turn_evidence=[],
+        latest_turn_assertions=[],
         item_beliefs=beliefs,
         item_evidence_memory={},
         item_direction_tally={},

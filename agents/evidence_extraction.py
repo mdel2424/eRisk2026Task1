@@ -12,6 +12,7 @@ from core.llm import LLMBudgetExceeded, get_extractor_llm
 from core.prompts import get_prompt
 from core.state import (
     AgentState,
+    AssertionRecord,
     BDI_ITEM_NAMES,
     EvidenceRecord,
     LikelihoodEvidence,
@@ -36,6 +37,8 @@ EXTRACTOR_KEY_ALIASES = {
     "evidence_quote": "anchor_quote",
     "is_supported": "supported",
     "support_flag": "supported",
+    "assertion_label": "assertion",
+    "status": "assertion",
 }
 
 METHOD_WEIGHT_HINTS = {
@@ -326,6 +329,31 @@ ITEM8_SOFT_SELF_CRITICISM_PATTERNS = (
     re.compile(r"\bsecond[\s\-]?guess\s+everything\b"),
     re.compile(r"\bi\s+second[\s\-]?guess\s+everything\b"),
 )
+
+ITEM7_SELF_DISLIKE_ASSERTION_PATTERNS = (
+    re.compile(r"\bhate\s+myself\b"),
+    re.compile(r"\bdislike\s+myself\b"),
+    re.compile(r"\bdon'?t\s+like\s+myself\b"),
+    re.compile(r"\bdo\s+not\s+like\s+myself\b"),
+    re.compile(r"\bdon'?t\s+feel\s+good\s+about\s+myself\b"),
+    re.compile(r"\bdo\s+not\s+feel\s+good\s+about\s+myself\b"),
+    re.compile(r"\blost\s+confidence\s+in\s+myself\b"),
+    re.compile(r"\bhate\s+who\s+i(?:'ve| have)\s+been\b"),
+    re.compile(r"\bhate\s+the\s+person\s+i(?:'ve| have)\s+been\b"),
+)
+
+ITEM8_SELF_CRITICISM_ASSERTION_PATTERNS = (
+    re.compile(r"\bself[\s\-]?critical\b"),
+    re.compile(r"\bbeat\s+myself\s+up\b"),
+    re.compile(r"\bhard\s+on\s+myself\b"),
+    re.compile(r"\bkeep\s+thinking\s+i\s+should\s+be\s+doing\s+better\b"),
+    re.compile(r"\bshould\s+be\s+doing\s+better\b"),
+    re.compile(r"\bsecond[\s\-]?guess\s+everything\b"),
+    re.compile(r"\bi\s+second[\s\-]?guess\s+everything\b"),
+    re.compile(r"\bwhat\s+i(?:'ve| have)\s+done\s+wrong\b"),
+)
+
+SELF_EVALUATION_CLUSTER_ITEM_IDS = {7, 8, 14}
 
 GENERIC_AMBIGUOUS_SHIFT_PATTERNS = (
     re.compile(r"\bseems?\s+a\s+little\s+different\b"),
@@ -944,8 +972,14 @@ def _coerce_scored_schema_defaults(
     if not strict_schema_coerce:
         return normalized, coerce_count
 
+    had_supported = "supported" in normalized and normalized.get("supported") not in {None, ""}
+    had_assertion = "assertion" in normalized and normalized.get("assertion") not in {None, ""}
+
     if "supported" not in normalized or normalized.get("supported") in {None, ""}:
         normalized["supported"] = False
+        coerce_count += 1
+    if not had_assertion and not had_supported:
+        normalized["assertion"] = "uncertain"
         coerce_count += 1
     if "anchor_quote" not in normalized and str(normalized.get("evidence_text", "")).strip():
         normalized["anchor_quote"] = str(normalized.get("evidence_text", "")).strip()
@@ -962,6 +996,41 @@ def _coerce_scored_schema_defaults(
             normalized[key] = value
             coerce_count += 1
     return normalized, coerce_count
+
+
+def _coerce_assertion_label(raw_assertion: Any, *, supported_fallback: Any = None) -> tuple[str, bool]:
+    value = str(raw_assertion or "").strip().lower()
+    if value in {"present", "absent", "uncertain", "contrastive", "conditional"}:
+        return value, False
+    if value in {"supported", "support", "positive", "endorsed"}:
+        return "present", False
+    if value in {"negative", "denied", "no", "unsupported"}:
+        return "absent", False
+    if supported_fallback is not None:
+        return ("present" if _coerce_supported_flag(supported_fallback) else "absent"), True
+    return "uncertain", False
+
+
+def _assertion_is_positive_like(label: str) -> bool:
+    return str(label or "").strip().lower() in {"present", "contrastive", "conditional"}
+
+
+def _bind_assertion_anchor(anchor_quote: str, latest_message: str) -> tuple[str, str]:
+    quote = str(anchor_quote or "").strip()
+    latest = str(latest_message or "")
+    if not quote or not latest:
+        return "", "unbound"
+    exact_idx = latest.find(quote)
+    if exact_idx >= 0:
+        return latest[exact_idx : exact_idx + len(quote)], "exact"
+
+    # Case-insensitive and whitespace-normalized snap back to the original surface span.
+    token_pattern = r"\s+".join(re.escape(token) for token in quote.split())
+    if token_pattern:
+        match = re.search(token_pattern, latest, flags=re.IGNORECASE)
+        if match:
+            return latest[match.start() : match.end()], "normalized_exact"
+    return quote, "unbound"
 
 def _sentence_for_cue(text: str, cue: str) -> str:
     chunks = [part.strip() for part in text.replace("!", ".").replace("?", ".").split(".")]
@@ -1149,6 +1218,37 @@ def _has_item7_soft_self_evaluation(text: str) -> bool:
 
 def _has_item8_soft_self_criticism(text: str) -> bool:
     return _has_any_pattern(text, ITEM8_SOFT_SELF_CRITICISM_PATTERNS)
+
+
+def _self_evaluation_item_ids(text: str) -> List[int]:
+    normalized = " ".join(str(text or "").lower().split())
+    if not normalized:
+        return []
+
+    item_ids: List[int] = []
+    if _has_any_pattern(normalized, ITEM7_SELF_DISLIKE_ASSERTION_PATTERNS):
+        item_ids.append(7)
+    if _has_any_pattern(normalized, ITEM8_SELF_CRITICISM_ASSERTION_PATTERNS):
+        item_ids.append(8)
+    if _has_item14_latent_support_semantics(normalized) or _has_item14_worthlessness_semantics(normalized):
+        item_ids.append(14)
+    return item_ids
+
+
+def _resolve_self_evaluation_item_ids(
+    *,
+    bound_quote: str,
+    latest_message: str,
+    allowed_item_ids: Sequence[int],
+) -> List[int]:
+    allowed = {int(item_id) for item_id in allowed_item_ids if int(item_id) in SELF_EVALUATION_CLUSTER_ITEM_IDS}
+    if not allowed:
+        return []
+
+    quote_targets = [item_id for item_id in _self_evaluation_item_ids(bound_quote) if item_id in allowed]
+    if quote_targets:
+        return quote_targets
+    return [item_id for item_id in _self_evaluation_item_ids(latest_message) if item_id in allowed]
 
 
 def _is_sadness_detector_question(question: str) -> bool:
@@ -1527,6 +1627,8 @@ def _coerce_evidence_record(node_name: str, turn: int, item: Dict, fallback_text
         item_id=item_id,
         symptom_name=symptom_name,
         direction=direction,
+        assertion_label=item.get("assertion_label"),
+        binding_status=item.get("binding_status"),
         intensity=intensity,
         confidence=confidence,
         evidence_text=evidence_text,
@@ -1847,14 +1949,35 @@ def _records_from_scored_items(
         _key("item18_change_signal_rejected"): 0,
         _key("item7_soft_self_evaluation_applied"): 0,
         _key("item8_soft_self_criticism_applied"): 0,
+        _key("self_evaluation_retarget_count"): 0,
+        _key("self_evaluation_suppressed_count"): 0,
+        _key("self_evaluation_multi_item_suppression_count"): 0,
         _key("contrastive_sibling_support_applied"): 0,
         _key("generic_shift_blocked_count"): 0,
         _key("generic_shift_with_symptom_kept_count"): 0,
+        _key("assertions"): [],
+        _key("assertion_count"): 0,
+        _key("assertion_counts"): {
+            "present": 0,
+            "absent": 0,
+            "uncertain": 0,
+            "contrastive": 0,
+            "conditional": 0,
+        },
+        _key("assertion_binding_counts"): {
+            "exact": 0,
+            "normalized_exact": 0,
+            "unbound": 0,
+        },
+        _key("assertion_legacy_payload_coerce_count"): 0,
+        _key("assertion_positive_unbound_dropped_count"): 0,
+        _key("assertion_emitted_evidence_count"): 0,
     }
 
     supported_items: List[Dict[str, Any]] = []
     seen_item_ids: set[int] = set()
     scorer_supported_item_ids: set[int] = set()
+    pending_self_evaluation_retargets: Dict[int, Dict[str, Any]] = {}
     module3_soft_support_item_ids = set()
     apply_scoped_item14_hint = False
     apply_scoped_item14_latent_support = False
@@ -1944,9 +2067,15 @@ def _records_from_scored_items(
         if normalized_symptom:
             stats["symptom_name_normalized_count"] += 1
 
-        supported = _coerce_supported_flag(normalized_item.get("supported", False))
-        if supported:
-            scorer_supported_item_ids.add(int(resolved_item_id))
+        assertion_label, assertion_from_legacy_supported = _coerce_assertion_label(
+            normalized_item.get("assertion"),
+            supported_fallback=normalized_item.get("supported"),
+        )
+        if assertion_from_legacy_supported:
+            stats[_key("assertion_legacy_payload_coerce_count")] = int(
+                stats[_key("assertion_legacy_payload_coerce_count")]
+            ) + 1
+        supported = _assertion_is_positive_like(assertion_label)
         module3_soft_supported = False
         item14_worthlessness_hint_applied = False
         item14_latent_support_applied = False
@@ -1961,16 +2090,20 @@ def _records_from_scored_items(
             and not (item14_identity_change_signal and 7 in scorer_supported_item_ids)
         ):
             supported = True
+            assertion_label = "present"
             item14_latent_support_applied = True
             item14_worthlessness_hint_applied = apply_scoped_item14_hint
         if not supported and int(resolved_item_id) == 16 and apply_scoped_item16_keep:
             supported = True
+            assertion_label = "present"
             item16_sleep_instability_applied = True
         if not supported and int(resolved_item_id) == 7 and item7_soft_self_evaluation:
             supported = True
+            assertion_label = "present"
             item7_soft_self_evaluation_applied = True
         if not supported and int(resolved_item_id) == 8 and item8_soft_self_criticism:
             supported = True
+            assertion_label = "present"
             item8_soft_self_criticism_applied = True
         if (
             not supported
@@ -1978,13 +2111,16 @@ def _records_from_scored_items(
             and int(resolved_item_id) in module3_soft_support_item_ids
         ):
             supported = True
+            assertion_label = "present"
             module3_soft_supported = True
         if not supported and int(resolved_item_id) in contrastive_sibling_item_ids:
             supported = True
+            assertion_label = "contrastive"
             contrastive_sibling_support_applied = True
         item21_mild_direct_keep_applied = False
         if not supported and int(resolved_item_id) == 21 and apply_scoped_item21_keep:
             supported = True
+            assertion_label = "conditional"
             item21_mild_direct_keep_applied = True
         item18_variability_keep_applied = False
         if (
@@ -1995,6 +2131,7 @@ def _records_from_scored_items(
             and item18_change_signal_match
         ):
             supported = True
+            assertion_label = "conditional"
             item18_variability_keep_applied = True
         if (
             not supported
@@ -2006,17 +2143,12 @@ def _records_from_scored_items(
             ) + 1
         if supported and int(resolved_item_id) == 18 and not item18_change_signal_match:
             supported = False
+            assertion_label = "absent"
             stats[_key("item18_change_signal_rejected")] = int(stats[_key("item18_change_signal_rejected")]) + 1
         if supported and generic_ambiguous_shift and not generic_shift_has_scoped_signal:
             supported = False
+            assertion_label = "uncertain"
             stats[_key("generic_shift_blocked_count")] = int(stats[_key("generic_shift_blocked_count")]) + 1
-        if not supported:
-            continue
-        if generic_ambiguous_shift and generic_shift_has_scoped_signal:
-            stats[_key("generic_shift_with_symptom_kept_count")] = int(
-                stats[_key("generic_shift_with_symptom_kept_count")]
-            ) + 1
-
         if module3_soft_supported:
             try:
                 normalized_intensity = float(normalized_item.get("intensity", 0.0) or 0.0)
@@ -2105,18 +2237,143 @@ def _records_from_scored_items(
                 )
             stats[_key("item18_variability_match")] = int(stats[_key("item18_variability_match")]) + 1
 
+        anchor_quote = str(normalized_item.get("anchor_quote", "") or "").strip()
+        if not anchor_quote and _assertion_is_positive_like(assertion_label):
+            anchor_quote = latest_message[:220].strip()
+        bound_quote, binding_status = _bind_assertion_anchor(anchor_quote, latest_message)
+        if (
+            binding_status == "unbound"
+            and _assertion_is_positive_like(assertion_label)
+            and assertion_from_legacy_supported
+            and _has_scoped_symptom_or_example_signal(
+                allowed_item_ids=[int(resolved_item_id)],
+                text=latest_message,
+                previous_question=current_detector_question,
+            )
+        ):
+            bound_quote, binding_status = _bind_assertion_anchor(latest_message[:220].strip(), latest_message)
+        if assertion_label not in stats[_key("assertion_counts")]:
+            assertion_label = "uncertain"
+        stats[_key("assertion_counts")][assertion_label] = int(
+            stats[_key("assertion_counts")][assertion_label]
+        ) + 1
+        if binding_status not in stats[_key("assertion_binding_counts")]:
+            binding_status = "unbound"
+        stats[_key("assertion_binding_counts")][binding_status] = int(
+            stats[_key("assertion_binding_counts")][binding_status]
+        ) + 1
+        effective_item_id = int(resolved_item_id)
+        effective_symptom_name = canonical_symptom_name
+        emit_positive_assertion = _assertion_is_positive_like(assertion_label)
+        if (
+            emit_positive_assertion
+            and binding_status != "unbound"
+            and int(resolved_item_id) in SELF_EVALUATION_CLUSTER_ITEM_IDS
+        ):
+            self_evaluation_targets = _resolve_self_evaluation_item_ids(
+                bound_quote=bound_quote or anchor_quote,
+                latest_message=latest_message,
+                allowed_item_ids=allowed_item_ids,
+            )
+            if not self_evaluation_targets:
+                emit_positive_assertion = False
+                stats[_key("self_evaluation_suppressed_count")] = int(
+                    stats[_key("self_evaluation_suppressed_count")]
+                ) + 1
+            elif int(resolved_item_id) not in self_evaluation_targets:
+                emit_positive_assertion = False
+                stats[_key("self_evaluation_suppressed_count")] = int(
+                    stats[_key("self_evaluation_suppressed_count")]
+                ) + 1
+                if len(self_evaluation_targets) == 1:
+                    effective_item_id = int(self_evaluation_targets[0])
+                    effective_symptom_name = BDI_ITEM_NAMES.get(effective_item_id, f"Item {effective_item_id}")
+                    stats[_key("self_evaluation_retarget_count")] = int(
+                        stats[_key("self_evaluation_retarget_count")]
+                    ) + 1
+                    pending_current = pending_self_evaluation_retargets.get(effective_item_id)
+                    candidate_payload = {
+                        "item_id": effective_item_id,
+                        "symptom_name": effective_symptom_name,
+                        "direction": "increase",
+                        "assertion_label": assertion_label,
+                        "binding_status": binding_status,
+                        "intensity": normalized_item.get("intensity", 0.0),
+                        "confidence": normalized_item.get("confidence", 0.0),
+                        "evidence_text": bound_quote or latest_message[:220],
+                        "reason": str(normalized_item.get("reason", "")).strip()
+                        or f"{assertion_label} {stats_prefix} scorer item",
+                        "method": method_override,
+                    }
+                    candidate_rank = (
+                        float(candidate_payload["confidence"] or 0.0),
+                        float(candidate_payload["intensity"] or 0.0),
+                    )
+                    pending_rank = (
+                        float((pending_current or {}).get("confidence", 0.0) or 0.0),
+                        float((pending_current or {}).get("intensity", 0.0) or 0.0),
+                    )
+                    if pending_current is None or candidate_rank > pending_rank:
+                        pending_self_evaluation_retargets[effective_item_id] = candidate_payload
+                else:
+                    stats[_key("self_evaluation_multi_item_suppression_count")] = int(
+                        stats[_key("self_evaluation_multi_item_suppression_count")]
+                    ) + 1
+        if emit_positive_assertion:
+            scorer_supported_item_ids.add(effective_item_id)
+        assertion_reason = str(normalized_item.get("reason", "")).strip() or f"{assertion_label} {stats_prefix} scorer item"
+        assertions: List[AssertionRecord] = list(stats[_key("assertions")])
+        assertions.append(
+            AssertionRecord(
+                turn=turn,
+                node=node_name if node_name in {"somatic", "cognitive", "risk"} else "cognitive",
+                item_id=effective_item_id,
+                symptom_name=effective_symptom_name,
+                assertion_label=assertion_label,
+                confidence=float(normalized_item.get("confidence", 0.0) or 0.0),
+                intensity=float(normalized_item.get("intensity", 0.0) or 0.0),
+                anchor_quote=bound_quote or anchor_quote,
+                reason=assertion_reason,
+                method=method_override,
+                binding_status=binding_status,
+            )
+        )
+        stats[_key("assertions")] = assertions
+        stats[_key("assertion_count")] = len(assertions)
+
+        if not emit_positive_assertion:
+            continue
+        if binding_status == "unbound":
+            stats[_key("assertion_positive_unbound_dropped_count")] = int(
+                stats[_key("assertion_positive_unbound_dropped_count")]
+            ) + 1
+            continue
+        if generic_ambiguous_shift and generic_shift_has_scoped_signal:
+            stats[_key("generic_shift_with_symptom_kept_count")] = int(
+                stats[_key("generic_shift_with_symptom_kept_count")]
+            ) + 1
+
         supported_items.append(
             {
-                "item_id": int(resolved_item_id),
-                "symptom_name": canonical_symptom_name,
+                "item_id": effective_item_id,
+                "symptom_name": effective_symptom_name,
                 "direction": "increase",
+                "assertion_label": assertion_label,
+                "binding_status": binding_status,
                 "intensity": normalized_item.get("intensity", 0.0),
                 "confidence": normalized_item.get("confidence", 0.0),
-                "evidence_text": str(normalized_item.get("anchor_quote", "")).strip() or latest_message[:220],
-                "reason": str(normalized_item.get("reason", "")).strip() or f"supported {stats_prefix} scorer item",
+                "evidence_text": bound_quote or latest_message[:220],
+                "reason": assertion_reason,
                 "method": method_override,
             }
         )
+
+    seen_supported_item_ids = {int(item["item_id"]) for item in supported_items}
+    for retarget_item_id, payload in pending_self_evaluation_retargets.items():
+        if int(retarget_item_id) in seen_supported_item_ids:
+            continue
+        supported_items.append(dict(payload))
+        seen_supported_item_ids.add(int(retarget_item_id))
 
     stats[_key("scored_item_count")] = len(seen_item_ids)
     supported_item_ids = [int(item["item_id"]) for item in supported_items]
@@ -2168,6 +2425,7 @@ def _records_from_scored_items(
         row_stats["precision_gate_item_counts"].get("9", {}).get("dropped", 0) or 0
     )
     stats[_key("supported_rows_kept_post_validation")] = len(records)
+    stats[_key("assertion_emitted_evidence_count")] = len(records)
     return records, stats
 
 
@@ -2266,9 +2524,19 @@ def _extract_likelihoods_impl(
     detail_item18_change_signal_rejected = False
     detail_item7_soft_self_evaluation_applied = False
     detail_item8_soft_self_criticism_applied = False
+    detail_self_evaluation_retarget_count = 0
+    detail_self_evaluation_suppressed_count = 0
+    detail_self_evaluation_multi_item_suppression_count = 0
     detail_contrastive_sibling_support_applied = False
     detail_generic_shift_blocked = False
     detail_generic_shift_with_symptom_kept = False
+    detail_assertions: List[AssertionRecord] = []
+    detail_assertion_count = 0
+    detail_assertion_counts: Dict[str, int] = {}
+    detail_assertion_binding_counts: Dict[str, int] = {}
+    detail_assertion_legacy_payload_coerce_count = 0
+    detail_assertion_positive_unbound_dropped_count = 0
+    detail_assertion_emitted_evidence_count = 0
     item9_direct_match = False
     item9_passive_risk_match = False
     item9_routed_risk_recovery_applied = False
@@ -2541,6 +2809,15 @@ def _extract_likelihoods_impl(
                             detail_item8_soft_self_criticism_applied = bool(
                                 int(scored_stats["detail_item8_soft_self_criticism_applied"] or 0) > 0
                             )
+                            detail_self_evaluation_retarget_count = int(
+                                scored_stats.get("detail_self_evaluation_retarget_count", 0) or 0
+                            )
+                            detail_self_evaluation_suppressed_count = int(
+                                scored_stats.get("detail_self_evaluation_suppressed_count", 0) or 0
+                            )
+                            detail_self_evaluation_multi_item_suppression_count = int(
+                                scored_stats.get("detail_self_evaluation_multi_item_suppression_count", 0) or 0
+                            )
                             detail_contrastive_sibling_support_applied = bool(
                                 int(scored_stats["detail_contrastive_sibling_support_applied"] or 0) > 0
                             )
@@ -2549,6 +2826,21 @@ def _extract_likelihoods_impl(
                             )
                             detail_generic_shift_with_symptom_kept = bool(
                                 int(scored_stats["detail_generic_shift_with_symptom_kept_count"] or 0) > 0
+                            )
+                            detail_assertions = list(scored_stats.get("detail_assertions", []) or [])
+                            detail_assertion_count = int(scored_stats.get("detail_assertion_count", 0) or 0)
+                            detail_assertion_counts = dict(scored_stats.get("detail_assertion_counts", {}) or {})
+                            detail_assertion_binding_counts = dict(
+                                scored_stats.get("detail_assertion_binding_counts", {}) or {}
+                            )
+                            detail_assertion_legacy_payload_coerce_count = int(
+                                scored_stats.get("detail_assertion_legacy_payload_coerce_count", 0) or 0
+                            )
+                            detail_assertion_positive_unbound_dropped_count = int(
+                                scored_stats.get("detail_assertion_positive_unbound_dropped_count", 0) or 0
+                            )
+                            detail_assertion_emitted_evidence_count = int(
+                                scored_stats.get("detail_assertion_emitted_evidence_count", 0) or 0
                             )
                             item9_direct_match = bool(scored_stats["item9_direct_match_count"] > 0)
                             item9_passive_risk_match = bool(scored_stats["item9_passive_risk_match_count"] > 0)
@@ -2868,6 +3160,8 @@ def _extract_likelihoods_impl(
                 evidence_type=method,
                 symptom_name=str(record.symptom_name),
                 direction=str(record.direction),
+                assertion_label=getattr(record, "assertion_label", None),
+                binding_status=getattr(record, "binding_status", None),
                 evidence_id=_evidence_id(record),
                 method_weight_hint=float(METHOD_WEIGHT_HINTS.get(method, 0.50)),
                 precision_gate_action=str(getattr(record, "precision_gate_action", "kept") or "kept"),
@@ -2918,9 +3212,18 @@ def _extract_likelihoods_impl(
         "detail_item18_change_signal_rejected": detail_item18_change_signal_rejected,
         "detail_item7_soft_self_evaluation_applied": detail_item7_soft_self_evaluation_applied,
         "detail_item8_soft_self_criticism_applied": detail_item8_soft_self_criticism_applied,
+        "detail_self_evaluation_retarget_count": detail_self_evaluation_retarget_count,
+        "detail_self_evaluation_suppressed_count": detail_self_evaluation_suppressed_count,
+        "detail_self_evaluation_multi_item_suppression_count": detail_self_evaluation_multi_item_suppression_count,
         "detail_contrastive_sibling_support_applied": detail_contrastive_sibling_support_applied,
         "detail_generic_shift_blocked": detail_generic_shift_blocked,
         "detail_generic_shift_with_symptom_kept": detail_generic_shift_with_symptom_kept,
+        "detail_assertion_count": detail_assertion_count,
+        "detail_assertion_counts": detail_assertion_counts,
+        "detail_assertion_binding_counts": detail_assertion_binding_counts,
+        "detail_assertion_legacy_payload_coerce_count": detail_assertion_legacy_payload_coerce_count,
+        "detail_assertion_positive_unbound_dropped_count": detail_assertion_positive_unbound_dropped_count,
+        "detail_assertion_emitted_evidence_count": detail_assertion_emitted_evidence_count,
         "item9_direct_match": bool(item9_direct_match),
         "item9_passive_risk_match": bool(item9_passive_risk_match),
         "item9_routed_risk_recovery_applied": bool(item9_routed_risk_recovery_applied),
@@ -2995,7 +3298,9 @@ def _extract_likelihoods_impl(
     return {
         "latest_turn_likelihoods": likelihood_rows,
         "latest_turn_evidence": evidence_records,
+        "latest_turn_assertions": detail_assertions,
         "evidence_log": evidence_records,
+        "assertion_log": detail_assertions,
         "specialist_debug": summary,
         "turn_trace": turn_trace,
         "failure_counters": counters,
@@ -3028,6 +3333,7 @@ def extract_likelihoods(state: AgentState) -> Dict:
         return {
             "latest_turn_likelihoods": [],
             "latest_turn_evidence": [],
+            "latest_turn_assertions": [],
             "specialist_debug": "Evidence extraction: waiting for persona input",
             "turn_trace": turn_trace,
         }

@@ -79,6 +79,20 @@ def _strip_timeframe_lead(text: str) -> str:
     return cleaned
 
 
+def _strip_stock_followup_lead(text: str) -> str:
+    cleaned = str(text or "").strip()
+    patterns = (
+        r"^you\s+mentioned\s+.+?[—\-:]\s*",
+        r"^you\s+mentioned\s+.+?,\s*(?=(how|what|when|can|could|does|do|is|are|has|have)\b)",
+    )
+    for pattern in patterns:
+        stripped = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
+        if stripped != cleaned:
+            cleaned = stripped.strip()
+            break
+    return cleaned
+
+
 def _sanitize_question_text(
     text: str,
     *,
@@ -90,6 +104,7 @@ def _sanitize_question_text(
         stripped = _strip_timeframe_lead(cleaned)
         blocked_repeated_timeframe = stripped != cleaned
         cleaned = stripped
+        cleaned = _strip_stock_followup_lead(cleaned)
     if cleaned.startswith('"') and cleaned.endswith('"'):
         cleaned = cleaned[1:-1].strip()
     if cleaned and cleaned[0].isalpha():
