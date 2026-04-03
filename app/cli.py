@@ -14,7 +14,13 @@ load_dotenv(override=True)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="eRisk 2026 Conversational Depression Detection PoC")
+    parser = argparse.ArgumentParser(
+        description="eRisk 2026 conversational BDI-style screening prototype",
+        epilog=(
+            "Recommended workflow: run --mode eval, inspect outputs/, then open "
+            "notebooks/eval_item_error_analysis.ipynb."
+        ),
+    )
     parser.add_argument("--mode", choices=["interactive", "eval", "eval_multi", "tune"], default="eval")
     parser.add_argument("--personas", type=int, default=10, help="Number of synthetic personas")
     parser.add_argument("--seed", type=int, default=42, help="Seed for synthetic persona generation")

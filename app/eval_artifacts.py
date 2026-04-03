@@ -74,12 +74,12 @@ def _aggregate_sim_style_summary(diagnostics_payload: List[Dict[str, Any]]) -> D
             if not isinstance(snapshot, dict):
                 continue
             turn_trace = dict(snapshot.get("turn_trace", {}) or {})
-            specialist = dict(turn_trace.get("specialist", {}) or {})
-            question_kind = str(specialist.get("question_kind", "") or "")
-            timeframe_mode = str(specialist.get("timeframe_mode", "") or "")
+            question_trace = dict(turn_trace.get("question_generator", {}) or turn_trace.get("specialist", {}) or {})
+            question_kind = str(question_trace.get("question_kind", "") or "")
+            timeframe_mode = str(question_trace.get("timeframe_mode", "") or "")
             if timeframe_mode == "introduce":
                 totals["timeframe_intro_count"] += 1
-            if bool(specialist.get("question_starts_with_timeframe", False)) and question_kind in {
+            if bool(question_trace.get("question_starts_with_timeframe", False)) and question_kind in {
                 "same_item_followup",
                 "same_module_followup",
                 "contrastive_pivot",
@@ -358,7 +358,7 @@ def _build_benchmark_integrity(
         if str(profile.get("split", "")).strip() != "eval":
             unexpected_split_ids.append(persona_id)
         if "generator_version" in profile:
-            manifest_issues.append(f"{persona_id}:legacy_generator_version_present")
+            manifest_issues.append(f"{persona_id}:unexpected_generator_version_present")
         raw_scores = dict(profile.get("bdi_scores", {}) or {})
         computed_total = sum(int(raw_scores.get(str(item_id), raw_scores.get(item_id, 0)) or 0) for item_id in range(1, 22))
         stored_total = int(profile.get("bdi_total", 0) or 0)
@@ -371,9 +371,9 @@ def _build_benchmark_integrity(
     if run_config.get("persona_count") != len(profiles):
         manifest_issues.append("run_config_persona_count_mismatch")
     if "generator_version" in run_config:
-        manifest_issues.append("legacy_run_config_generator_version_present")
+        manifest_issues.append("unexpected_run_config_generator_version_present")
     if "generator_version" in manifest_payload:
-        manifest_issues.append("legacy_manifest_generator_version_present")
+        manifest_issues.append("unexpected_manifest_generator_version_present")
     if manifest_duplicates:
         manifest_issues.append("duplicate_manifest_persona_ids")
     if inconsistent_total_ids:
@@ -504,8 +504,8 @@ def write_eval_artifacts(
         "primary_metrics": primary_metrics,
         "evaluation_stability_warnings": evaluation_stability_warnings,
         "metric_semantics_warnings": [
-            "Evaluation uses item-level BDI metrics only; binary depressed/control metrics are deprecated.",
-            "symptom_f1_at_4 is an alias of item_f1_macro_at_1 (full 21-item macro F1 with positive threshold >=1).",
+            "Evaluation in this repo snapshot reports item-level BDI metrics rather than a separate binary depressed/control score.",
+            "symptom_f1_at_4 is kept as a historical alias of item_f1_macro_at_1 (full 21-item macro F1 with positive threshold >=1).",
         ],
         "llm_usage": get_llm_usage(),
         "extract_json_parse_failures": int(run_failure_counters.get("extract_json_parse_fail", 0)),

@@ -83,11 +83,11 @@ def _print_detector_step(step: int, state: Dict[str, Any]) -> None:
     trace = _as_dict(state.get("turn_trace", {}))
     ingest = _as_dict(trace.get("ingest_turn"))
     risk = _as_dict(trace.get("risk_sentinel"))
-    extract = _as_dict(trace.get("extract_likelihoods") or trace.get("extract_evidence"))
-    belief = _as_dict(trace.get("belief_update") or trace.get("update_beliefs"))
+    extract = _as_dict(trace.get("extract_likelihoods"))
+    belief = _as_dict(trace.get("belief_update"))
     metrics = _as_dict(trace.get("policy_metrics"))
-    selector = _as_dict(trace.get("target_selector") or trace.get("supervisor"))
-    stop = _as_dict(trace.get("stop_decider") or trace.get("stop"))
+    selector = _as_dict(trace.get("target_selector"))
+    stop = _as_dict(trace.get("stop_decider"))
     final = _as_dict(trace.get("finalize_outputs"))
 
     detector_message = ""
@@ -207,6 +207,7 @@ def run_interactive(
         "\nInteractive stepper controls: "
         "press Enter to advance one step (detector/persona alternates), 'q' to quit."
     )
+    print("Note: interactive mode is a secondary demo surface. Eval + notebook is the canonical workflow.")
     print(f"Pipeline: {PIPELINE_ORDER}")
     print(
         f"Selected persona: id={profile.persona_id} split={profile.split} family={profile.family}"

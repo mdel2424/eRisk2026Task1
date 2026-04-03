@@ -58,7 +58,7 @@ def compute_metrics(records: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     payload: Dict[str, Any] = {
         "bdi_mae": round(bdi_mae, 4),
-        # Backward compatible key; now aliases full-item macro F1@1.
+        # Historical key retained for existing reports and notebook outputs.
         "symptom_f1_at_4": round(item_f1_macro, 4),
         "item_f1_macro_at_1": round(item_f1_macro, 4),
         "item_mae": round(item_mae, 4),

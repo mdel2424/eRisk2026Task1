@@ -275,7 +275,9 @@ def run_eval(
                                 method_weight_usage[str(method_name)] += int(count)
                             except (TypeError, ValueError):
                                 continue
-                extract_trace = turn_trace.get("extract_evidence", {})
+                extract_trace = turn_trace.get("extract_likelihoods")
+                if not isinstance(extract_trace, dict):
+                    extract_trace = turn_trace.get("extract_evidence", {})
                 if isinstance(extract_trace, dict):
                     source = str(extract_trace.get("source", "")).strip()
                     if source:

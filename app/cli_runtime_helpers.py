@@ -114,13 +114,20 @@ def _snapshot_turn(state: Dict) -> Dict:
         turn_trace = {
             key: turn_trace.get(key)
             for key in (
-                "supervisor",
-                "specialist",
+                "risk_sentinel",
+                "extract_likelihoods",
                 "extract_evidence",
                 "belief_update",
                 "update_beliefs",
+                "policy_metrics",
+                "stop_decider",
                 "stop",
+                "target_selector",
+                "supervisor",
+                "question_generator",
+                "specialist",
                 "persona_handoff",
+                "finalize_outputs",
             )
             if key in turn_trace
         }

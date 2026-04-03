@@ -3,7 +3,9 @@ from __future__ import annotations
 import sys
 import unittest
 from unittest.mock import patch
+from pathlib import Path
 
+from app.cli_interactive import PIPELINE_ORDER
 from app.cli import parse_args
 from app.cli_eval_helpers import _manifest_payload
 from persona import PersonaProfile, create_persona
@@ -55,6 +57,28 @@ class RuntimeCleanupTests(unittest.TestCase):
         self.assertNotIn("generator_version", payload["profiles"][0])
         self.assertEqual(payload["profiles"][0]["severity_tier"], "minimal")
         self.assertEqual(payload["profiles"][0]["subtype_tag"], "routine_stable")
+
+    def test_readme_describes_active_pipeline_and_workflow(self) -> None:
+        readme_path = Path(__file__).resolve().parents[1] / "README.md"
+        text = readme_path.read_text(encoding="utf-8")
+
+        self.assertIn("Recommended Workflow", text)
+        self.assertIn(PIPELINE_ORDER, text)
+        self.assertIn("Secondary workflows", text)
+
+    def test_shareability_gitignore_covers_local_editor_clutter(self) -> None:
+        gitignore_path = Path(__file__).resolve().parents[1] / ".gitignore"
+        text = gitignore_path.read_text(encoding="utf-8")
+
+        self.assertIn(".vscode/", text)
+        self.assertIn(".codex", text)
+
+    def test_architecture_note_exists(self) -> None:
+        doc_path = Path(__file__).resolve().parents[1] / "docs" / "architecture_overview.md"
+        text = doc_path.read_text(encoding="utf-8")
+
+        self.assertIn("Active Runtime Pipeline", text)
+        self.assertIn("Synthetic personas", text)
 
 
 if __name__ == "__main__":
