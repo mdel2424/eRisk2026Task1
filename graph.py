@@ -86,40 +86,51 @@ except Exception:  # pragma: no cover - fallback for minimal test/runtime enviro
 
             return _CompiledGraph()
 
-from agents.belief_update import update_beliefs
-from agents.evidence_extraction import extract_likelihoods
-from agents.finalize_outputs import finalize_outputs
+from agents.bayes_state_update import bayes_state_update
+from agents.diagnosis_agent import diagnosis_agent
 from agents.ingest_turn import ingest_turn
-from agents.policy_metrics import policy_metrics
-from agents.question_generator import question_generator
-from agents.risk_sentinel import risk_sentinel
-from agents.stop_decider import stop_decider
-from agents.target_selector import target_selector
+from agents.judgment_agent import judgment_agent
+from agents.navigation_agent import navigation_agent
+from agents.question_agent import question_agent
+from agents.stop_controller import stop_controller
 from core.state import AgentState
 
 NodeFn = Callable[[AgentState], Dict[str, Any]]
 
 
 SINGLE_WRITER_KEYS: Dict[str, set[str]] = {
-    "risk": {"risk_sentinel"},
-    "risk_flag": {"risk_sentinel"},
-    "risk_prob": {"risk_sentinel"},
-    "control": {"stop_decider", "finalize_outputs"},
-    "should_stop": {"stop_decider", "finalize_outputs"},
-    "stop_history": {"stop_decider"},
-    "next_action": {"target_selector"},
-    "next_node": {"target_selector"},
-    "active_node": {"target_selector"},
-    "route_history": {"target_selector"},
-    "route_debug": {"target_selector"},
-    "outgoing": {"question_generator"},
-    "messages": {"question_generator"},
+    "risk_flag": {"bayes_state_update"},
+    "risk_prob": {"bayes_state_update"},
+    "control": {"stop_controller"},
+    "should_stop": {"stop_controller"},
+    "stop_history": {"stop_controller"},
+    "next_action": {"navigation_agent"},
+    "question_plan": {"navigation_agent"},
+    "next_node": {"navigation_agent"},
+    "active_node": {"navigation_agent"},
+    "route_history": {"navigation_agent"},
+    "route_debug": {"navigation_agent"},
+    "outgoing": {"question_agent"},
+    "messages": {"question_agent"},
+    "judgment": {"judgment_agent"},
+    "opening_signal_cluster": {"judgment_agent"},
+    "opening_signal_item_ids": {"judgment_agent"},
+    "opening_signal_turn": {"judgment_agent"},
+    "opening_bootstrap_applied": {"judgment_agent"},
+    "bayes_nodes": {"bayes_state_update"},
+    "bayes_items": {"bayes_state_update"},
+    "diagnosis": {"diagnosis_agent"},
+    "predicted_label": {"diagnosis_agent"},
+    "predicted_bdi_score": {"diagnosis_agent"},
+    "predicted_key_item_ids": {"diagnosis_agent"},
+    "predicted_key_symptoms": {"diagnosis_agent"},
+    "final_item_scores": {"diagnosis_agent"},
+    "opening_followup_cluster": {"navigation_agent"},
+    "opening_cognitive_anchor_preserved": {"navigation_agent"},
 }
 
 NODE_FORBIDDEN_KEYS: Dict[str, set[str]] = {
-    "extract_likelihoods": {
-        "beliefs",
-        "item_beliefs",
+    "judgment_agent": {
         "control",
         "should_stop",
         "next_action",
@@ -129,18 +140,7 @@ NODE_FORBIDDEN_KEYS: Dict[str, set[str]] = {
         "route_debug",
         "outgoing",
     },
-    "belief_update": {
-        "control",
-        "should_stop",
-        "next_action",
-        "next_node",
-        "active_node",
-        "route_history",
-        "route_debug",
-        "outgoing",
-        "messages",
-    },
-    "policy_metrics": {
+    "bayes_state_update": {
         "control",
         "should_stop",
         "next_action",
@@ -151,13 +151,16 @@ NODE_FORBIDDEN_KEYS: Dict[str, set[str]] = {
         "outgoing",
         "messages",
     },
-    "question_generator": {
-        "predicted_label",
-        "predicted_bdi_score",
-        "raw_predicted_label",
-        "raw_predicted_bdi_score",
-        "final_item_scores",
-        "module_imputation",
+    "diagnosis_agent": {
+        "control",
+        "should_stop",
+        "next_action",
+        "next_node",
+        "active_node",
+        "route_history",
+        "route_debug",
+        "outgoing",
+        "messages",
     },
 }
 
@@ -209,14 +212,12 @@ def build_app(node_overrides: dict[str, NodeFn] | None = None):
 
     node_map: Dict[str, NodeFn] = {
         "ingest_turn": ingest_turn,
-        "risk_sentinel": risk_sentinel,
-        "extract_likelihoods": extract_likelihoods,
-        "belief_update": update_beliefs,
-        "policy_metrics": policy_metrics,
-        "stop_decider": stop_decider,
-        "target_selector": target_selector,
-        "question_generator": question_generator,
-        "finalize_outputs": finalize_outputs,
+        "judgment_agent": judgment_agent,
+        "bayes_state_update": bayes_state_update,
+        "diagnosis_agent": diagnosis_agent,
+        "stop_controller": stop_controller,
+        "navigation_agent": navigation_agent,
+        "question_agent": question_agent,
     }
 
     workflow = StateGraph(AgentState)
@@ -227,26 +228,22 @@ def build_app(node_overrides: dict[str, NodeFn] | None = None):
 
     workflow.set_entry_point("ingest_turn")
 
-    workflow.add_edge("ingest_turn", "risk_sentinel")
-    workflow.add_edge("risk_sentinel", "extract_likelihoods")
-
-    workflow.add_edge("extract_likelihoods", "belief_update")
-    workflow.add_edge("belief_update", "policy_metrics")
-    workflow.add_edge("policy_metrics", "stop_decider")
+    workflow.add_edge("ingest_turn", "judgment_agent")
+    workflow.add_edge("judgment_agent", "bayes_state_update")
+    workflow.add_edge("bayes_state_update", "diagnosis_agent")
+    workflow.add_edge("diagnosis_agent", "stop_controller")
 
     workflow.add_conditional_edges(
-        "stop_decider",
+        "stop_controller",
         _stop_branch,
         {
-            "stop": "finalize_outputs",
-            "continue": "target_selector",
+            "stop": END,
+            "continue": "navigation_agent",
         },
     )
 
-    workflow.add_edge("target_selector", "question_generator")
-    workflow.add_edge("question_generator", "finalize_outputs")
-
-    workflow.add_edge("finalize_outputs", END)
+    workflow.add_edge("navigation_agent", "question_agent")
+    workflow.add_edge("question_agent", END)
 
     return workflow.compile()
 

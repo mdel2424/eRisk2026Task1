@@ -50,6 +50,11 @@ def _coerce_probe_intent(probe_intent: Dict[str, object] | None) -> Dict[str, ob
     thread_module_id_raw = probe_intent.get("thread_module_id", 0)
     thread_source_item_id_raw = probe_intent.get("thread_source_item_id", 0)
     anchor_text = str(probe_intent.get("anchor_text", "") or "").strip()
+    memory_fact_text = str(probe_intent.get("memory_fact_text", "") or "").strip()
+    memory_context = str(probe_intent.get("memory_context", "") or "").strip()
+    disclosure_stage = str(probe_intent.get("disclosure_stage", "new") or "new").strip().lower()
+    force_memory_safe = bool(probe_intent.get("force_memory_safe", False))
+    memory_severity_raw = probe_intent.get("memory_severity", 0)
 
     try:
         target_item = int(target_item_id)
@@ -86,6 +91,10 @@ def _coerce_probe_intent(probe_intent: Dict[str, object] | None) -> Dict[str, ob
         thread_source_item_id = int(thread_source_item_id_raw)
     except (TypeError, ValueError) as exc:
         raise RuntimeError("Invalid probe_intent.thread_source_item_id for deterministic persona generation.") from exc
+    try:
+        memory_severity = int(memory_severity_raw or 0)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Invalid probe_intent.memory_severity for deterministic persona generation.") from exc
 
     return {
         "target_item_id": target_item,
@@ -100,6 +109,11 @@ def _coerce_probe_intent(probe_intent: Dict[str, object] | None) -> Dict[str, ob
         "thread_module_id": max(0, min(9, thread_module_id)),
         "thread_source_item_id": max(0, min(21, thread_source_item_id)),
         "anchor_text": anchor_text,
+        "memory_fact_text": memory_fact_text,
+        "memory_context": memory_context,
+        "memory_severity": max(0, min(3, memory_severity)),
+        "disclosure_stage": disclosure_stage if disclosure_stage in {"new", "repeat"} else "new",
+        "force_memory_safe": force_memory_safe,
     }
 
 
@@ -677,6 +691,9 @@ def _build_deterministic_reply_payload(
     thread_turn_index = int(intent_payload.get("thread_turn_index", 0) or 0)
     thread_source_item_id = int(intent_payload.get("thread_source_item_id", 0) or 0)
     anchor_text = str(intent_payload.get("anchor_text", "") or "").strip()
+    memory_context = str(intent_payload.get("memory_context", "") or "").strip()
+    disclosure_stage = str(intent_payload.get("disclosure_stage", "new") or "new")
+    force_memory_safe = bool(intent_payload.get("force_memory_safe", False))
 
     evasiveness = float(behavior_params.get("evasiveness", 0.45))
     hedge_rate = float(behavior_params.get("hedge_rate", 0.52))
@@ -704,7 +721,7 @@ def _build_deterministic_reply_payload(
         ), "opening_summary"
 
     if question_kind in {"same_item_followup", "same_module_followup", "contrastive_pivot"} and route != "risk":
-        reused_context = _reused_thread_context(history) or anchor_text
+        reused_context = _reused_thread_context(history) or anchor_text or memory_context
         if target_score <= 0:
             if question_kind == "contrastive_pivot":
                 claim = _contrastive_negative_claim(target_item, bdi_scores, rng)
@@ -751,6 +768,9 @@ def _build_deterministic_reply_payload(
         rng=rng,
     )
 
+    if force_memory_safe and target_score <= 0 and mode_name in {"soft_positive", "direct_positive", "mixed", "qualified_unsure"}:
+        mode_name = "soft_denial"
+
     if target_item == 9 or route == "risk" or mode_name == "risk":
         return _risk_tier_reply(target_score, rng), "risk"
 
@@ -764,6 +784,8 @@ def _build_deterministic_reply_payload(
         context_tag,
         rng,
     )
+    if memory_context and disclosure_stage == "repeat" and not context:
+        context = memory_context.replace("_", " ")
     minimization = _minimization_fragment(style_tag, normalization_rate, question_turns, rng)
 
     if mode_name == "deflect":

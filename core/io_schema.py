@@ -19,7 +19,7 @@ class PersonaResult(BaseModel):
     key_symptoms: List[str] = Field(default_factory=list, max_length=4)
     item_scores: Dict[str, int] = Field(default_factory=dict)
     item_support_counts: Dict[str, int] = Field(default_factory=dict)
-    finalizer_summary: Dict[str, Any] = Field(default_factory=dict)
+    runtime_summary: Dict[str, Any] = Field(default_factory=dict)
 
     def to_erisk_dict(self) -> dict:
         item_scores_out = {
@@ -34,5 +34,5 @@ class PersonaResult(BaseModel):
             "bdi-score": self.bdi_score,
             "key-symptoms": self.key_symptoms,
             "item-scores": item_scores_out,
-            **({"finalizer_summary": self.finalizer_summary} if self.finalizer_summary else {}),
+            **({"runtime_summary": self.runtime_summary} if self.runtime_summary else {}),
         }

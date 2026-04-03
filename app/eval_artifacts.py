@@ -30,6 +30,14 @@ def _predicted_key_pairs(item_ids: List[int], symptom_names: List[str]) -> List[
 
 
 def _aggregate_sim_style_summary(diagnostics_payload: List[Dict[str, Any]]) -> Dict[str, Any]:
+    thread_metric_keys = {
+        "threaded_followup_count",
+        "timeframe_intro_count",
+        "repeated_timeframe_lead_count",
+        "contrastive_pivot_count",
+        "thread_start_count",
+        "thread_question_total",
+    }
     totals = {
         "responses_total": 0,
         "response_words_total": 0,
@@ -42,6 +50,7 @@ def _aggregate_sim_style_summary(diagnostics_payload: List[Dict[str, Any]]) -> D
         "baseline_comparison_count": 0,
         "opening_summary_count": 0,
         "contrastive_negative_count": 0,
+        "repeated_persona_reply_suppression_count": 0,
         "threaded_followup_count": 0,
         "timeframe_intro_count": 0,
         "repeated_timeframe_lead_count": 0,
@@ -55,31 +64,41 @@ def _aggregate_sim_style_summary(diagnostics_payload: List[Dict[str, Any]]) -> D
             continue
         final_state_payload = dict(entry.get("final_state", {}) or {})
         style_stats = dict(final_state_payload.get("sim_style_stats", {}) or {})
+        runtime_counters = dict(final_state_payload.get("runtime_counters", {}) or {})
         for key in list(totals.keys()):
-            if key in {
-                "threaded_followup_count",
-                "timeframe_intro_count",
-                "repeated_timeframe_lead_count",
-                "contrastive_pivot_count",
-                "thread_start_count",
-                "thread_question_total",
-            }:
+            if key in thread_metric_keys:
                 continue
             try:
-                totals[key] += int(style_stats.get(key, 0) or 0)
+                totals[key] += int(style_stats.get(key, runtime_counters.get(key, 0)) or runtime_counters.get(key, 0) or 0)
             except (TypeError, ValueError):
                 continue
+        for key in thread_metric_keys:
+            try:
+                totals[key] += int(runtime_counters.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                continue
+        has_runtime_thread_metrics = any(
+            int(runtime_counters.get(key, 0) or 0) > 0
+            for key in (
+                "threaded_followup_count",
+                "thread_start_count",
+                "thread_question_total",
+                "timeframe_intro_count",
+            )
+        )
         timeline = list(entry.get("timeline", []) or [])
+        if has_runtime_thread_metrics:
+            continue
         for snapshot in timeline:
             if not isinstance(snapshot, dict):
                 continue
             turn_trace = dict(snapshot.get("turn_trace", {}) or {})
-            specialist = dict(turn_trace.get("specialist", {}) or {})
-            question_kind = str(specialist.get("question_kind", "") or "")
-            timeframe_mode = str(specialist.get("timeframe_mode", "") or "")
+            question_trace = dict(turn_trace.get("question_agent", {}) or {})
+            question_kind = str(question_trace.get("question_kind", "") or "")
+            timeframe_mode = str(question_trace.get("timeframe_mode", "") or "")
             if timeframe_mode == "introduce":
                 totals["timeframe_intro_count"] += 1
-            if bool(specialist.get("question_starts_with_timeframe", False)) and question_kind in {
+            if bool(question_trace.get("question_starts_with_timeframe", False)) and question_kind in {
                 "same_item_followup",
                 "same_module_followup",
                 "contrastive_pivot",
@@ -124,6 +143,109 @@ def _aggregate_sim_style_summary(diagnostics_payload: List[Dict[str, Any]]) -> D
         "opening_summary_rate": _rate("opening_summary_count"),
         "contrastive_negative_rate": _rate("contrastive_negative_count"),
         "threaded_followup_rate": _rate("threaded_followup_count"),
+    }
+
+
+def _aggregate_probabilistic_runtime_summary(diagnostics_payload: List[Dict[str, Any]]) -> Dict[str, Any]:
+    node_totals: Dict[str, float] = {}
+    node_counts: Dict[str, int] = {}
+    binding_coverages: List[float] = []
+    diagnosis_confidences: List[float] = []
+    diagnosis_supported_items: List[int] = []
+    atomic_memory_failures = 0
+    runtime_counter_totals: Dict[str, int] = Counter()
+    cluster_reselection_reason_distribution: Counter[str] = Counter()
+
+    for entry in diagnostics_payload:
+        if not isinstance(entry, dict):
+            continue
+        final_state_payload = dict(entry.get("final_state", {}) or {})
+        bayes_nodes = dict(final_state_payload.get("bayes_node_posteriors", {}) or {})
+        for node_id, value in bayes_nodes.items():
+            try:
+                node_totals[str(node_id)] = float(node_totals.get(str(node_id), 0.0)) + float(value)
+                node_counts[str(node_id)] = int(node_counts.get(str(node_id), 0)) + 1
+            except (TypeError, ValueError):
+                continue
+        try:
+            binding_coverages.append(float(final_state_payload.get("evidence_binding_coverage", 1.0) or 1.0))
+        except (TypeError, ValueError):
+            pass
+        diagnosis_summary = dict(final_state_payload.get("diagnosis_summary", {}) or {})
+        try:
+            diagnosis_confidences.append(float(diagnosis_summary.get("confidence", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            pass
+        try:
+            diagnosis_supported_items.append(int(diagnosis_summary.get("supported_item_count", 0) or 0))
+        except (TypeError, ValueError):
+            pass
+        sim_style_stats = dict(final_state_payload.get("sim_style_stats", {}) or {})
+        runtime_counters = dict(final_state_payload.get("runtime_counters", {}) or {})
+        try:
+            atomic_memory_failures += int(sim_style_stats.get("atomic_memory_verification_failures", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        try:
+            runtime_counter_totals["repeated_persona_reply_suppression_count"] = int(
+                runtime_counter_totals.get("repeated_persona_reply_suppression_count", 0)
+            ) + int(sim_style_stats.get("repeated_persona_reply_suppression_count", 0) or 0)
+        except (TypeError, ValueError):
+            pass
+        for key, value in runtime_counters.items():
+            key_name = str(key)
+            try:
+                numeric_value = int(value or 0)
+            except (TypeError, ValueError):
+                continue
+            if key_name.startswith("cluster_reselection_reason::"):
+                cluster_reselection_reason_distribution[key_name.split("::", 1)[1]] += numeric_value
+            else:
+                runtime_counter_totals[key_name] = int(runtime_counter_totals.get(key_name, 0)) + numeric_value
+
+    avg_node_posteriors = {
+        node_id: round(float(node_totals[node_id]) / float(node_counts[node_id]), 4)
+        for node_id in sorted(node_totals.keys())
+        if int(node_counts.get(node_id, 0)) > 0
+    }
+    avg_binding_coverage = (
+        round(sum(binding_coverages) / float(len(binding_coverages)), 4) if binding_coverages else 1.0
+    )
+    avg_diagnosis_confidence = (
+        round(sum(diagnosis_confidences) / float(len(diagnosis_confidences)), 4) if diagnosis_confidences else 0.0
+    )
+    avg_supported_items = (
+        round(sum(diagnosis_supported_items) / float(len(diagnosis_supported_items)), 4)
+        if diagnosis_supported_items
+        else 0.0
+    )
+    return {
+        "avg_node_posteriors": avg_node_posteriors,
+        "avg_evidence_binding_coverage": avg_binding_coverage,
+        "avg_diagnosis_confidence": avg_diagnosis_confidence,
+        "avg_supported_item_count": avg_supported_items,
+        "atomic_memory_verification_failures_total": int(atomic_memory_failures),
+        "stale_thread_count": int(runtime_counter_totals.get("stale_thread_count", 0)),
+        "same_item_loop_exit_count": int(runtime_counter_totals.get("same_item_loop_exit_count", 0)),
+        "opening_cognitive_anchor_preserved_count": int(
+            runtime_counter_totals.get("opening_cognitive_anchor_preserved_count", 0)
+        ),
+        "opening_somatic_pivot_after_cognitive_signal_count": int(
+            runtime_counter_totals.get("opening_somatic_pivot_after_cognitive_signal_count", 0)
+        ),
+        "cluster_saturation_count": int(runtime_counter_totals.get("cluster_saturation_count", 0)),
+        "cluster_reselection_count": int(runtime_counter_totals.get("cluster_reselection_count", 0)),
+        "cluster_reselection_reason_distribution": dict(cluster_reselection_reason_distribution),
+        "repeated_persona_reply_suppression_count": int(
+            runtime_counter_totals.get("repeated_persona_reply_suppression_count", 0)
+        ),
+        "das_stress_suite_summary": {
+            "indirect_self_evaluation": {"generated_cases": 12, "mode": "catalog_only"},
+            "somatic_variability": {"generated_cases": 10, "mode": "catalog_only"},
+            "coded_risk_language": {"generated_cases": 8, "mode": "catalog_only"},
+            "dialect_register": {"generated_cases": 8, "mode": "catalog_only"},
+            "low_literacy_paraphrase": {"generated_cases": 8, "mode": "catalog_only"},
+        },
     }
 
 
@@ -241,17 +363,35 @@ def build_eval_diagnostics_entry(
                 "turn_index": final_state.get("turn_index", 0),
                 "predicted_label": final_state.get("predicted_label"),
                 "predicted_bdi_score": final_state.get("predicted_bdi_score"),
-                "raw_predicted_label": final_state.get("raw_predicted_label"),
-                "raw_predicted_bdi_score": final_state.get("raw_predicted_bdi_score"),
                 "predicted_key_symptoms": final_state.get("predicted_key_symptoms", []),
                 "predicted_key_item_ids": list(final_state.get("predicted_key_item_ids", []))[:4],
                 "predicted_key_pairs": _predicted_key_pairs(
                     list(final_state.get("predicted_key_item_ids", []))[:4],
                     list(final_state.get("predicted_key_symptoms", []))[:4],
                 ),
+                "bayes_node_posteriors": {
+                    str(node_id): round(float(getattr(node_state, "probability", 0.0) or 0.0), 4)
+                    for node_id, node_state in dict(final_state.get("bayes_nodes", {}) or {}).items()
+                },
+                "evidence_binding_coverage": float(
+                    getattr(final_state.get("judgment"), "evidence_binding_coverage", 1.0) or 1.0
+                ),
+                "diagnosis_summary": {
+                    "confidence": float(getattr(final_state.get("diagnosis"), "confidence", 0.0) or 0.0),
+                    "used_llm": bool(getattr(final_state.get("diagnosis"), "used_llm", False)),
+                    "synthesis_mode": str(getattr(final_state.get("diagnosis"), "synthesis_mode", "") or ""),
+                    "supported_item_count": int(
+                        sum(
+                            1
+                            for value in dict(getattr(final_state.get("diagnosis"), "item_scores", {}) or {}).values()
+                            if int(value) > 0
+                        )
+                    ),
+                },
                 "risk_flag": bool(final_state.get("risk_flag", False)),
                 "global_confidence": final_state.get("global_confidence", 0.0),
                 "evidence_log_count": len(final_state.get("evidence_log", [])),
+                "assertion_log_count": len(final_state.get("assertion_log", [])),
                 "last_route_decision": (
                     _serialize(final_state.get("route_history", [])[-1])
                     if final_state.get("route_history")
@@ -267,17 +407,12 @@ def build_eval_diagnostics_entry(
                     for k, v in dict(final_state.get("final_item_scores", {})).items()
                     if int(v) > 0
                 },
-                "imputed_item_count": (
-                    int(final_state.get("module_imputation", {}).get("imputed_item_count", 0))
-                    if isinstance(final_state.get("module_imputation", {}), dict)
-                    else 0
+                "diagnosis_rationale_count": len(
+                    dict(getattr(final_state.get("diagnosis"), "rationale_by_item", {}) or {})
                 ),
-                "blended_observed_item_count": (
-                    int(final_state.get("module_imputation", {}).get("blended_observed_item_count", 0))
-                    if isinstance(final_state.get("module_imputation", {}), dict)
-                    else 0
-                ),
+                "cluster_transition_count": len(final_state.get("route_history", [])),
                 "failure_counters": final_state.get("failure_counters", {}),
+                "runtime_counters": final_state.get("runtime_counters", {}),
                 "sim_style_stats": style_stats,
             }
         ),
@@ -559,18 +694,8 @@ def write_eval_artifacts(
     avg_nonempty_turns_after_min_turns = (
         float(post_floor_nonempty_turns_total) / float(post_floor_turns_total) if post_floor_turns_total else 0.0
     )
-    blended_observed_total = 0
-    for entry in diagnostics_payload:
-        final_state_payload = dict(entry.get("final_state", {}) if isinstance(entry, dict) else {})
-        module_imputation = final_state_payload.get("module_imputation", {})
-        if isinstance(module_imputation, dict):
-            blended_observed_total += int(module_imputation.get("blended_observed_item_count", 0) or 0)
-            continue
-        blended_observed_total += int(final_state_payload.get("blended_observed_item_count", 0) or 0)
-    blended_observed_mean = (
-        float(blended_observed_total) / float(processed_profiles) if processed_profiles > 0 else 0.0
-    )
     sim_style_summary = _aggregate_sim_style_summary(diagnostics_payload)
+    probabilistic_runtime_summary = _aggregate_probabilistic_runtime_summary(diagnostics_payload)
     if debug_outputs:
         family_summary = _family_summary(overall_rows)
         failure_report_payload = {
@@ -601,14 +726,11 @@ def write_eval_artifacts(
             "support_increments_total": int(support_increments_total),
             "support_increments_rate": round(support_increments_rate, 4),
             "confidence_semantics": (
-                "global_confidence uses support+coverage saturation with near-monotonic smoothing: "
-                "item_conf=1-exp(-support/CONF_SUPPORT_TAU); "
-                "target=CONF_DEPTH_WEIGHT*depth_conf + CONF_COVERAGE_WEIGHT*coverage_conf; "
-                "smoothed with CONF_UP_ALPHA and bounded no-info decay"
+                "global_confidence is derived from posterior coverage and mean item uncertainty under the "
+                "probabilistic runtime: 0.55*coverage_ratio + 0.45*(1-mean_uncertainty)"
             ),
-            "blended_observed_item_count_total": int(blended_observed_total),
-            "blended_observed_item_count_mean_per_profile": round(blended_observed_mean, 4),
             "sim_style_summary": sim_style_summary,
+            "probabilistic_runtime_summary": probabilistic_runtime_summary,
             "post_floor_productivity": {
                 "min_turns_threshold": int(min_turns_for_productivity),
                 "turns_after_min_turns": int(post_floor_turns_total),
@@ -652,7 +774,8 @@ def write_eval_artifacts(
         },
         "runtime": {
             "evaluation_mode": "synthetic",
-            "persona_runtime": "deterministic_simulator",
+            "persona_runtime": "deterministic_simulator_with_atomic_memory",
+            "detector_runtime": "probabilistic_multi_agent",
         },
         "env": {
             "DETECTOR_BACKEND": os.getenv("DETECTOR_BACKEND", "openrouter"),
@@ -672,14 +795,8 @@ def write_eval_artifacts(
             "MIN_TURNS": os.getenv("MIN_TURNS", "20"),
             "MAX_TURNS": os.getenv("MAX_TURNS", "40"),
             "STOP_CONFIDENCE": os.getenv("STOP_CONFIDENCE", "0.66"),
-            "CONF_SUPPORT_TAU": os.getenv("CONF_SUPPORT_TAU", "1.25"),
-            "CONF_DEPTH_WEIGHT": os.getenv("CONF_DEPTH_WEIGHT", "0.70"),
-            "CONF_UP_ALPHA": os.getenv("CONF_UP_ALPHA", "0.55"),
-            "SUPERVISOR_EVIDENCE_MIN_SCORE": os.getenv("SUPERVISOR_EVIDENCE_MIN_SCORE", "0.30"),
-            "SUPERVISOR_EVIDENCE_RISK_THRESHOLD": os.getenv("SUPERVISOR_EVIDENCE_RISK_THRESHOLD", "0.22"),
-            "SUPERVISOR_ESCAPE_EMPTY_STREAK": os.getenv("SUPERVISOR_ESCAPE_EMPTY_STREAK", "2"),
-            "RISK_SENTINEL_FLAG_THRESHOLD": os.getenv("RISK_SENTINEL_FLAG_THRESHOLD", "0.45"),
-            "RISK_SENTINEL_SHORTCIRCUIT_THRESHOLD": os.getenv("RISK_SENTINEL_SHORTCIRCUIT_THRESHOLD", "1.1"),
+            "DIAGNOSIS_AGENT_USE_LLM": os.getenv("DIAGNOSIS_AGENT_USE_LLM", "0"),
+            "DETERMINISTIC_BDI_LABEL_THRESHOLD": os.getenv("DETERMINISTIC_BDI_LABEL_THRESHOLD", "14"),
             "SIM_HEDGE_RATE": os.getenv("SIM_HEDGE_RATE", "0.60"),
             "SIM_NORMALIZATION_RATE": os.getenv("SIM_NORMALIZATION_RATE", "0.40"),
             "SIM_CONTEXT_ANCHOR_RATE": os.getenv("SIM_CONTEXT_ANCHOR_RATE", "0.55"),
@@ -688,7 +805,8 @@ def write_eval_artifacts(
         "resolved_backends": {
             "detector_backend": resolve_detector_backend(),
             "detector_target": _detector_target(),
-            "persona_runtime": "deterministic_simulator",
+            "persona_runtime": "deterministic_simulator_with_atomic_memory",
+            "detector_runtime": "probabilistic_multi_agent",
         },
         "llm_usage": get_llm_usage(),
         "manifest_hash": manifest_hash,

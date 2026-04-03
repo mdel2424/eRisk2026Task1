@@ -369,7 +369,7 @@ CONTROL_OPENING_SUMMARY_BANK: List[str] = [
 CONTRASTIVE_NEGATIVE_BANK: Dict[str, List[str]] = {
     "sadness_vs_irritability": [
         "not so much sadness, more irritability and feeling worn down lately",
-        "it is less sadness and more that I feel on edge and worn out",
+        "it is less sadness and more irritability, like I feel on edge and worn out",
     ],
     "interest_vs_energy": [
         "it is less that I do not care and more that everything takes extra effort lately",

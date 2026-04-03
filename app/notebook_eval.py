@@ -7,21 +7,29 @@ from typing import Any, Dict, List
 
 import pandas as pd
 
-from app.finalizer_summary import (
-    FINALIZER_GUARDRAIL_FIELDS,
-    FINALIZER_SEVERE_AMPLITUDE_FIELDS,
-    FINALIZER_SEVERE_RECOVERY_FIELDS,
-    default_finalizer_summary_value,
-)
+from core.probabilistic_runtime import CLUSTER_TO_ITEMS
 from core.state import symptom_name_from_item
 from persona import create_persona, generate_persona_pool
 from persona.sim_behavior import response_style_flags
 
-FINALIZER_GROUPED_COLUMNS = (
-    [f"finalizer_{field}" for field in FINALIZER_GUARDRAIL_FIELDS]
-    + [f"finalizer_{field}" for field in FINALIZER_SEVERE_RECOVERY_FIELDS]
-    + [f"finalizer_{field}" for field in FINALIZER_SEVERE_AMPLITUDE_FIELDS]
-)
+RUNTIME_SUMMARY_COLUMNS = [
+    "runtime_active_cluster",
+    "runtime_evidence_binding_coverage",
+    "runtime_bound_positive_assertion_count",
+    "runtime_emitted_evidence_count",
+    "runtime_opening_bootstrap_applied",
+    "runtime_opening_bootstrap_cluster",
+    "runtime_opening_bootstrap_item_ids",
+    "runtime_opening_signal_cluster",
+    "runtime_opening_signal_item_ids",
+    "runtime_opening_followup_cluster",
+    "runtime_opening_cognitive_anchor_preserved",
+    "runtime_diagnosis_confidence",
+    "runtime_diagnosis_used_llm",
+    "runtime_diagnosis_synthesis_mode",
+    "runtime_supported_item_count",
+    "runtime_bayes_node_posteriors",
+]
 
 RECORD_BASE_COLUMNS = [
     "persona_id",
@@ -38,9 +46,8 @@ RECORD_BASE_COLUMNS = [
     "key_symptoms_pred",
     "item_scores_true",
     "item_scores_pred",
-    "finalizer_summary",
-    *FINALIZER_GROUPED_COLUMNS,
-    "finalizer_guardrail_consistency_ok",
+    "runtime_summary",
+    *RUNTIME_SUMMARY_COLUMNS,
 ]
 
 ITEM_ERROR_COLUMNS = [
@@ -61,6 +68,53 @@ PERSONA_ERROR_COLUMNS = [
     "bdi_true",
     "bdi_pred",
     "bdi_error",
+    "bdi_abs_error",
+]
+
+RUNTIME_ANOMALY_COLUMNS = [
+    "persona_id",
+    "family",
+    "source",
+    "bdi_true",
+    "bdi_pred",
+    "runtime_active_cluster",
+    "runtime_evidence_binding_coverage",
+    "runtime_diagnosis_confidence",
+    "runtime_supported_item_count",
+    "runtime_somatic_posterior",
+    "runtime_cognitive_posterior",
+    "predicted_nonzero_item_count",
+    "predicted_somatic_item_count",
+    "predicted_cognitive_item_count",
+    "dominant_predicted_cluster",
+    "somatic_cluster_share",
+    "bdi_abs_error",
+]
+
+RUNTIME_SUPPORT_GAP_COLUMNS = [
+    "persona_id",
+    "family",
+    "source",
+    "bdi_true",
+    "bdi_pred",
+    "bdi_abs_error",
+    "runtime_supported_item_count",
+    "runtime_diagnosis_confidence",
+    "runtime_active_cluster",
+]
+
+OPENING_SIGNAL_COLUMNS = [
+    "persona_id",
+    "family",
+    "source",
+    "runtime_opening_bootstrap_applied",
+    "runtime_opening_bootstrap_cluster",
+    "runtime_opening_bootstrap_item_ids",
+    "runtime_opening_followup_cluster",
+    "runtime_opening_cognitive_anchor_preserved",
+    "runtime_supported_item_count",
+    "bdi_true",
+    "bdi_pred",
     "bdi_abs_error",
 ]
 
@@ -152,21 +206,197 @@ def _scores_from_row(row: pd.Series, key: str) -> Dict[str, int]:
     return _normalize_item_scores({})
 
 
-def _flatten_finalizer_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
-    flattened: Dict[str, Any] = {}
-    for field in FINALIZER_GUARDRAIL_FIELDS + FINALIZER_SEVERE_RECOVERY_FIELDS + FINALIZER_SEVERE_AMPLITUDE_FIELDS:
-        default_value = default_finalizer_summary_value(field)
-        raw_value = summary.get(field, default_value)
-        if isinstance(default_value, bool):
-            value = bool(raw_value)
-        elif isinstance(default_value, int):
-            value = int(raw_value or 0)
-        elif isinstance(default_value, list):
-            value = list(raw_value or [])
-        else:
-            value = str(raw_value or "")
-        flattened[f"finalizer_{field}"] = value
-    return flattened
+def _cluster_counts_from_scores(scores: Dict[str, int]) -> Dict[str, int]:
+    normalized = _normalize_item_scores(scores)
+    cognitive_ids = set(CLUSTER_TO_ITEMS.get("cognitive_affective", []))
+    somatic_ids = set(CLUSTER_TO_ITEMS.get("somatic_vegetative", []))
+    positive_ids = [int(item_id) for item_id, score in normalized.items() if int(score) >= 1]
+    cognitive_count = sum(1 for item_id in positive_ids if item_id in cognitive_ids)
+    somatic_count = sum(1 for item_id in positive_ids if item_id in somatic_ids)
+    return {
+        "predicted_nonzero_item_count": len(positive_ids),
+        "predicted_cognitive_item_count": cognitive_count,
+        "predicted_somatic_item_count": somatic_count,
+    }
+
+
+def _flatten_runtime_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
+    diagnosis = dict(summary.get("diagnosis", {}) or {})
+    judgment = dict(summary.get("judgment", {}) or {})
+    navigation = dict(summary.get("navigation", {}) or {})
+    bayes = dict(summary.get("bayes", {}) or {})
+    return {
+        "runtime_active_cluster": str(judgment.get("active_cluster", "") or ""),
+        "runtime_evidence_binding_coverage": float(judgment.get("evidence_binding_coverage", 1.0) or 1.0),
+        "runtime_bound_positive_assertion_count": int(judgment.get("bound_positive_assertion_count", 0) or 0),
+        "runtime_emitted_evidence_count": int(judgment.get("emitted_evidence_count", 0) or 0),
+        "runtime_opening_bootstrap_applied": bool(judgment.get("opening_bootstrap_applied", False)),
+        "runtime_opening_bootstrap_cluster": str(judgment.get("opening_bootstrap_cluster", "") or ""),
+        "runtime_opening_bootstrap_item_ids": [
+            int(item_id)
+            for item_id in list(judgment.get("opening_bootstrap_item_ids", []) or [])
+            if 1 <= int(item_id) <= 21
+        ],
+        "runtime_opening_signal_cluster": str(navigation.get("opening_signal_cluster", "") or ""),
+        "runtime_opening_signal_item_ids": [
+            int(item_id)
+            for item_id in list(navigation.get("opening_signal_item_ids", []) or [])
+            if 1 <= int(item_id) <= 21
+        ],
+        "runtime_opening_followup_cluster": str(navigation.get("opening_followup_cluster", "") or ""),
+        "runtime_opening_cognitive_anchor_preserved": bool(
+            navigation.get("opening_cognitive_anchor_preserved", False)
+        ),
+        "runtime_diagnosis_confidence": float(diagnosis.get("confidence", 0.0) or 0.0),
+        "runtime_diagnosis_used_llm": bool(diagnosis.get("used_llm", False)),
+        "runtime_diagnosis_synthesis_mode": str(diagnosis.get("synthesis_mode", "") or ""),
+        "runtime_supported_item_count": int(diagnosis.get("supported_item_count", 0) or 0),
+        "runtime_bayes_node_posteriors": dict(bayes.get("node_posteriors", {}) or {}),
+    }
+
+
+def build_runtime_anomaly_table(records_df: pd.DataFrame) -> pd.DataFrame:
+    if records_df.empty:
+        return pd.DataFrame(columns=RUNTIME_ANOMALY_COLUMNS)
+
+    rows: List[Dict[str, Any]] = []
+    for _, row in records_df.iterrows():
+        pred_scores = _scores_from_row(row, "item_scores_pred")
+        cluster_counts = _cluster_counts_from_scores(pred_scores)
+        node_posteriors = dict(row.get("runtime_bayes_node_posteriors", {}) or {})
+        somatic_posterior = float(node_posteriors.get("somatic_vegetative", 0.0) or 0.0)
+        cognitive_posterior = float(node_posteriors.get("cognitive_affective", 0.0) or 0.0)
+        predicted_nonzero_item_count = int(cluster_counts["predicted_nonzero_item_count"])
+        predicted_somatic_item_count = int(cluster_counts["predicted_somatic_item_count"])
+        predicted_cognitive_item_count = int(cluster_counts["predicted_cognitive_item_count"])
+        dominant_cluster = "none"
+        if predicted_nonzero_item_count > 0:
+            if predicted_somatic_item_count > predicted_cognitive_item_count:
+                dominant_cluster = "somatic_vegetative"
+            elif predicted_cognitive_item_count > predicted_somatic_item_count:
+                dominant_cluster = "cognitive_affective"
+            else:
+                dominant_cluster = "balanced"
+        somatic_share = (
+            float(predicted_somatic_item_count) / float(predicted_nonzero_item_count)
+            if predicted_nonzero_item_count > 0
+            else 0.0
+        )
+        bdi_true = int(row.get("bdi_true", 0) or 0)
+        bdi_pred = int(row.get("bdi_pred", 0) or 0)
+        supported_item_count = int(row.get("runtime_supported_item_count", 0) or 0)
+        diagnosis_confidence = float(row.get("runtime_diagnosis_confidence", 0.0) or 0.0)
+        anomaly = (
+            (diagnosis_confidence >= 0.70 and supported_item_count <= 1)
+            or (predicted_nonzero_item_count >= 3 and somatic_share >= 0.75)
+            or (somatic_posterior >= 0.80 and cognitive_posterior <= 0.35)
+            or abs(bdi_pred - bdi_true) >= 6
+        )
+        if not anomaly:
+            continue
+        rows.append(
+            {
+                "persona_id": row.get("persona_id", ""),
+                "family": row.get("family", ""),
+                "source": row.get("source", ""),
+                "bdi_true": bdi_true,
+                "bdi_pred": bdi_pred,
+                "runtime_active_cluster": row.get("runtime_active_cluster", ""),
+                "runtime_evidence_binding_coverage": float(row.get("runtime_evidence_binding_coverage", 1.0) or 1.0),
+                "runtime_diagnosis_confidence": diagnosis_confidence,
+                "runtime_supported_item_count": supported_item_count,
+                "runtime_somatic_posterior": round(somatic_posterior, 4),
+                "runtime_cognitive_posterior": round(cognitive_posterior, 4),
+                "predicted_nonzero_item_count": predicted_nonzero_item_count,
+                "predicted_somatic_item_count": predicted_somatic_item_count,
+                "predicted_cognitive_item_count": predicted_cognitive_item_count,
+                "dominant_predicted_cluster": dominant_cluster,
+                "somatic_cluster_share": round(somatic_share, 4),
+                "bdi_abs_error": abs(bdi_pred - bdi_true),
+            }
+        )
+
+    anomaly_df = pd.DataFrame(rows, columns=RUNTIME_ANOMALY_COLUMNS)
+    if anomaly_df.empty:
+        return anomaly_df
+    return anomaly_df.sort_values(
+        by=["bdi_abs_error", "runtime_diagnosis_confidence", "predicted_somatic_item_count"],
+        ascending=[False, False, False],
+        ignore_index=True,
+    )
+
+
+def build_cluster_collapse_table(records_df: pd.DataFrame) -> pd.DataFrame:
+    anomaly_df = build_runtime_anomaly_table(records_df)
+    if anomaly_df.empty:
+        return anomaly_df
+    return anomaly_df.loc[
+        (
+            (anomaly_df["dominant_predicted_cluster"] == "somatic_vegetative")
+            & (anomaly_df["somatic_cluster_share"] >= 0.75)
+        )
+        | (
+            (anomaly_df["runtime_diagnosis_confidence"] >= 0.65)
+            & (anomaly_df["runtime_supported_item_count"] <= 1)
+        )
+    ].reset_index(drop=True)
+
+
+def build_runtime_support_gap_table(records_df: pd.DataFrame) -> pd.DataFrame:
+    if records_df.empty:
+        return pd.DataFrame(columns=RUNTIME_SUPPORT_GAP_COLUMNS)
+
+    rows: List[Dict[str, Any]] = []
+    for _, row in records_df.iterrows():
+        bdi_true = int(row.get("bdi_true", 0) or 0)
+        bdi_pred = int(row.get("bdi_pred", 0) or 0)
+        bdi_abs_error = abs(bdi_pred - bdi_true)
+        supported_item_count = int(row.get("runtime_supported_item_count", 0) or 0)
+        if bdi_abs_error < 6 or supported_item_count > 2:
+            continue
+        rows.append(
+            {
+                "persona_id": row.get("persona_id", ""),
+                "family": row.get("family", ""),
+                "source": row.get("source", ""),
+                "bdi_true": bdi_true,
+                "bdi_pred": bdi_pred,
+                "bdi_abs_error": bdi_abs_error,
+                "runtime_supported_item_count": supported_item_count,
+                "runtime_diagnosis_confidence": float(row.get("runtime_diagnosis_confidence", 0.0) or 0.0),
+                "runtime_active_cluster": row.get("runtime_active_cluster", ""),
+            }
+        )
+
+    support_gap_df = pd.DataFrame(rows, columns=RUNTIME_SUPPORT_GAP_COLUMNS)
+    if support_gap_df.empty:
+        return support_gap_df
+    return support_gap_df.sort_values(
+        by=["bdi_abs_error", "runtime_supported_item_count", "runtime_diagnosis_confidence"],
+        ascending=[False, True, False],
+        ignore_index=True,
+    )
+
+
+def build_opening_signal_table(records_df: pd.DataFrame) -> pd.DataFrame:
+    if records_df.empty:
+        return pd.DataFrame(columns=OPENING_SIGNAL_COLUMNS)
+
+    opening_df = records_df.loc[
+        records_df["runtime_opening_bootstrap_applied"].fillna(False).astype(bool)
+    ].copy()
+    if opening_df.empty:
+        return pd.DataFrame(columns=OPENING_SIGNAL_COLUMNS)
+
+    opening_df["bdi_abs_error"] = (
+        pd.to_numeric(opening_df["bdi_pred"], errors="coerce").fillna(0.0)
+        - pd.to_numeric(opening_df["bdi_true"], errors="coerce").fillna(0.0)
+    ).abs()
+    return opening_df[OPENING_SIGNAL_COLUMNS].sort_values(
+        by=["bdi_abs_error", "runtime_supported_item_count", "persona_id"],
+        ascending=[False, True, True],
+        ignore_index=True,
+    )
 
 
 def run_eval_notebook(
@@ -238,7 +468,7 @@ def load_eval_records(output_dir: str | Path) -> pd.DataFrame:
 
         true_scores = _normalize_item_scores(profile.get("bdi_scores", {}))
         pred_scores = _normalize_item_scores(result.get("item-scores", {}))
-        finalizer_summary = dict(result.get("finalizer_summary", {}) or {})
+        runtime_summary = dict(result.get("runtime_summary", {}) or {})
         row: Dict[str, Any] = {
             "persona_id": persona_id,
             "split": str(profile.get("split", "")),
@@ -254,13 +484,8 @@ def load_eval_records(output_dir: str | Path) -> pd.DataFrame:
             "key_symptoms_pred": list(result.get("key-symptoms", []) or []),
             "item_scores_true": true_scores,
             "item_scores_pred": pred_scores,
-            "finalizer_summary": finalizer_summary,
-            **_flatten_finalizer_summary(finalizer_summary),
-            "finalizer_guardrail_consistency_ok": (
-                not finalizer_summary
-                or bool(finalizer_summary.get("low_signal_guardrail_active", False))
-                or bool(finalizer_summary.get("severe_recovery_mode_active", False))
-            ),
+            "runtime_summary": runtime_summary,
+            **_flatten_runtime_summary(runtime_summary),
         }
         for item_id in range(1, 22):
             key = str(item_id)
@@ -420,14 +645,15 @@ __all__ = [
     "ITEM_ERROR_COLUMNS",
     "PERSONA_ERROR_COLUMNS",
     "SIM_STYLE_CALIBRATION_PROBES",
-    "build_persona_error_table",
     "RECORD_COLUMNS",
     "build_item_error_table",
+    "build_persona_error_table",
     "compare_style_summaries",
-    "load_eval_records",
+    "load_benchmark_integrity",
     "load_eval_metrics",
+    "load_eval_records",
     "run_eval_notebook",
+    "split_item_error_table",
     "summarize_simulated_style",
     "summarize_transcript_style",
-    "split_item_error_table",
 ]

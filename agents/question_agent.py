@@ -139,9 +139,9 @@ def _build_llm_question(
     anchor_text: str,
     thread_turn_index: int,
 ) -> tuple[str, int, str, bool, str, bool]:
-    prompt_template = get_prompt("specialist_question")
+    prompt_template = get_prompt("question_agent_prompt")
     if not prompt_template.strip():
-        raise RuntimeError("Detector question generation failed: missing 'specialist_question' prompt template.")
+        raise RuntimeError("Detector question generation failed: missing 'question_agent_prompt' prompt template.")
 
     previous_question = _previous_detector_question(state)
     latest_message = _latest_persona_message(state)
@@ -189,9 +189,10 @@ def _build_llm_question(
     return cleaned, module_id, probe_goal, False, "", blocked_repeated_timeframe
 
 
-def question_generator(state: AgentState) -> Dict:
+def question_agent(state: AgentState) -> Dict:
     messages = list(state.get("messages", []))
     turn_index = int(state.get("turn_index", 0))
+    runtime_counters = dict(state.get("runtime_counters", {}))
 
     if turn_index == 0 and not _has_detector_message(messages):
         question = OPENING_MESSAGE_FIXED
@@ -237,9 +238,9 @@ def question_generator(state: AgentState) -> Dict:
     )
 
     turn_trace = dict(state.get("turn_trace", {}))
-    specialist_trace = {
+    question_trace = {
         "turn": max(1, turn_index),
-        "node": route,
+        "route": route,
         "target_items": [target_item_id],
         "target_item_id": target_item_id,
         "target_item_name": BDI_ITEM_NAMES.get(target_item_id, f"Item {target_item_id}"),
@@ -259,18 +260,35 @@ def question_generator(state: AgentState) -> Dict:
         "llm_generated": not (turn_index == 0 and not _has_detector_message(messages)),
         "question_preview": question[:120],
     }
-    turn_trace["question_generator"] = specialist_trace
-    turn_trace["specialist"] = specialist_trace
+    if question_kind == "topic_open":
+        runtime_counters["thread_start_count"] = int(runtime_counters.get("thread_start_count", 0)) + 1
+        runtime_counters["thread_question_total"] = int(runtime_counters.get("thread_question_total", 0)) + 1
+    elif question_kind in {"same_item_followup", "same_module_followup", "contrastive_pivot"}:
+        runtime_counters["threaded_followup_count"] = int(runtime_counters.get("threaded_followup_count", 0)) + 1
+        runtime_counters["thread_question_total"] = int(runtime_counters.get("thread_question_total", 0)) + 1
+    if timeframe_mode == "introduce":
+        runtime_counters["timeframe_intro_count"] = int(runtime_counters.get("timeframe_intro_count", 0)) + 1
+    if question_starts_with_timeframe and question_kind in {"same_item_followup", "same_module_followup", "contrastive_pivot"}:
+        runtime_counters["repeated_timeframe_lead_count"] = int(runtime_counters.get("repeated_timeframe_lead_count", 0)) + 1
+    if question_kind == "contrastive_pivot":
+        runtime_counters["contrastive_pivot_count"] = int(runtime_counters.get("contrastive_pivot_count", 0)) + 1
+    plan = state.get("question_plan")
+    if plan is not None:
+        question_trace["active_cluster"] = getattr(plan, "active_cluster", "")
+        question_trace["transition_reason"] = getattr(plan, "transition_reason", "")
+        question_trace["urgency_mode"] = getattr(plan, "urgency_mode", "")
+    turn_trace["question_agent"] = question_trace
 
     debug = (
-        f"Question generator: route={route}; target_item={target_item_id}; "
+        f"Question agent: route={route}; target_item={target_item_id}; "
         f"style={style}; question_kind={question_kind}; rationale={rationale}; "
-        f"llm_generated={specialist_trace['llm_generated']}"
+        f"llm_generated={question_trace['llm_generated']}"
     )
 
     return {
         "outgoing": OutgoingState(detector_message=question),
         "messages": [{"role": "user", "content": question}],
-        "specialist_debug": debug,
+        "runtime_counters": runtime_counters,
+        "question_debug": debug,
         "turn_trace": turn_trace,
     }

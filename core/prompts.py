@@ -8,7 +8,7 @@ OPENING_MESSAGE_FIXED = (
 )
 
 PROMPT_REGISTRY: Dict[str, str | Dict[str, List[str]]] = {
-    "specialist_question": """
+    "question_agent_prompt": """
 You are a skilled clinical interviewer conducting a BDI-II-aligned depression screening.
 Write exactly one naturalistic, clinically grounded follow-up question.
 
@@ -153,7 +153,7 @@ Examples:
 - If the detector asked about appetite and the reply is "I haven't noticed anything different there", return target_relevant=false.
 - If the reply is only "work has just been busy" or "everything feels heavier" without self-blame, self-judgment, or direct appetite change language, return target_relevant=false.
 
-Current specialist node: {node_name}
+Current interview route: {node_name}
 Current detector question: {current_detector_question}
 Target item: {target_item_id} ({target_item_name})
 Target module: {target_module_id} ({target_module_name})
@@ -243,7 +243,7 @@ Examples:
 - If the allowed items include module-3 and the reply is only "work has been stressful" or "everything feels heavier" without self-judgment, keep the module-3 items assertion=uncertain or assertion=absent.
 - If the reply is "not really, everything feels about normal", return the full scores list with every allowed item marked assertion=absent.
 
-Current specialist node: {node_name}
+Current interview route: {node_name}
 Current detector question: {current_detector_question}
 Target item: {target_item_id} ({target_item_name})
 Target module: {target_module_id} ({target_module_name})
@@ -285,7 +285,7 @@ Examples:
 - If the reply is "some things don't feel quite as fun as they used to", return has_strong_offtarget_signal=false.
 - If the reply is "not really, things feel about normal", return has_strong_offtarget_signal=false.
 
-Current specialist node: {node_name}
+Current interview route: {node_name}
 Current detector question: {current_detector_question}
 Current target item: {target_item_id} ({target_item_name})
 Current target module: {target_module_id} ({target_module_name})
@@ -332,7 +332,7 @@ Examples:
 - If candidate_item_ids includes fatigue and the reply is "everything takes so much energy", mark the fatigue item supported=true.
 - If candidate_item_ids includes worthlessness but the reply is only "I guess work has been stressful", keep all candidates supported=false.
 
-Current specialist node: {node_name}
+Current interview route: {node_name}
 Current detector question: {current_detector_question}
 Current target item: {target_item_id} ({target_item_name})
 Current target module: {target_module_id} ({target_module_name})
@@ -346,6 +346,37 @@ Recent conversation:
 
 Latest persona message:
 {latest_message}
+""",
+    "diagnosis_synthesis": """
+You are a strict BDI-II scoring synthesizer.
+Use the probabilistic item state plus bound evidence quotes to produce a final score proposal.
+
+Return STRICT JSON ONLY with exactly this schema:
+{{
+  "item_scores": {{"1": 0, "2": 1}},
+  "total_bdi": 12,
+  "predicted_label": "control",
+  "confidence": 0.74,
+  "rationale_by_item": {{"2": "brief reason"}},
+  "quote_links_by_item": {{"2": ["short quote"]}}
+}}
+
+Constraints:
+- item_scores must include every BDI item 1..21 exactly once.
+- Each item score must be an integer in [0, 3].
+- total_bdi must equal the sum of item_scores.
+- predicted_label must be exactly "control" or "depressed".
+- confidence must be in [0, 1].
+- Only support non-zero items when the probabilistic state or bound quotes justify them.
+- Prefer the provided bound quotes; do not invent evidence.
+- Keep rationales short and quote-linked when a quote is available.
+- Output only JSON.
+
+Probabilistic item state:
+{item_state_json}
+
+Total expected BDI:
+{total_expected_bdi}
 """,
 }
 

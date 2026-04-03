@@ -15,6 +15,7 @@ from core.state import (
     AssertionRecord,
     BDI_ITEM_NAMES,
     EvidenceRecord,
+    JudgmentDecision,
     LikelihoodEvidence,
     SYMPTOM_NAME_TO_ITEM,
     bump_failure_counter,
@@ -43,6 +44,7 @@ EXTRACTOR_KEY_ALIASES = {
 
 METHOD_WEIGHT_HINTS = {
     "llm_extractor": 1.00,
+    "opening_bootstrap": 1.00,
     "llm_opportunistic": 0.75,
     "llm_salvage": 0.60,
     "lexical_fallback": 0.45,
@@ -354,6 +356,50 @@ ITEM8_SELF_CRITICISM_ASSERTION_PATTERNS = (
 )
 
 SELF_EVALUATION_CLUSTER_ITEM_IDS = {7, 8, 14}
+OPENING_COGNITIVE_ITEM_IDS = [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 13, 14, 17, 19]
+OPENING_SOMATIC_ITEM_IDS = [11, 15, 16, 18, 20, 21]
+OPENING_BOOTSTRAP_MAX_ITEMS = 2
+
+OPENING_BOOTSTRAP_COGNITIVE_OVERLOAD_PATTERNS = (
+    re.compile(r"\bstuck\s+in\s+my\s+own\s+head\b"),
+    re.compile(r"\bstuck\s+in\s+my\s+head\b"),
+    re.compile(r"\bin\s+my\s+own\s+head\b"),
+)
+
+OPENING_BOOTSTRAP_SELF_DISLIKE_PATTERNS = (
+    re.compile(r"\bdown\s+on\s+who\s+i\s+am\b"),
+    re.compile(r"\bdown\s+on\s+myself\b"),
+    re.compile(r"\bdon'?t\s+like\s+who\s+i(?:'ve| have)\s+been\b"),
+    re.compile(r"\bdo\s+not\s+like\s+who\s+i(?:'ve| have)\s+been\b"),
+    re.compile(r"\bhate\s+who\s+i\s+am\b"),
+    re.compile(r"\bhate\s+who\s+i(?:'ve| have)\s+been\b"),
+)
+
+OPENING_BOOTSTRAP_DARKNESS_PATTERNS = (
+    re.compile(r"\bthings\s+have\s+felt\s+heavier\b"),
+    re.compile(r"\bthings\s+feel\s+heavier\b"),
+    re.compile(r"\bfeels?\s+heavier\b"),
+    re.compile(r"\bthings\s+have\s+felt\s+darker\b"),
+    re.compile(r"\bthings\s+feel\s+darker\b"),
+    re.compile(r"\bfeels?\s+darker\b"),
+    re.compile(r"\beverything\s+feels?\s+darker\b"),
+    re.compile(r"\bfeeling\s+down\b"),
+    re.compile(r"\bfeel(?:ing)?\s+down\b"),
+)
+
+OPENING_BOOTSTRAP_CUTOFF_PATTERNS = (
+    re.compile(r"\bcut\s+off\s+from\s+people\b"),
+    re.compile(r"\bkeeping\s+to\s+myself\b"),
+    re.compile(r"\bwithdrawing\b"),
+    re.compile(r"\bpulling\s+away\b"),
+)
+
+OPENING_BOOTSTRAP_IRRITABILITY_PATTERNS = (
+    re.compile(r"\birritable\b"),
+    re.compile(r"\birritability\b"),
+    re.compile(r"\bshort\s+fuse\b"),
+    re.compile(r"\bsnapp(?:y|ish)\b"),
+)
 
 GENERIC_AMBIGUOUS_SHIFT_PATTERNS = (
     re.compile(r"\bseems?\s+a\s+little\s+different\b"),
@@ -513,10 +559,21 @@ def _coerce_item_id_int(raw_value: Any, default: int) -> int:
 
 def _extract_target_spec(state: AgentState, node_name: str) -> Dict[str, Any]:
     turn_trace = state.get("turn_trace", {})
-    specialist_trace = turn_trace.get("specialist", {}) if isinstance(turn_trace, dict) else {}
+    question_trace = {}
+    if isinstance(turn_trace, dict):
+        candidate = turn_trace.get("question_agent", {})
+        if isinstance(candidate, dict):
+            question_trace = candidate
     next_action = state.get("next_action")
+    question_plan = state.get("question_plan")
 
-    route = str(specialist_trace.get("node", node_name) or node_name).strip().lower()
+    route = str(
+        question_trace.get(
+            "route",
+            _state_field(question_plan, "route", _state_field(next_action, "route", node_name)),
+        )
+        or node_name
+    ).strip().lower()
     if route not in {"somatic", "cognitive", "risk"}:
         route = str(node_name).strip().lower()
     if route not in {"somatic", "cognitive", "risk"}:
@@ -524,13 +581,19 @@ def _extract_target_spec(state: AgentState, node_name: str) -> Dict[str, Any]:
 
     default_item_id = 9 if route == "risk" else 2
     target_item_id = _coerce_item_id_int(
-        specialist_trace.get("target_item_id", _state_field(next_action, "target_item_id", default_item_id)),
+        question_trace.get(
+            "target_item_id",
+            _state_field(question_plan, "target_item_id", _state_field(next_action, "target_item_id", default_item_id)),
+        ),
         default_item_id,
     )
     if route == "risk":
         target_item_id = 9
 
-    target_module_id = specialist_trace.get("target_module_id")
+    target_module_id = question_trace.get(
+        "target_module_id",
+        _state_field(question_plan, "target_module_id", 0),
+    )
     try:
         target_module_id = int(target_module_id)
     except (TypeError, ValueError):
@@ -540,13 +603,27 @@ def _extract_target_spec(state: AgentState, node_name: str) -> Dict[str, Any]:
         target_module_id = 9
         allowed_item_ids = [9]
     else:
+        question_kind = str(
+            question_trace.get(
+                "question_kind",
+                _state_field(question_plan, "question_kind", _state_field(next_action, "question_kind", "topic_open")),
+            )
+            or "topic_open"
+        ).strip().lower()
         if target_module_id not in MODULE_TO_ITEMS:
             target_module_id = choose_target_module(
                 node_name=route,
                 target_items=[target_item_id],
                 item_beliefs=state.get("item_beliefs", {}),
             )
-        allowed_item_ids = sorted(set([target_item_id] + list(MODULE_TO_ITEMS.get(target_module_id, []))))
+        if _use_opening_scope(state, route=route, question_kind=question_kind):
+            allowed_item_ids = (
+                list(OPENING_COGNITIVE_ITEM_IDS)
+                if route == "cognitive"
+                else list(OPENING_SOMATIC_ITEM_IDS)
+            )
+        else:
+            allowed_item_ids = sorted(set([target_item_id] + list(MODULE_TO_ITEMS.get(target_module_id, []))))
 
     return {
         "route": route,
@@ -1041,6 +1118,37 @@ def _sentence_for_cue(text: str, cue: str) -> str:
     return text[:220].strip()
 
 
+def _bound_positive_history_count(state: AgentState) -> int:
+    count = 0
+    for row in list(state.get("assertion_log", [])):
+        label = str(getattr(row, "assertion_label", "") or "")
+        binding_status = str(getattr(row, "binding_status", "") or "")
+        if label in {"present", "conditional", "contrastive"} and binding_status in {"exact", "normalized_exact"}:
+            count += 1
+    return count
+
+
+def _question_kind_for_state(state: AgentState) -> str:
+    question_trace = dict(dict(state.get("turn_trace", {}) or {}).get("question_agent", {}) or {})
+    question_plan = state.get("question_plan")
+    next_action = state.get("next_action")
+    return str(
+        question_trace.get(
+            "question_kind",
+            _state_field(question_plan, "question_kind", _state_field(next_action, "question_kind", "topic_open")),
+        )
+        or "topic_open"
+    ).strip().lower()
+
+
+def _use_opening_scope(state: AgentState, *, route: str, question_kind: str) -> bool:
+    if str(route or "").strip().lower() not in {"cognitive", "somatic"}:
+        return False
+    if str(question_kind or "").strip().lower() not in {"opening", "topic_open"}:
+        return False
+    return int(state.get("turn_index", 0) or 0) <= 1 or _bound_positive_history_count(state) <= 0
+
+
 def _normalize_evidence_text_for_id(text: str) -> str:
     lowered = str(text or "").lower()
     lowered = re.sub(r"[^a-z0-9\s]", " ", lowered)
@@ -1052,6 +1160,235 @@ def _evidence_id(record: EvidenceRecord) -> str:
     base = f"{int(record.item_id)}|{str(record.direction)}|{normalized_text}"
     return hashlib.sha1(base.encode("utf-8")).hexdigest()[:16]
 
+
+def _assertion_id(record: AssertionRecord) -> str:
+    return "|".join(
+        [
+            str(int(record.item_id)),
+            str(record.assertion_label),
+            _normalize_evidence_text_for_id(record.anchor_quote),
+        ]
+    )
+
+
+def _merge_evidence_record_lists(primary: Sequence[EvidenceRecord], secondary: Sequence[EvidenceRecord]) -> List[EvidenceRecord]:
+    merged: Dict[str, EvidenceRecord] = {}
+    for record in list(primary) + list(secondary):
+        record_id = _evidence_id(record)
+        existing = merged.get(record_id)
+        if existing is None or (float(record.confidence), float(record.intensity)) > (
+            float(existing.confidence),
+            float(existing.intensity),
+        ):
+            merged[record_id] = record
+    return sorted(merged.values(), key=lambda record: (float(record.confidence), float(record.intensity)), reverse=True)
+
+
+def _merge_assertion_lists(primary: Sequence[AssertionRecord], secondary: Sequence[AssertionRecord]) -> List[AssertionRecord]:
+    merged: Dict[str, AssertionRecord] = {}
+    for record in list(primary) + list(secondary):
+        record_id = _assertion_id(record)
+        existing = merged.get(record_id)
+        if existing is None or (float(record.confidence), float(record.intensity)) > (
+            float(existing.confidence),
+            float(existing.intensity),
+        ):
+            merged[record_id] = record
+    return sorted(merged.values(), key=lambda record: (float(record.confidence), float(record.intensity)), reverse=True)
+
+
+def _assertion_count_payload(assertions: Sequence[AssertionRecord]) -> tuple[Dict[str, int], Dict[str, int]]:
+    label_counts = {
+        "present": 0,
+        "absent": 0,
+        "uncertain": 0,
+        "contrastive": 0,
+        "conditional": 0,
+    }
+    binding_counts = {
+        "exact": 0,
+        "normalized_exact": 0,
+        "unbound": 0,
+    }
+    for record in assertions:
+        label = str(record.assertion_label or "").strip().lower()
+        if label in label_counts:
+            label_counts[label] += 1
+        binding_status = str(record.binding_status or "").strip().lower()
+        if binding_status in binding_counts:
+            binding_counts[binding_status] += 1
+    return label_counts, binding_counts
+
+
+def _opening_bootstrap_candidates(
+    latest_message: str,
+    *,
+    allowed_item_ids: Sequence[int],
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    text = str(latest_message or "").strip()
+    allowed = {int(item_id) for item_id in allowed_item_ids}
+    if not text:
+        return [], {"applied": False, "cluster": "", "item_ids": []}
+
+    candidates: List[Dict[str, Any]] = []
+    lower_text = text.lower()
+
+    def _add_candidate(*, item_id: int, cue: str, family: str, confidence: float, intensity: float, reason: str) -> None:
+        if int(item_id) not in allowed:
+            return
+        sentence = _sentence_for_cue(text, cue).strip() or text[:220].strip()
+        bound_quote, binding_status = _bind_assertion_anchor(sentence, text)
+        if binding_status == "unbound":
+            return
+        candidates.append(
+            {
+                "item_id": int(item_id),
+                "symptom_name": BDI_ITEM_NAMES.get(int(item_id), f"Item {int(item_id)}"),
+                "assertion": "present",
+                "confidence": float(confidence),
+                "intensity": float(intensity),
+                "anchor_quote": bound_quote or sentence,
+                "direction": "increase",
+                "reason": reason,
+                "family": family,
+                "binding_status": binding_status,
+            }
+        )
+
+    for pattern in ITEM8_SOFT_SELF_CRITICISM_PATTERNS + (
+        re.compile(r"\bsecond[\s\-]?guess(?:ing)?\s+myself\b"),
+        re.compile(r"\bbeat\s+myself\s+up\b"),
+    ):
+        match = pattern.search(lower_text)
+        if match:
+            _add_candidate(
+                item_id=8,
+                cue=match.group(0),
+                family="self_evaluation",
+                confidence=0.82,
+                intensity=1.8,
+                reason=f"opening bootstrap self-criticism cue: {match.group(0)}",
+            )
+            break
+
+    for pattern in OPENING_BOOTSTRAP_COGNITIVE_OVERLOAD_PATTERNS:
+        match = pattern.search(lower_text)
+        if match:
+            _add_candidate(
+                item_id=19,
+                cue=match.group(0),
+                family="cognitive_overload",
+                confidence=0.74,
+                intensity=1.5,
+                reason=f"opening bootstrap cognitive-overload cue: {match.group(0)}",
+            )
+            break
+
+    for pattern in OPENING_BOOTSTRAP_SELF_DISLIKE_PATTERNS:
+        match = pattern.search(lower_text)
+        if match:
+            _add_candidate(
+                item_id=7,
+                cue=match.group(0),
+                family="self_regard",
+                confidence=0.80,
+                intensity=1.7,
+                reason=f"opening bootstrap self-regard cue: {match.group(0)}",
+            )
+            break
+
+    if _has_item14_worthlessness_semantics(lower_text) or _has_item14_latent_support_semantics(lower_text):
+        cue = ""
+        for pattern in ITEM14_LATENT_SUPPORT_PATTERNS:
+            match = pattern.search(lower_text)
+            if match:
+                cue = match.group(0)
+                break
+        if cue:
+            _add_candidate(
+                item_id=14,
+                cue=cue,
+                family="self_regard",
+                confidence=0.80,
+                intensity=1.9,
+                reason=f"opening bootstrap worthlessness cue: {cue}",
+            )
+
+    darker_match = None
+    for pattern in OPENING_BOOTSTRAP_DARKNESS_PATTERNS:
+        match = pattern.search(lower_text)
+        if match:
+            darker_match = match.group(0)
+            break
+    if darker_match:
+        affective_item_id = 2 if "darker" in darker_match else 1
+        _add_candidate(
+            item_id=affective_item_id,
+            cue=darker_match,
+            family="affective_darkness",
+            confidence=0.72,
+            intensity=1.5,
+            reason=f"opening bootstrap affective cue: {darker_match}",
+        )
+
+    for pattern in OPENING_BOOTSTRAP_CUTOFF_PATTERNS:
+        match = pattern.search(lower_text)
+        if match:
+            _add_candidate(
+                item_id=12,
+                cue=match.group(0),
+                family="social_disengagement",
+                confidence=0.68,
+                intensity=1.3,
+                reason=f"opening bootstrap social-cutoff cue: {match.group(0)}",
+            )
+            break
+
+    for pattern in OPENING_BOOTSTRAP_IRRITABILITY_PATTERNS:
+        match = pattern.search(lower_text)
+        if match:
+            _add_candidate(
+                item_id=17,
+                cue=match.group(0),
+                family="social_disengagement",
+                confidence=0.70,
+                intensity=1.4,
+                reason=f"opening bootstrap irritability cue: {match.group(0)}",
+            )
+            break
+
+    if not candidates:
+        return [], {"applied": False, "cluster": "", "item_ids": []}
+
+    family_rank = {
+        "self_evaluation": 4,
+        "self_regard": 3,
+        "affective_darkness": 2,
+        "cognitive_overload": 1,
+        "social_disengagement": 0,
+    }
+    chosen: List[Dict[str, Any]] = []
+    seen_families: set[str] = set()
+    for item in sorted(
+        candidates,
+        key=lambda row: (
+            -family_rank.get(str(row.get("family", "")), 0),
+            -float(row.get("confidence", 0.0)),
+            -float(row.get("intensity", 0.0)),
+            int(row.get("item_id", 0)),
+        ),
+    ):
+        family = str(item.get("family", "") or "")
+        if family in seen_families:
+            continue
+        chosen.append(item)
+        seen_families.add(family)
+        if len(chosen) >= OPENING_BOOTSTRAP_MAX_ITEMS:
+            break
+
+    item_ids = [int(item["item_id"]) for item in chosen]
+    cluster = "cognitive_affective" if any(item_id not in OPENING_SOMATIC_ITEM_IDS for item_id in item_ids) else "somatic_vegetative"
+    return chosen, {"applied": bool(chosen), "cluster": cluster, "item_ids": item_ids}
 
 def _has_explicit_sadness_signal(text: str) -> str:
     normalized = " ".join(str(text or "").lower().split())
@@ -2451,7 +2788,7 @@ def _likelihood_from_record(record: EvidenceRecord) -> List[float]:
     return [neutral, neutral, neutral, neutral]
 
 
-def _extract_likelihoods_impl(
+def _run_assertion_extraction_impl(
     state: AgentState,
     *,
     turn: int,
@@ -2570,6 +2907,48 @@ def _extract_likelihoods_impl(
     llm_raw_text = ""
     previous_question = _previous_detector_question(state)
     genuine_no_signal_turn = _is_clear_no_symptom_reply(latest_message, previous_question=previous_question)
+    opening_bootstrap_records: List[EvidenceRecord] = []
+    opening_bootstrap_assertions: List[AssertionRecord] = []
+    opening_bootstrap_applied = False
+    opening_bootstrap_cluster = ""
+    opening_bootstrap_item_ids: List[int] = []
+
+    if latest_message.strip():
+        should_try_opening_bootstrap = _use_opening_scope(
+            state,
+            route=str(target_spec["route"]),
+            question_kind=_question_kind_for_state(state),
+        ) or _bound_positive_history_count(state) <= 0
+        if should_try_opening_bootstrap:
+            opening_bootstrap_scored_items, opening_bootstrap_meta = _opening_bootstrap_candidates(
+                latest_message,
+                allowed_item_ids=allowed_item_ids,
+            )
+            if opening_bootstrap_scored_items:
+                opening_bootstrap_records, bootstrap_stats = _records_from_scored_items(
+                    opening_bootstrap_scored_items,
+                    allowed_item_ids=allowed_item_ids,
+                    node_name=node_name,
+                    turn=turn,
+                    latest_message=latest_message,
+                    key_aliases_enabled=key_aliases_enabled,
+                    strict_schema_coerce=strict_schema_coerce,
+                    item1_strict_gate=item1_strict_gate,
+                    item1_weak_max_conf=item1_weak_max_conf,
+                    item1_weak_max_intensity=item1_weak_max_intensity,
+                    method_override="opening_bootstrap",
+                    force_guard=True,
+                    stats_prefix="bootstrap",
+                    current_detector_question=previous_question or "",
+                )
+                opening_bootstrap_assertions = list(bootstrap_stats.get("bootstrap_assertions", []) or [])
+                opening_bootstrap_applied = bool(opening_bootstrap_records)
+                opening_bootstrap_cluster = str(opening_bootstrap_meta.get("cluster", "") or "")
+                opening_bootstrap_item_ids = [
+                    int(item_id)
+                    for item_id in list(opening_bootstrap_meta.get("item_ids", []) or [])
+                    if 1 <= int(item_id) <= 21
+                ]
 
     if latest_message.strip():
         lexical_prefilter = _fallback_evidence_from_text(node_name, turn, latest_message)
@@ -3103,6 +3482,17 @@ def _extract_likelihoods_impl(
                 parse_error_message = error_text[:300]
                 parse_fail_stage = "opportunistic_score" if opportunistic_score_called else "opportunistic_shortlist"
 
+    if opening_bootstrap_records:
+        evidence_records = _merge_evidence_record_lists(evidence_records, opening_bootstrap_records)
+        detail_assertions = _merge_assertion_lists(detail_assertions, opening_bootstrap_assertions)
+        if source in {"llm_opportunistic_error", "llm_opportunistic_parse_fail", "llm_detail_empty_payload", "llm_opportunistic_empty_payload", "extract_empty"} or not source:
+            source = "opening_bootstrap"
+        elif source not in {"opening_bootstrap", "clear_no_symptom_skip"}:
+            source = "opening_bootstrap_blended"
+        detail_assertion_count = len(detail_assertions)
+        detail_assertion_counts, detail_assertion_binding_counts = _assertion_count_payload(detail_assertions)
+        detail_assertion_emitted_evidence_count = len(evidence_records)
+
     if gate_called and not stage2_called:
         json_parse_ok = gate_parse_ok
     elif not llm_called:
@@ -3274,14 +3664,15 @@ def _extract_likelihoods_impl(
         "fallback_used": bool(fallback_records),
         "salvage_used": salvage_used,
         "salvage_items_count": salvage_items_count,
+        "opening_bootstrap_applied": bool(opening_bootstrap_applied),
+        "opening_bootstrap_cluster": opening_bootstrap_cluster,
+        "opening_bootstrap_item_ids": opening_bootstrap_item_ids,
         "raw_extractor_payload": raw_payload_logged,
         "latest_message": latest_message if raw_payload_logged else "",
         "empty_streak": empty_streak,
         "has_new_persona_input": True,
     }
     turn_trace = dict(state.get("turn_trace", {}))
-    turn_trace["extract_likelihoods"] = trace_payload
-    turn_trace["extract_evidence"] = trace_payload
 
     denied_items_this_turn: List[int] = []
     if clear_no_symptom_skip:
@@ -3290,9 +3681,9 @@ def _extract_likelihoods_impl(
             denied_items_this_turn.append(_denied_item_id)
 
     summary = (
-        f"{state.get('specialist_debug', '')} | evidence_count={len(evidence_records)}"
-        if state.get("specialist_debug")
-        else f"Evidence extraction: count={len(evidence_records)}"
+        f"{state.get('question_debug', '')} | evidence_count={len(evidence_records)}"
+        if state.get("question_debug")
+        else f"Judgment agent: evidence_count={len(evidence_records)}"
     )
 
     return {
@@ -3301,15 +3692,16 @@ def _extract_likelihoods_impl(
         "latest_turn_assertions": detail_assertions,
         "evidence_log": evidence_records,
         "assertion_log": detail_assertions,
-        "specialist_debug": summary,
+        "question_debug": summary,
         "turn_trace": turn_trace,
         "failure_counters": counters,
         "empty_evidence_streak": empty_streak,
         "denied_item_ids": denied_items_this_turn,
+        "_judgment_trace_payload": trace_payload,
     }
 
 
-def extract_likelihoods(state: AgentState) -> Dict:
+def _run_judgment_extraction(state: AgentState) -> Dict[str, Any]:
     has_new_persona_input = bool(state.get("has_new_persona_input", False))
     turn_obj = state.get("turn")
     turn = int(getattr(turn_obj, "turn_id", int(state.get("turn_index", 0)) or 1))
@@ -3328,17 +3720,16 @@ def extract_likelihoods(state: AgentState) -> Dict:
             "empty_streak": int(state.get("empty_evidence_streak", 0)),
             "has_new_persona_input": False,
         }
-        turn_trace["extract_likelihoods"] = trace_payload
-        turn_trace["extract_evidence"] = trace_payload
         return {
             "latest_turn_likelihoods": [],
             "latest_turn_evidence": [],
             "latest_turn_assertions": [],
-            "specialist_debug": "Evidence extraction: waiting for persona input",
+            "question_debug": "Judgment agent: waiting for persona input",
             "turn_trace": turn_trace,
+            "_judgment_trace_payload": trace_payload,
         }
 
-    return _extract_likelihoods_impl(
+    return _run_assertion_extraction_impl(
         state,
         turn=turn,
         latest_message=latest_message,
@@ -3346,6 +3737,106 @@ def extract_likelihoods(state: AgentState) -> Dict:
     )
 
 
-# Backward compatibility for old imports.
-def extract_evidence(state: AgentState) -> Dict:
-    return extract_likelihoods(state)
+POSITIVE_ASSERTION_LABELS = {"present", "conditional", "contrastive"}
+BOUND_STATUSES = {"exact", "normalized_exact"}
+
+
+def _allowed_item_ids(state: AgentState) -> List[int]:
+    plan = state.get("question_plan")
+    next_action = state.get("next_action")
+    target_item_id = int(_state_field(plan, "target_item_id", _state_field(next_action, "target_item_id", 2)) or 2)
+    route = str(_state_field(plan, "route", _state_field(next_action, "route", state.get("active_node", "cognitive"))) or "cognitive").strip().lower()
+    question_kind = _question_kind_for_state(state)
+    if route == "risk":
+        return [9]
+    if _use_opening_scope(state, route=route, question_kind=question_kind):
+        return list(OPENING_COGNITIVE_ITEM_IDS) if route == "cognitive" else list(OPENING_SOMATIC_ITEM_IDS)
+    if route == "somatic":
+        candidate_ids = [target_item_id, 15, 16, 18, 20, 21]
+    else:
+        candidate_ids = [target_item_id, 2, 3, 5, 6, 7, 8, 14, 19]
+    deduped: List[int] = []
+    for item_id in candidate_ids:
+        item_id = int(item_id)
+        if 1 <= item_id <= 21 and item_id not in deduped:
+            deduped.append(item_id)
+    return deduped
+
+
+def judgment_agent(state: AgentState) -> Dict[str, Any]:
+    result = _run_judgment_extraction(state)
+    assertions = list(result.get("latest_turn_assertions", []))
+    evidence_rows = list(result.get("latest_turn_evidence", []))
+    positive_assertions = [
+        row for row in assertions if str(getattr(row, "assertion_label", "") or "") in POSITIVE_ASSERTION_LABELS
+    ]
+    bound_positive_assertions = [
+        row for row in positive_assertions if str(getattr(row, "binding_status", "") or "") in BOUND_STATUSES
+    ]
+    evidence_binding_coverage = 1.0
+    if positive_assertions:
+        evidence_binding_coverage = float(len(bound_positive_assertions)) / float(len(positive_assertions))
+
+    route = str(state.get("active_node", "cognitive") or "cognitive").strip().lower()
+    if route not in {"cognitive", "somatic", "risk"}:
+        route = "cognitive"
+    active_cluster = "risk" if route == "risk" else ("somatic_vegetative" if route == "somatic" else "cognitive_affective")
+    trace_payload = dict(result.pop("_judgment_trace_payload", {}) or {})
+    opening_bootstrap_applied = bool(trace_payload.get("opening_bootstrap_applied", False))
+    opening_bootstrap_cluster = str(trace_payload.get("opening_bootstrap_cluster", "") or "")
+    opening_bootstrap_item_ids = [
+        int(item_id)
+        for item_id in list(trace_payload.get("opening_bootstrap_item_ids", []) or [])
+        if 1 <= int(item_id) <= 21
+    ]
+    judgment = JudgmentDecision(
+        active_cluster=active_cluster,
+        allowed_item_ids=_allowed_item_ids(state),
+        risk_sidecar_active=bool(state.get("risk_flag", False) or route == "risk"),
+        extracted_assertion_count=len(assertions),
+        bound_positive_assertion_count=len(bound_positive_assertions),
+        emitted_evidence_count=len(evidence_rows),
+        evidence_binding_coverage=max(0.0, min(1.0, evidence_binding_coverage)),
+        method="judgment_agent",
+        reason="bound_assertion_extraction",
+        opening_bootstrap_applied=opening_bootstrap_applied,
+        opening_bootstrap_cluster=opening_bootstrap_cluster,
+        opening_bootstrap_item_ids=opening_bootstrap_item_ids,
+    )
+
+    trace_payload.update(
+        {
+            "active_cluster": judgment.active_cluster,
+            "allowed_item_ids": list(judgment.allowed_item_ids),
+            "risk_sidecar_active": bool(judgment.risk_sidecar_active),
+            "extracted_assertion_count": int(judgment.extracted_assertion_count),
+            "bound_positive_assertion_count": int(judgment.bound_positive_assertion_count),
+            "emitted_evidence_count": int(judgment.emitted_evidence_count),
+            "evidence_binding_coverage": round(float(judgment.evidence_binding_coverage), 4),
+            "opening_bootstrap_applied": bool(judgment.opening_bootstrap_applied),
+            "opening_bootstrap_cluster": judgment.opening_bootstrap_cluster,
+            "opening_bootstrap_item_ids": list(judgment.opening_bootstrap_item_ids),
+        }
+    )
+    turn_trace = dict(result.get("turn_trace", state.get("turn_trace", {})))
+    turn_trace["judgment_agent"] = trace_payload
+
+    opening_signal_cluster = str(state.get("opening_signal_cluster", "") or "")
+    opening_signal_item_ids = list(state.get("opening_signal_item_ids", []) or [])
+    opening_signal_turn = int(state.get("opening_signal_turn", 0) or 0)
+    opening_bootstrap_state_applied = bool(state.get("opening_bootstrap_applied", False))
+    if opening_bootstrap_applied:
+        opening_signal_cluster = opening_bootstrap_cluster
+        opening_signal_item_ids = list(opening_bootstrap_item_ids)
+        opening_signal_turn = int(state.get("turn_index", 0) or 0)
+        opening_bootstrap_state_applied = True
+
+    return {
+        **result,
+        "judgment": judgment,
+        "opening_signal_cluster": opening_signal_cluster,
+        "opening_signal_item_ids": opening_signal_item_ids,
+        "opening_signal_turn": opening_signal_turn,
+        "opening_bootstrap_applied": opening_bootstrap_state_applied,
+        "turn_trace": turn_trace,
+    }

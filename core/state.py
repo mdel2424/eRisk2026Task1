@@ -185,6 +185,71 @@ class BeliefState(BaseModel):
     items: Dict[int, ItemBelief] = Field(default_factory=dict)
 
 
+class BayesNodeState(BaseModel):
+    node_id: str
+    probability: float = Field(default=0.0, ge=0.0, le=1.0)
+    uncertainty: float = Field(default=1.0, ge=0.0, le=1.0)
+    evidence_count: int = Field(default=0, ge=0)
+    last_update_turn: int = Field(default=0, ge=0)
+
+
+class BayesItemState(BaseModel):
+    item_id: int = Field(ge=1, le=21)
+    presence_prob: float = Field(default=0.0, ge=0.0, le=1.0)
+    score_posterior: List[float] = Field(default_factory=lambda: [0.85, 0.10, 0.04, 0.01], min_length=4, max_length=4)
+    expected_score: float = Field(default=0.0, ge=0.0, le=3.0)
+    uncertainty: float = Field(default=1.0, ge=0.0, le=1.0)
+    audit_trail: List[Dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("score_posterior")
+    @classmethod
+    def _normalize_score_posterior(cls, value: List[float]) -> List[float]:
+        return _normalize_distribution(list(value))
+
+
+class JudgmentDecision(BaseModel):
+    active_cluster: str = "cognitive_affective"
+    allowed_item_ids: List[int] = Field(default_factory=list)
+    risk_sidecar_active: bool = False
+    extracted_assertion_count: int = Field(default=0, ge=0)
+    bound_positive_assertion_count: int = Field(default=0, ge=0)
+    emitted_evidence_count: int = Field(default=0, ge=0)
+    evidence_binding_coverage: float = Field(default=1.0, ge=0.0, le=1.0)
+    method: str = "assertion_extractor"
+    reason: str = ""
+    opening_bootstrap_applied: bool = False
+    opening_bootstrap_cluster: str = ""
+    opening_bootstrap_item_ids: List[int] = Field(default_factory=list)
+
+
+class QuestionPlan(BaseModel):
+    active_cluster: str = "cognitive_affective"
+    route: Literal["somatic", "cognitive", "risk"] = "cognitive"
+    target_item_id: int = Field(default=2, ge=1, le=21)
+    target_module_id: int = Field(default=2, ge=0, le=9)
+    probe_goal: Literal["exemplar", "frequency", "duration", "impact", "comparison"] = "exemplar"
+    question_mode: str = "topic_open"
+    urgency_mode: Literal["adaptive", "direct_structured"] = "adaptive"
+    transition_reason: str = ""
+    anchor_text: str = ""
+    question_kind: str = "topic_open"
+    timeframe_mode: str = "introduce"
+    thread_turn_index: int = Field(default=0, ge=0)
+    thread_module_id: int = Field(default=0, ge=0, le=9)
+    thread_source_item_id: int = Field(default=0, ge=0, le=21)
+
+
+class DiagnosisDecision(BaseModel):
+    item_scores: Dict[int, int] = Field(default_factory=dict)
+    total_bdi: int = Field(default=0, ge=0, le=63)
+    predicted_label: Literal["control", "depressed"] = "control"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    rationale_by_item: Dict[str, str] = Field(default_factory=dict)
+    quote_links_by_item: Dict[str, List[str]] = Field(default_factory=dict)
+    used_llm: bool = False
+    synthesis_mode: str = "deterministic"
+
+
 class PolicyMetricsState(BaseModel):
     total_expected_bdi: float = Field(default=0.0, ge=0.0, le=63.0)
     label_prob: Optional[float] = Field(default=None, ge=0.0, le=1.0)
@@ -259,6 +324,23 @@ class StopDecision(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
 
 
+class PersonaAtomicFact(BaseModel):
+    item_id: int = Field(default=0, ge=0, le=21)
+    symptom_name: str = ""
+    severity: int = Field(default=0, ge=0, le=3)
+    duration_phrase: str = "lately"
+    context_anchor: str = ""
+    disclosure_style: str = ""
+    polarity: Literal["positive", "negative"] = "positive"
+
+
+class PersonaMemoryState(BaseModel):
+    facts: List[PersonaAtomicFact] = Field(default_factory=list)
+    disclosed_item_ids: List[int] = Field(default_factory=list)
+    context_ledger: List[str] = Field(default_factory=list)
+    verification_failures: int = Field(default=0, ge=0)
+
+
 class AgentState(TypedDict):
     # Conversation
     messages: Annotated[List[dict], operator.add]
@@ -271,10 +353,15 @@ class AgentState(TypedDict):
     turn: TurnState
     risk: RiskState
     beliefs: BeliefState
+    bayes_nodes: Dict[str, BayesNodeState]
+    bayes_items: Dict[int, BayesItemState]
     metrics: PolicyMetricsState
     control: ControlState
     conversation_thread: ConversationThreadState
     next_action: NextAction
+    question_plan: QuestionPlan
+    judgment: JudgmentDecision
+    diagnosis: DiagnosisDecision
     outgoing: OutgoingState
     final: FinalState
 
@@ -298,10 +385,7 @@ class AgentState(TypedDict):
     predicted_bdi_score: Optional[int]
     predicted_key_symptoms: List[str]
     predicted_key_item_ids: List[int]
-    raw_predicted_label: Optional[str]
-    raw_predicted_bdi_score: Optional[int]
     final_item_scores: Dict[int, int]
-    module_imputation: Dict[str, dict]
     global_confidence: float
     risk_flag: bool
     risk_prob: float
@@ -312,13 +396,20 @@ class AgentState(TypedDict):
     turn_trace: Dict[str, dict]
     trace_log: Annotated[List[dict], operator.add]
     failure_counters: Dict[str, int]
+    runtime_counters: Dict[str, int]
     empty_evidence_streak: int
     denied_item_ids: Annotated[List[int], operator.add]
     new_items_this_turn: int
     recent_new_items_window: List[int]
     recent_nonempty_window: List[int]
+    opening_signal_cluster: str
+    opening_signal_item_ids: List[int]
+    opening_signal_turn: int
+    opening_bootstrap_applied: bool
+    opening_followup_cluster: str
+    opening_cognitive_anchor_preserved: bool
     route_debug: str
-    specialist_debug: str
+    question_debug: str
     stop_debug: str
 
 
@@ -368,8 +459,37 @@ def _initial_item_beliefs() -> Dict[int, ItemBelief]:
     return beliefs
 
 
+def _initial_bayes_nodes() -> Dict[str, BayesNodeState]:
+    defaults = {
+        "cognitive_affective": 0.18,
+        "somatic_vegetative": 0.18,
+        "risk": 0.06,
+        "negative_self_schema": 0.14,
+        "physiological_disruption": 0.16,
+    }
+    return {
+        node_id: BayesNodeState(
+            node_id=node_id,
+            probability=probability,
+            uncertainty=max(0.0, min(1.0, 1.0 - abs((2.0 * probability) - 1.0))),
+            evidence_count=0,
+            last_update_turn=0,
+        )
+        for node_id, probability in defaults.items()
+    }
+
+
+def _initial_bayes_items() -> Dict[int, BayesItemState]:
+    bayes_items: Dict[int, BayesItemState] = {}
+    for item_id in range(1, 22):
+        bayes_items[item_id] = BayesItemState(item_id=item_id)
+    return bayes_items
+
+
 def build_initial_state(persona_id: Optional[str] = None) -> AgentState:
     beliefs = _initial_item_beliefs()
+    bayes_nodes = _initial_bayes_nodes()
+    bayes_items = _initial_bayes_items()
     return AgentState(
         messages=[],
         next_node="cognitive",
@@ -380,33 +500,42 @@ def build_initial_state(persona_id: Optional[str] = None) -> AgentState:
         turn=TurnState(),
         risk=RiskState(),
         beliefs=BeliefState(items=beliefs),
+        bayes_nodes=bayes_nodes,
+        bayes_items=bayes_items,
         metrics=PolicyMetricsState(),
         control=ControlState(),
         conversation_thread=ConversationThreadState(),
         next_action=NextAction(),
+        question_plan=QuestionPlan(),
+        judgment=JudgmentDecision(),
+        diagnosis=DiagnosisDecision(),
         outgoing=OutgoingState(),
         final=FinalState(),
         risk_flag=False,
         risk_prob=0.0,
         route_debug="",
-        specialist_debug="",
+        question_debug="",
         stop_debug="",
         turn_trace={},
         trace_log=[],
         failure_counters={},
+        runtime_counters={},
         empty_evidence_streak=0,
         denied_item_ids=[],
         new_items_this_turn=0,
         recent_new_items_window=[],
         recent_nonempty_window=[],
+        opening_signal_cluster="",
+        opening_signal_item_ids=[],
+        opening_signal_turn=0,
+        opening_bootstrap_applied=False,
+        opening_followup_cluster="",
+        opening_cognitive_anchor_preserved=False,
         predicted_label=None,
         predicted_bdi_score=None,
         predicted_key_symptoms=[],
         predicted_key_item_ids=[],
-        raw_predicted_label=None,
-        raw_predicted_bdi_score=None,
         final_item_scores={},
-        module_imputation={},
         should_stop=False,
         persona_id=persona_id,
         evidence_log=[],

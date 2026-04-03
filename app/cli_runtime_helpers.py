@@ -114,12 +114,12 @@ def _snapshot_turn(state: Dict) -> Dict:
         turn_trace = {
             key: turn_trace.get(key)
             for key in (
-                "supervisor",
-                "specialist",
-                "extract_evidence",
-                "belief_update",
-                "update_beliefs",
-                "stop",
+                "judgment_agent",
+                "bayes_state_update",
+                "diagnosis_agent",
+                "navigation_agent",
+                "question_agent",
+                "stop_controller",
                 "persona_handoff",
             )
             if key in turn_trace
@@ -135,10 +135,8 @@ def _snapshot_turn(state: Dict) -> Dict:
             "confidence": state.get("global_confidence", 0.0),
             "risk_flag": bool(state.get("risk_flag", False)),
         },
-        "raw_predicted_label": state.get("raw_predicted_label"),
-        "raw_predicted_bdi_score": state.get("raw_predicted_bdi_score"),
         "route_debug": state.get("route_debug", ""),
-        "specialist_debug": state.get("specialist_debug", ""),
+        "question_debug": state.get("question_debug", ""),
         "stop_debug": state.get("stop_debug", ""),
         "turn_trace": turn_trace,
         "failure_counters": _serialize(state.get("failure_counters", {})),

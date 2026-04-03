@@ -1,11 +1,10 @@
 # eRisk_Honours
 
 Minimal PoC for eRisk 2026 Task 1:
-- LangGraph detector (`ingest_turn -> risk_sentinel -> extract_likelihoods -> belief_update -> policy_metrics -> stop_decider -> target_selector -> question_generator -> finalize_outputs`)
-- BDI-SSI module-aware probing
-- Final-time module-weighted imputation for unobserved BDI items
+- LangGraph detector (`ingest_turn -> judgment_agent -> bayes_state_update -> diagnosis_agent -> stop_controller -> navigation_agent -> question_agent`)
+- Probabilistic multi-agent BDI-II runtime with bound clinical assertions, Noisy-OR Bayes updates, and diagnosis synthesis
 - Detector backends: `openrouter` or explicit local `ollama`
-- Persona runtime: deterministic local simulator only
+- Persona runtime: deterministic local simulator with atomic memory verification
 - Synthetic-only evaluation with provenance and benchmark-integrity artifacts
 
 ## Setup
@@ -43,7 +42,7 @@ Notebook workflow:
 
 `interactive` is a stepper:
 - press Enter to alternate `detector -> persona -> detector -> ...`
-- each step prints compact pipeline flow (ingest, risk, extraction, belief/policy, route, stop, usage)
+- each step prints compact runtime flow (ingest, judgment, Bayes update, diagnosis, navigation, stop, usage)
 
 `eval`, `eval_multi`, and `tune` all benchmark synthetic personas generated for the current seed.
 

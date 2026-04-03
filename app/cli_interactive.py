@@ -10,8 +10,8 @@ from app.cli_runtime import _build_probe_intent
 from app.cli_runtime_helpers import _assert_detector_backend_ready, _print_backend_info
 
 PIPELINE_ORDER = (
-    "ingest_turn -> risk_sentinel -> extract_likelihoods -> belief_update -> "
-    "policy_metrics -> stop_decider -> target_selector -> question_generator -> finalize_outputs"
+    "ingest_turn -> judgment_agent -> bayes_state_update -> diagnosis_agent -> "
+    "stop_controller -> navigation_agent -> question_agent"
 )
 
 
@@ -82,13 +82,11 @@ def _next_action_value(state: Dict[str, Any], key: str, default: Any) -> Any:
 def _print_detector_step(step: int, state: Dict[str, Any]) -> None:
     trace = _as_dict(state.get("turn_trace", {}))
     ingest = _as_dict(trace.get("ingest_turn"))
-    risk = _as_dict(trace.get("risk_sentinel"))
-    extract = _as_dict(trace.get("extract_likelihoods") or trace.get("extract_evidence"))
-    belief = _as_dict(trace.get("belief_update") or trace.get("update_beliefs"))
-    metrics = _as_dict(trace.get("policy_metrics"))
-    selector = _as_dict(trace.get("target_selector") or trace.get("supervisor"))
-    stop = _as_dict(trace.get("stop_decider") or trace.get("stop"))
-    final = _as_dict(trace.get("finalize_outputs"))
+    judgment = _as_dict(trace.get("judgment_agent"))
+    bayes = _as_dict(trace.get("bayes_state_update"))
+    diagnosis = _as_dict(trace.get("diagnosis_agent"))
+    navigation = _as_dict(trace.get("navigation_agent"))
+    stop = _as_dict(trace.get("stop_controller"))
 
     detector_message = ""
     messages = list(state.get("messages", []))
@@ -102,32 +100,30 @@ def _print_detector_step(step: int, state: Dict[str, Any]) -> None:
         f"new_persona={bool(ingest.get('has_new_persona_input', False))}"
     )
     print(
-        "  risk: "
-        f"prob={float(risk.get('risk_prob', state.get('risk_prob', 0.0))):.2f} "
-        f"flag={bool(risk.get('risk_flag', state.get('risk_flag', False)))} "
-        f"reason={str(risk.get('reason', '-'))}"
+        "  judgment: "
+        f"cluster={str(judgment.get('active_cluster', '-'))} "
+        f"bound_pos={int(judgment.get('bound_positive_assertion_count', 0) or 0)} "
+        f"binding={float(judgment.get('evidence_binding_coverage', 1.0) or 1.0):.2f}"
     )
     print(
-        "  extract: "
-        f"source={str(extract.get('source', '-'))} "
-        f"kept={int(extract.get('kept_items_count', 0) or 0)} "
-        f"raw={int(extract.get('raw_items_count', 0) or 0)} "
-        f"fallback={bool(extract.get('fallback_used', False))}"
+        "  bayes: "
+        f"expected_bdi={float(bayes.get('total_expected_bdi', 0.0) or 0.0):.2f} "
+        f"top_uncertain={_short_list(list(bayes.get('top_uncertain_items', []) or []), limit=4)} "
+        f"risk={float(state.get('risk_prob', 0.0)):.2f}"
     )
     print(f"  evidence: {_evidence_preview(state)}")
     print(
-        "  beliefs: "
-        f"updated={_short_list(list(belief.get('updated_item_ids', []) or []), limit=6)} "
-        f"coverage={float(metrics.get('coverage', 0.0)):.2f} "
-        f"entropy={float(metrics.get('mean_entropy', 0.0)):.2f} "
-        f"conf={float(state.get('global_confidence', 0.0)):.2f}"
+        "  diagnosis: "
+        f"label={str(diagnosis.get('predicted_label', state.get('predicted_label', '-')))} "
+        f"bdi={int(diagnosis.get('total_bdi', state.get('predicted_bdi_score', 0)) or 0)} "
+        f"conf={float(diagnosis.get('confidence', state.get('global_confidence', 0.0)) or 0.0):.2f}"
     )
     print(
-        "  route: "
-        f"node={str(selector.get('chosen_node', state.get('next_node', '-')))} "
+        "  navigation: "
+        f"route={str(navigation.get('route', state.get('next_node', '-')))} "
         f"target={int(_next_action_value(state, 'target_item_id', 0) or 0)} "
-        f"style={str(_next_action_value(state, 'style', '-'))} "
-        f"gain={float(selector.get('expected_gain', 0.0)):.2f}"
+        f"question_kind={str(navigation.get('question_kind', '-'))} "
+        f"urgency={str(navigation.get('urgency_mode', '-'))}"
     )
     print(
         "  stop: "
@@ -136,13 +132,6 @@ def _print_detector_step(step: int, state: Dict[str, Any]) -> None:
     )
     if detector_message:
         print(f"  detector> {detector_message}")
-    if final:
-        print(
-            "  final: "
-            f"label={state.get('predicted_label')} "
-            f"bdi={int(state.get('predicted_bdi_score') or 0)} "
-            f"symptoms={list(state.get('predicted_key_symptoms', []))[:4]}"
-        )
     print(f"  {_usage_line()}")
 
 

@@ -5,9 +5,7 @@ import random
 import unittest
 from unittest.mock import patch
 
-from agents.finalize_outputs import finalize_outputs
 from core.bdi_modules import MODULE_TO_ITEMS
-from core.state import ControlState, ItemBelief, build_initial_state, posterior_from_expected_score
 from persona.profile_sampling import (
     FAMILY_BLUEPRINTS,
     SEVERITY_TIERS,
@@ -21,31 +19,6 @@ from persona.simulated_persona import SimulatedPersona
 
 
 class ProfileSamplingTests(unittest.TestCase):
-    def test_finalize_outputs_still_emits_module_imputation(self) -> None:
-        state = build_initial_state(persona_id="regression")
-        state["control"] = ControlState(stop=True, stop_reason="test")
-        state["raw_predicted_bdi_score"] = 6
-        state["raw_predicted_label"] = "control"
-        state["risk_flag"] = False
-        state["item_beliefs"][16] = ItemBelief(
-            item_id=16,
-            posterior=posterior_from_expected_score(2.4),
-            entropy=0.30,
-            expected_score=2.4,
-            support_count=2,
-            last_update_turn=1,
-        )
-
-        result = finalize_outputs(state)
-
-        self.assertIn("module_imputation", result)
-        module_imputation = result["module_imputation"]
-        self.assertIn(6, module_imputation["module_stats"])
-        self.assertEqual(module_imputation["item_details"]["18"]["source"], "imputed")
-        self.assertGreaterEqual(int(module_imputation["imputed_points_before_guardrail"]), 1)
-        self.assertEqual(int(module_imputation["imputed_points_after_guardrail"]), 0)
-        self.assertIn(18, module_imputation["suppressed_imputed_item_ids"])
-
     def test_module_six_items_stay_soft_coupled(self) -> None:
         for seed in range(1, 121):
             rng = random.Random(seed)
@@ -438,6 +411,78 @@ class ProfileSamplingTests(unittest.TestCase):
         self.assertLessEqual(len(reply.split()), 12)
         self.assertTrue("same" in reply.lower() or "normal" in reply.lower() or "not really" in reply.lower())
         self.assertNotIn("seems a little different", reply.lower())
+
+    def test_atomic_memory_context_does_not_leak_symbolic_tags(self) -> None:
+        probe_intent = {
+            "target_item_id": 15,
+            "route": "somatic",
+            "style": "functional_impact",
+            "mode": "normal",
+            "directness": "indirect",
+            "priority": 0.75,
+            "question_kind": "same_item_followup",
+            "thread_turn_index": 2,
+            "thread_module_id": 5,
+            "thread_source_item_id": 15,
+            "timeframe_mode": "carry",
+        }
+        scores = {item_id: 0 for item_id in range(1, 22)}
+        scores[15] = 2
+
+        persona = SimulatedPersona(
+            persona_id="215a",
+            bdi_scores=scores,
+            family="somatic_evasive",
+            split="eval",
+            context_tag="social_isolation",
+            style_tag="open_but_flat",
+        )
+
+        history = [
+            {"role": "user", "content": "How has your energy been lately?"},
+            {"role": "assistant", "content": "It takes more effort to get through the day."},
+        ]
+        reply = persona.reply(history, dict(probe_intent))
+
+        self.assertNotIn("social_isolation", reply.lower())
+        self.assertNotIn("health_stress", reply.lower())
+        self.assertNotIn("_", reply)
+
+    def test_repeated_same_thread_reply_is_not_reused_verbatim(self) -> None:
+        probe_intent = {
+            "target_item_id": 20,
+            "route": "somatic",
+            "style": "clarify_frequency",
+            "mode": "normal",
+            "directness": "direct",
+            "priority": 0.8,
+            "question_kind": "same_item_followup",
+            "thread_turn_index": 2,
+            "thread_module_id": 5,
+            "thread_source_item_id": 20,
+            "timeframe_mode": "carry",
+        }
+        scores = {item_id: 0 for item_id in range(1, 22)}
+        scores[20] = 2
+
+        persona = SimulatedPersona(
+            persona_id="215b",
+            bdi_scores=scores,
+            family="somatic_evasive",
+            split="eval",
+            context_tag="health_stress",
+            style_tag="contextual_reflective",
+        )
+
+        history = [
+            {"role": "user", "content": "What has the fatigue been like?"},
+            {"role": "assistant", "content": "I'm wiped out by the afternoon."},
+            {"role": "user", "content": "When does that tiredness hit most?"},
+            {"role": "assistant", "content": "I'm wiped out by the afternoon."},
+        ]
+        reply = persona.reply(history, dict(probe_intent))
+
+        self.assertNotEqual(reply.strip().lower(), "i'm wiped out by the afternoon.")
 
     def test_simulated_persona_soft_denial_still_exists_for_low_signal_control_case(self) -> None:
         probe_intent = {
