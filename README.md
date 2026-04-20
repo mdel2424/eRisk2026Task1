@@ -55,7 +55,7 @@ To use Ollama for local inference:
 - run `ollama pull qwen3.5:4b`
 - set `DETECTOR_BACKEND=ollama`
 - optionally set `OLLAMA_BASE_URL`
-- `OLLAMA_THINK_MODE=auto` keeps thinking on when CUDA is available and turns it off on CPU-only runs
+- `OLLAMA_THINK_MODE=off` disables reasoning modes required when using standard local models (like qwen3.5:4b) that don't natively support thinking tokens
 
 Synthetic persona generation is always deterministic and local. Personas are used so the detector can be benchmarked repeatedly against fixed ground-truth BDI item scores.
 
