@@ -219,8 +219,9 @@ class BenchmarkIntegrityTests(unittest.TestCase):
         ]
 
         with tempfile.TemporaryDirectory() as tmp_dir:
+            output_root = Path(tmp_dir)
             _, failure_report_payload, _, _, _, _ = write_eval_artifacts(
-                output_dir=Path(tmp_dir),
+                output_dir=output_root,
                 conversations=[],
                 results=results,
                 diagnostics_payload=[
@@ -270,10 +271,28 @@ class BenchmarkIntegrityTests(unittest.TestCase):
                 min_turns_for_productivity=1,
                 early_stop_reason_distribution=Counter(),
                 extract_parse_fail_log_entries=[
-                    {"failure_reason": "genuine_no_signal_all_unsupported", "counts_as_failure": False},
-                    {"failure_reason": "scoped_empty_then_opportunistic_empty", "counts_as_failure": True},
+                    {
+                        "entry_kind": "non_failure_informational",
+                        "failure_reason": "genuine_no_signal_all_unsupported",
+                        "counts_as_failure": False,
+                    },
+                    {
+                        "entry_kind": "opportunistic_no_candidate",
+                        "failure_reason": "opportunistic_shortlist_no_candidates",
+                        "counts_as_failure": True,
+                    },
+                    {
+                        "entry_kind": "json_parse_failure",
+                        "failure_reason": "invalid_or_truncated_json",
+                        "counts_as_failure": True,
+                    },
+                    {
+                        "entry_kind": "extractor_call_failure",
+                        "failure_reason": "llm_call_failed",
+                        "counts_as_failure": True,
+                    },
                 ],
-                run_failure_counters=Counter(),
+                run_failure_counters=Counter({"extract_json_parse_fail": 1}),
                 eval_ids=["alpha"],
                 manifest_hash="abc123",
                 manifest_payload=manifest_payload,
@@ -292,8 +311,29 @@ class BenchmarkIntegrityTests(unittest.TestCase):
                 all_profiles=[],
             )
 
-        self.assertEqual(int(failure_report_payload["extract_parse_fail_log_count"]), 1)
+            self.assertTrue((output_root / "extract_failure_log_run_local.json").exists())
+            self.assertTrue((output_root / "extract_true_parse_fail_log_run_local.json").exists())
+            self.assertTrue((output_root / "extract_runtime_error_log_run_local.json").exists())
+            self.assertTrue((output_root / "extract_non_failure_log_run_local.json").exists())
+
+        self.assertEqual(int(failure_report_payload["extract_parse_fail_log_count"]), 3)
         self.assertEqual(int(failure_report_payload["extract_non_failure_log_count"]), 1)
+        self.assertEqual(int(failure_report_payload["extract_failure_log_count"]), 3)
+        self.assertEqual(int(failure_report_payload["extract_true_parse_fail_log_count"]), 1)
+        self.assertEqual(int(failure_report_payload["extract_runtime_error_log_count"]), 1)
+        self.assertEqual(
+            failure_report_payload["extract_failure_kind_distribution"],
+            {
+                "opportunistic_no_candidate": 1,
+                "json_parse_failure": 1,
+                "extractor_call_failure": 1,
+            },
+        )
+        self.assertEqual(
+            failure_report_payload["extract_true_parse_reason_distribution"],
+            {"invalid_or_truncated_json": 1},
+        )
+        self.assertTrue(bool(failure_report_payload["artifact_run_id"]))
         self.assertEqual(failure_report_payload["subtype_count"], {"routine_stable": 1})
         self.assertEqual(failure_report_payload["context_count"], {"routine_stable": 1})
         self.assertEqual(failure_report_payload["style_count"], {"open_but_flat": 1})

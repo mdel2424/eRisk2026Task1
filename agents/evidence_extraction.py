@@ -45,6 +45,7 @@ METHOD_WEIGHT_HINTS = {
     "llm_extractor": 1.00,
     "llm_opportunistic": 0.75,
     "llm_salvage": 0.60,
+    "module3_scoped_recovery": 0.65,
     "lexical_fallback": 0.45,
     "lexical_prefilter": 0.40,
 }
@@ -164,6 +165,7 @@ MODULE3_SOFT_SUPPORT_PATTERNS: Dict[int, Tuple[re.Pattern[str], ...]] = {
         re.compile(r"\buseless\b"),
         re.compile(r"\bfeel\s+like\s+a\s+burden\b"),
         re.compile(r"\b(?:a\s+)?burden\b"),
+        re.compile(r"\blet(?:ting)?\s+(?:people|everyone)\s+down\b"),
         re.compile(r"\bnot\s+enough\b"),
         re.compile(r"\bdon'?t\s+matter\b"),
         re.compile(r"\bdo\s+not\s+matter\b"),
@@ -186,6 +188,7 @@ ITEM14_LATENT_SUPPORT_PATTERNS = (
     re.compile(r"\bfeel\s+like\s+a\s+failure\b"),
     re.compile(r"\bi\s+am\s+a\s+failure\b"),
     re.compile(r"\bi'?m\s+a\s+failure\b"),
+    re.compile(r"\blet(?:ting)?\s+(?:people|everyone)\s+down\b"),
     re.compile(r"\bdon'?t\s+like\s+who\s+i\s+am\b"),
     re.compile(r"\bdo\s+not\s+like\s+who\s+i\s+am\b"),
     re.compile(r"\bdon'?t\s+like\s+the\s+person\s+i(?:'ve| have)\s+been\b"),
@@ -1249,6 +1252,79 @@ def _resolve_self_evaluation_item_ids(
     if quote_targets:
         return quote_targets
     return [item_id for item_id in _self_evaluation_item_ids(latest_message) if item_id in allowed]
+
+
+def _first_matching_phrase(text: str, patterns: Sequence[re.Pattern[str]]) -> tuple[str, str]:
+    normalized = str(text or "").lower()
+    if not normalized:
+        return "", ""
+    for pattern in patterns:
+        match = pattern.search(normalized)
+        if not match:
+            continue
+        cue = str(match.group(0) or "").strip()
+        if cue:
+            return cue, _sentence_for_cue(text, cue)
+    return "", ""
+
+
+def _module3_scoped_recovery_records(
+    *,
+    node_name: str,
+    turn: int,
+    latest_message: str,
+    allowed_item_ids: Sequence[int],
+) -> List[EvidenceRecord]:
+    allowed = {int(item_id) for item_id in allowed_item_ids}
+    records: List[EvidenceRecord] = []
+    recovery_specs = (
+        (
+            8,
+            ITEM8_SELF_CRITICISM_ASSERTION_PATTERNS + ITEM8_SOFT_SELF_CRITICISM_PATTERNS,
+            0.66,
+            1.35,
+            "module-3 scoped recovery from explicit self-criticism phrasing",
+        ),
+        (
+            7,
+            ITEM7_SELF_DISLIKE_ASSERTION_PATTERNS + ITEM7_SOFT_SELF_EVALUATION_PATTERNS,
+            0.62,
+            1.20,
+            "module-3 scoped recovery from explicit reduced self-regard phrasing",
+        ),
+        (
+            14,
+            ITEM14_WORTHLESSNESS_PATTERNS + ITEM14_LATENT_SUPPORT_PATTERNS,
+            0.70,
+            1.50,
+            "module-3 scoped recovery from burden or worthlessness phrasing",
+        ),
+    )
+
+    seen_item_ids: set[int] = set()
+    for item_id, patterns, confidence, intensity, reason in recovery_specs:
+        if item_id not in allowed or item_id in seen_item_ids:
+            continue
+        cue, sentence = _first_matching_phrase(latest_message, patterns)
+        if not cue:
+            continue
+        records.append(
+            EvidenceRecord(
+                turn=turn,
+                node=node_name if node_name in {"somatic", "cognitive", "risk"} else "cognitive",
+                item_id=item_id,
+                symptom_name=BDI_ITEM_NAMES.get(item_id, f"Item {item_id}"),
+                direction="increase",
+                intensity=float(intensity),
+                confidence=float(confidence),
+                evidence_text=sentence or cue,
+                reason=f"{reason}: {cue}",
+                method="module3_scoped_recovery",
+            )
+        )
+        seen_item_ids.add(int(item_id))
+
+    return records
 
 
 def _is_sadness_detector_question(question: str) -> bool:
@@ -2487,6 +2563,9 @@ def _extract_likelihoods_impl(
     parse_error_column = 0
     parse_error_position = 0
     parse_balance: Dict[str, Any] = {}
+    error_class = ""
+    error_message = ""
+    error_stage = ""
     llm_called = False
     raw_payload_logged = ""
     gate_called = False
@@ -2527,6 +2606,9 @@ def _extract_likelihoods_impl(
     detail_self_evaluation_retarget_count = 0
     detail_self_evaluation_suppressed_count = 0
     detail_self_evaluation_multi_item_suppression_count = 0
+    detail_module3_scoped_recovery_applied = False
+    detail_module3_scoped_recovery_item_ids: List[int] = []
+    detail_module3_scoped_recovery_trigger = ""
     detail_contrastive_sibling_support_applied = False
     detail_generic_shift_blocked = False
     detail_generic_shift_with_symptom_kept = False
@@ -2871,9 +2953,12 @@ def _extract_likelihoods_impl(
                 source = "llm_extractor_error"
                 counters = bump_failure_counter(counters, "extract_llm_call_fail")
                 error_text = str(exc).strip()
+                error_class = exc.__class__.__name__
+                error_message = error_text[:300]
                 parse_error_kind = "llm_timeout" if "timed out" in error_text.lower() else "llm_call_failed"
                 parse_error_message = error_text[:300]
                 parse_fail_stage = "detail" if stage2_called else ("gate" if gate_called else "")
+                error_stage = parse_fail_stage
     else:
         source = "skip_empty_message"
 
@@ -2881,6 +2966,23 @@ def _extract_likelihoods_impl(
         counters = bump_failure_counter(counters, "extract_item_map_fail", amount=dropped_unknown)
 
     fallback_records: List[EvidenceRecord] = []
+    if not evidence_records and latest_message.strip() and not clear_no_symptom_skip:
+        module3_scoped_recovery_records = _module3_scoped_recovery_records(
+            node_name=target_spec["route"],
+            turn=turn,
+            latest_message=latest_message,
+            allowed_item_ids=allowed_item_ids,
+        )
+        if module3_scoped_recovery_records:
+            evidence_records = module3_scoped_recovery_records
+            detail_module3_scoped_recovery_applied = True
+            detail_module3_scoped_recovery_item_ids = [
+                int(record.item_id) for record in module3_scoped_recovery_records
+            ]
+            detail_module3_scoped_recovery_trigger = str(source or "empty_recovery")
+            source = "module3_scoped_recovery"
+            counters = bump_failure_counter(counters, "extract_module3_scoped_recovery")
+
     if not evidence_records and latest_message.strip() and not clear_no_symptom_skip:
         fallback_records = _fallback_evidence_from_text(node_name, turn, latest_message)
         fallback_records, dropped_count, soft_clamped_count, item_counts = _apply_precision_gate_batch(
@@ -3099,9 +3201,12 @@ def _extract_likelihoods_impl(
                 source = "llm_opportunistic_error"
                 counters = bump_failure_counter(counters, "extract_llm_call_fail")
                 error_text = str(exc).strip()
+                error_class = exc.__class__.__name__
+                error_message = error_text[:300]
                 parse_error_kind = "llm_timeout" if "timed out" in error_text.lower() else "llm_call_failed"
                 parse_error_message = error_text[:300]
                 parse_fail_stage = "opportunistic_score" if opportunistic_score_called else "opportunistic_shortlist"
+                error_stage = parse_fail_stage
 
     if gate_called and not stage2_called:
         json_parse_ok = gate_parse_ok
@@ -3215,6 +3320,9 @@ def _extract_likelihoods_impl(
         "detail_self_evaluation_retarget_count": detail_self_evaluation_retarget_count,
         "detail_self_evaluation_suppressed_count": detail_self_evaluation_suppressed_count,
         "detail_self_evaluation_multi_item_suppression_count": detail_self_evaluation_multi_item_suppression_count,
+        "detail_module3_scoped_recovery_applied": detail_module3_scoped_recovery_applied,
+        "detail_module3_scoped_recovery_item_ids": detail_module3_scoped_recovery_item_ids,
+        "detail_module3_scoped_recovery_trigger": detail_module3_scoped_recovery_trigger,
         "detail_contrastive_sibling_support_applied": detail_contrastive_sibling_support_applied,
         "detail_generic_shift_blocked": detail_generic_shift_blocked,
         "detail_generic_shift_with_symptom_kept": detail_generic_shift_with_symptom_kept,
@@ -3253,6 +3361,9 @@ def _extract_likelihoods_impl(
         "parse_error_line": parse_error_line,
         "parse_error_column": parse_error_column,
         "parse_error_position": parse_error_position,
+        "error_class": error_class,
+        "error_message": error_message or parse_error_message,
+        "error_stage": error_stage or parse_fail_stage,
         "parse_balance": parse_balance,
         "raw_items_count": raw_items_count,
         "kept_items_count": len(evidence_records),
@@ -3276,6 +3387,8 @@ def _extract_likelihoods_impl(
         "salvage_items_count": salvage_items_count,
         "raw_extractor_payload": raw_payload_logged,
         "latest_message": latest_message if raw_payload_logged else "",
+        "latest_message_excerpt": latest_message[:220].strip(),
+        "detector_backend": os.getenv("DETECTOR_BACKEND", "openrouter").strip().lower() or "openrouter",
         "empty_streak": empty_streak,
         "has_new_persona_input": True,
     }

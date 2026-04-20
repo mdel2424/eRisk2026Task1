@@ -8,6 +8,8 @@ from core.llm import get_llm
 from core.prompts import OPENING_MESSAGE_FIXED, get_fallback_questions, get_prompt
 from core.state import AgentState, BDI_ITEM_NAMES, OutgoingState
 
+SELF_WORTH_ITEM_IDS = {7, 8, 14}
+
 
 def _has_detector_message(messages: list[dict]) -> bool:
     for msg in messages:
@@ -121,11 +123,58 @@ def _fallback_question(
     turn_index: int,
     question_kind: str,
 ) -> str:
+    module3_specific = _module3_specific_question(target_item_id=target_item_id, question_kind=question_kind)
+    if module3_specific:
+        return module3_specific
     options = get_fallback_questions(route, question_kind=question_kind)
     if not options:
         return "Could you tell me a little more about how that has been affecting you lately?"
     index = (max(0, int(turn_index)) + max(1, int(target_item_id))) % len(options)
     return str(options[index]).strip()
+
+
+def _module3_focus_hint(target_item_id: int) -> str:
+    if int(target_item_id) == 7:
+        return (
+            "Ask explicitly about self-regard or reduced confidence, not generic functioning. "
+            "Useful language includes not liking oneself, feeling lesser, or not measuring up."
+        )
+    if int(target_item_id) == 8:
+        return (
+            "Ask explicitly about self-criticism and internal judgment. "
+            "Useful language includes being hard on oneself, second-guessing, or feeling one should be doing better."
+        )
+    if int(target_item_id) == 14:
+        return (
+            "Ask explicitly about burden, worth, mattering, contribution, or letting people down. "
+            "Avoid generic impact wording unless it is tied back to self-worth."
+        )
+    return ""
+
+
+def _module3_specific_question(*, target_item_id: int, question_kind: str) -> str:
+    question_map = {
+        7: {
+            "topic_open": "When you look at yourself lately, what have you been telling yourself about who you are or whether you measure up?",
+            "same_item_followup": "When that view of yourself shows up, how quickly does it take over your thinking?",
+            "same_module_followup": "Has that been more about not liking yourself, losing confidence, or something a little different?",
+            "contrastive_pivot": "Between feeling let down by yourself and feeling hard on yourself, which has been closer to the mark lately?",
+        },
+        8: {
+            "topic_open": "When something goes wrong lately, how hard have you been on yourself afterward?",
+            "same_item_followup": "When that self-criticism starts, does it pass quickly or stick with you for hours?",
+            "same_module_followup": "Has it felt more like being hard on yourself, second-guessing, or feeling you should be doing better?",
+            "contrastive_pivot": "Does it feel more like you dislike yourself, or more like you keep criticizing yourself?",
+        },
+        14: {
+            "topic_open": "Have there been moments lately where you felt like a burden or like you do not contribute anything that matters?",
+            "same_item_followup": "When that burden or not-mattering feeling shows up, how strongly do you believe it in the moment?",
+            "same_module_followup": "Has it felt more like guilt, letting people down, or feeling you do not really matter?",
+            "contrastive_pivot": "Does it land more as guilt about something specific, or more like feeling you are a burden overall?",
+        },
+    }
+    prompts = question_map.get(int(target_item_id), {})
+    return str(prompts.get(str(question_kind), prompts.get("topic_open", ""))).strip()
 
 
 def _build_llm_question(
@@ -155,6 +204,7 @@ def _build_llm_question(
     module_goal = MODULE_GOALS.get(module_id, "Assess current depressive symptom expression.")
     module_items = MODULE_TO_ITEMS.get(module_id, [])
     target_item_name = BDI_ITEM_NAMES.get(target_item_id, f"Item {target_item_id}")
+    target_focus_hint = _module3_focus_hint(target_item_id)
 
     prompt = prompt_template.format(
         node_name=route,
@@ -172,6 +222,7 @@ def _build_llm_question(
         timeframe_mode=timeframe_mode,
         anchor_text=anchor_text or "none",
         thread_turn_index=int(thread_turn_index),
+        target_focus_hint=target_focus_hint or "none",
     )
 
     llm = get_llm()

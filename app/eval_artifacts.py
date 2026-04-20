@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+from uuid import uuid4
 
 from core.evaluation import compute_metrics
 from core.llm import get_llm_usage
@@ -127,6 +129,50 @@ def _aggregate_sim_style_summary(diagnostics_payload: List[Dict[str, Any]]) -> D
     }
 
 
+def _normalize_run_metadata(run_id: str = "", generated_at: str = "") -> tuple[str, str]:
+    resolved_run_id = str(run_id or "").strip() or uuid4().hex[:12]
+    resolved_generated_at = str(generated_at or "").strip() or datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return resolved_run_id, resolved_generated_at
+
+
+def _stamp_artifact_payload(payload: Any, *, run_id: str, generated_at: str) -> Any:
+    if isinstance(payload, dict):
+        stamped = dict(payload)
+        stamped["artifact_run_id"] = str(run_id)
+        stamped["generated_at"] = str(generated_at)
+        return stamped
+    if isinstance(payload, list):
+        stamped_rows: List[Any] = []
+        for item in payload:
+            if isinstance(item, dict):
+                stamped = dict(item)
+                stamped["artifact_run_id"] = str(run_id)
+                stamped["generated_at"] = str(generated_at)
+                stamped_rows.append(stamped)
+            else:
+                stamped_rows.append(item)
+        return stamped_rows
+    return payload
+
+
+def _failure_reason_distribution(entries: List[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Counter[str] = Counter()
+    for entry in entries:
+        reason = str(entry.get("failure_reason", "") or "").strip()
+        if reason:
+            counts[reason] += 1
+    return dict(counts)
+
+
+def _entry_kind_distribution(entries: List[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Counter[str] = Counter()
+    for entry in entries:
+        kind = str(entry.get("entry_kind", "") or "").strip()
+        if kind:
+            counts[kind] += 1
+    return dict(counts)
+
+
 def _f1_from_counts(tp: int, fp: int, fn: int) -> float:
     if tp + fp + fn <= 0:
         return 0.0
@@ -229,11 +275,16 @@ def build_eval_diagnostics_entry(
     timeline: List[Dict[str, Any]],
     style_stats: Dict[str, Any],
     trace_level: str,
+    run_id: str = "",
+    generated_at: str = "",
 ) -> Dict[str, Any]:
+    resolved_run_id, resolved_generated_at = _normalize_run_metadata(run_id, generated_at)
     return {
         "LLM": profile.persona_id,
         "source": profile.source,
         "has_ground_truth": profile.has_ground_truth,
+        "artifact_run_id": resolved_run_id,
+        "generated_at": resolved_generated_at,
         "persona_meta": _profile_meta(profile),
         "timeline": _serialize(timeline if trace_level == "compact" else []),
         "final_state": _serialize(
@@ -486,7 +537,10 @@ def write_eval_artifacts(
     requested_trace_level: str,
     requested_debug_outputs: bool,
     all_profiles: List,
+    run_id: str = "",
+    generated_at: str = "",
 ) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    resolved_run_id, resolved_generated_at = _normalize_run_metadata(run_id, generated_at)
     overall_metrics = compute_metrics(overall_rows) if overall_rows else {}
     max_turns = int(os.getenv("MAX_TURNS", "40"))
     overall_metrics_payload = _with_objective(overall_metrics, max_turns=max_turns)
@@ -512,9 +566,22 @@ def write_eval_artifacts(
     }
     if primary_metrics:
         metrics_payload.update(primary_metrics)
+    metrics_payload = _stamp_artifact_payload(
+        metrics_payload,
+        run_id=resolved_run_id,
+        generated_at=resolved_generated_at,
+    )
 
-    interactions_payload = [conv.model_dump() for conv in conversations]
-    results_payload = [result.to_erisk_dict() for result in results]
+    interactions_payload = _stamp_artifact_payload(
+        [conv.model_dump() for conv in conversations],
+        run_id=resolved_run_id,
+        generated_at=resolved_generated_at,
+    )
+    results_payload = _stamp_artifact_payload(
+        [result.to_erisk_dict() for result in results],
+        run_id=resolved_run_id,
+        generated_at=resolved_generated_at,
+    )
     _write_json(output_dir / "interactions_run_local.json", interactions_payload)
     _write_json(output_dir / "results_run_local.json", results_payload)
     _write_json(output_dir / "metrics_run_local.json", metrics_payload)
@@ -528,14 +595,30 @@ def write_eval_artifacts(
     }
     if debug_outputs:
         error_report_payload = _build_error_report(overall_rows)
+        error_report_payload = _stamp_artifact_payload(
+            error_report_payload,
+            run_id=resolved_run_id,
+            generated_at=resolved_generated_at,
+        )
         _write_json(output_dir / "error_report_run_local.json", error_report_payload)
-        _write_json(output_dir / "extract_parse_fail_log_run_local.json", extract_parse_fail_log_entries)
+        legacy_extract_log_payload = _stamp_artifact_payload(
+            extract_parse_fail_log_entries,
+            run_id=resolved_run_id,
+            generated_at=resolved_generated_at,
+        )
+        _write_json(output_dir / "extract_parse_fail_log_run_local.json", legacy_extract_log_payload)
 
     extractor_failure_entries = [
         entry for entry in extract_parse_fail_log_entries if bool(entry.get("counts_as_failure", True))
     ]
     extractor_non_failure_entries = [
         entry for entry in extract_parse_fail_log_entries if not bool(entry.get("counts_as_failure", True))
+    ]
+    true_parse_failure_entries = [
+        entry for entry in extractor_failure_entries if str(entry.get("entry_kind", "") or "") == "json_parse_failure"
+    ]
+    runtime_error_entries = [
+        entry for entry in extractor_failure_entries if str(entry.get("entry_kind", "") or "") == "extractor_call_failure"
     ]
 
     evidence_nonempty_rate = (evidence_turns_nonempty / turns_total) if turns_total else 0.0
@@ -594,6 +677,12 @@ def write_eval_artifacts(
             "method_weight_usage": dict(method_weight_usage),
             "extract_parse_fail_log_count": len(extractor_failure_entries),
             "extract_non_failure_log_count": len(extractor_non_failure_entries),
+            "extract_failure_log_count": len(extractor_failure_entries),
+            "extract_true_parse_fail_log_count": len(true_parse_failure_entries),
+            "extract_runtime_error_log_count": len(runtime_error_entries),
+            "extract_failure_kind_distribution": _entry_kind_distribution(extractor_failure_entries),
+            "extract_failure_reason_distribution": _failure_reason_distribution(extractor_failure_entries),
+            "extract_true_parse_reason_distribution": _failure_reason_distribution(true_parse_failure_entries),
             "duplicate_evidence_rows_total": int(duplicate_evidence_rows_total),
             "duplicate_evidence_rows_rate": round(duplicate_evidence_rows_rate, 4),
             "contradiction_evidence_rows_total": int(contradiction_evidence_rows_total),
@@ -622,7 +711,44 @@ def write_eval_artifacts(
             "llm_usage": get_llm_usage(),
             **family_summary,
         }
+        failure_report_payload = _stamp_artifact_payload(
+            failure_report_payload,
+            run_id=resolved_run_id,
+            generated_at=resolved_generated_at,
+        )
         _write_json(output_dir / "failure_report_run_local.json", failure_report_payload)
+        _write_json(
+            output_dir / "extract_failure_log_run_local.json",
+            _stamp_artifact_payload(
+                extractor_failure_entries,
+                run_id=resolved_run_id,
+                generated_at=resolved_generated_at,
+            ),
+        )
+        _write_json(
+            output_dir / "extract_true_parse_fail_log_run_local.json",
+            _stamp_artifact_payload(
+                true_parse_failure_entries,
+                run_id=resolved_run_id,
+                generated_at=resolved_generated_at,
+            ),
+        )
+        _write_json(
+            output_dir / "extract_runtime_error_log_run_local.json",
+            _stamp_artifact_payload(
+                runtime_error_entries,
+                run_id=resolved_run_id,
+                generated_at=resolved_generated_at,
+            ),
+        )
+        _write_json(
+            output_dir / "extract_non_failure_log_run_local.json",
+            _stamp_artifact_payload(
+                extractor_non_failure_entries,
+                run_id=resolved_run_id,
+                generated_at=resolved_generated_at,
+            ),
+        )
 
     benchmark_integrity_payload = _build_benchmark_integrity(
         manifest_payload=manifest_payload,
@@ -631,10 +757,22 @@ def write_eval_artifacts(
         manifest_hash=manifest_hash,
         prior_manifest_info=prior_manifest_info,
     )
+    benchmark_integrity_payload = _stamp_artifact_payload(
+        benchmark_integrity_payload,
+        run_id=resolved_run_id,
+        generated_at=resolved_generated_at,
+    )
     _write_json(output_dir / "benchmark_integrity_run_local.json", benchmark_integrity_payload)
 
     if debug_outputs and save_diagnostics:
-        _write_json(output_dir / "diagnostics_run_local.json", diagnostics_payload)
+        _write_json(
+            output_dir / "diagnostics_run_local.json",
+            _stamp_artifact_payload(
+                diagnostics_payload,
+                run_id=resolved_run_id,
+                generated_at=resolved_generated_at,
+            ),
+        )
 
     config_snapshot = {
         "args": {
@@ -703,6 +841,11 @@ def write_eval_artifacts(
             ),
         },
     }
+    config_snapshot = _stamp_artifact_payload(
+        config_snapshot,
+        run_id=resolved_run_id,
+        generated_at=resolved_generated_at,
+    )
     _write_json(output_dir / "config_used.json", config_snapshot)
 
     return (

@@ -31,6 +31,14 @@ class _FakeLLM:
         return SimpleNamespace(content=response)
 
 
+class _RaisingLLM:
+    def __init__(self, message: str = "forced extractor failure") -> None:
+        self._message = message
+
+    def invoke(self, _messages):
+        raise RuntimeError(self._message)
+
+
 def _extract_state(
     *,
     route: str,
@@ -304,6 +312,59 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
         self.assertEqual(int(trace["detail_assertion_emitted_evidence_count"]), 1)
         self.assertEqual(int(trace["detail_assertion_counts"]["present"]), 1)
         self.assertEqual(int(trace["detail_assertion_binding_counts"]["exact"]), 1)
+
+    def test_module3_scoped_recovery_maps_hard_on_myself_to_item8(self) -> None:
+        state = _extract_state(
+            route="cognitive",
+            target_item_id=8,
+            target_module_id=3,
+            latest_message="I'm hard on myself lately.",
+        )
+
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+            with patch("agents.evidence_extraction.get_extractor_llm", return_value=_RaisingLLM()):
+                result = extract_likelihoods(state)
+
+        trace = result["turn_trace"]["extract_evidence"]
+        kept_ids = [int(record.item_id) for record in result["latest_turn_evidence"]]
+        self.assertEqual(kept_ids, [8])
+        self.assertEqual(str(trace["source"]), "module3_scoped_recovery")
+        self.assertTrue(bool(trace["detail_module3_scoped_recovery_applied"]))
+        self.assertEqual(trace["detail_module3_scoped_recovery_item_ids"], [8])
+        self.assertEqual(str(trace["detail_module3_scoped_recovery_trigger"]), "llm_extractor_error")
+
+    def test_module3_scoped_recovery_maps_letting_people_down_to_item14(self) -> None:
+        state = _extract_state(
+            route="cognitive",
+            target_item_id=14,
+            target_module_id=3,
+            latest_message="I keep feeling like I'm letting people down lately.",
+        )
+
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+            with patch("agents.evidence_extraction.get_extractor_llm", return_value=_RaisingLLM()):
+                result = extract_likelihoods(state)
+
+        kept_ids = [int(record.item_id) for record in result["latest_turn_evidence"]]
+        self.assertEqual(kept_ids, [14])
+        self.assertGreaterEqual(float(result["latest_turn_evidence"][0].confidence), 0.65)
+
+    def test_module3_scoped_recovery_maps_noncontribution_phrase_to_item14(self) -> None:
+        state = _extract_state(
+            route="cognitive",
+            target_item_id=14,
+            target_module_id=3,
+            latest_message="I don't contribute anything that matters anymore.",
+        )
+
+        with patch.dict(os.environ, {"EVIDENCE_LLM_ON_LEXICAL_HIT": "1"}, clear=False):
+            with patch("agents.evidence_extraction.get_extractor_llm", return_value=_RaisingLLM()):
+                result = extract_likelihoods(state)
+
+        trace = result["turn_trace"]["extract_evidence"]
+        kept_ids = [int(record.item_id) for record in result["latest_turn_evidence"]]
+        self.assertEqual(kept_ids, [14])
+        self.assertTrue(bool(trace["detail_module3_scoped_recovery_applied"]))
 
     def test_targeted_legacy_supported_payload_is_coerced_to_assertions(self) -> None:
         allowed_item_ids = [5, 7, 8, 14]
@@ -777,7 +838,7 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
         self.assertEqual(int(trace["detail_supported_item_count"]), 1)
         self.assertEqual(int(trace["detail_missing_allowed_item_count"]), 5)
 
-    def test_v2_salvaged_items_outside_allowed_scope_are_dropped(self) -> None:
+    def test_v2_module3_recovery_preempts_out_of_scope_salvage_noise(self) -> None:
         state = _extract_state(
             route="cognitive",
             target_item_id=14,
@@ -796,7 +857,9 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
                 result = extract_likelihoods(state)
 
         trace = result["turn_trace"]["extract_evidence"]
-        self.assertEqual(result["latest_turn_evidence"], [])
+        self.assertEqual([int(record.item_id) for record in result["latest_turn_evidence"]], [14])
+        self.assertEqual(str(trace["source"]), "module3_scoped_recovery")
+        self.assertTrue(bool(trace["detail_module3_scoped_recovery_applied"]))
         self.assertFalse(bool(trace["salvage_used"]))
         self.assertEqual(int(trace["out_of_scope_item_count"]), 1)
 

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import os
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
+from uuid import uuid4
 
 from core.io_schema import PersonaConversation, PersonaResult
 from core.llm import get_llm_usage, reset_llm_usage, set_llm_call_budget
+from core.runtime_policy import resolve_detector_backend
 from persona import PersonaProfile, generate_persona_pool
 
 from app.cli_common import _parse_bool, _write_json
@@ -53,6 +56,43 @@ def _result_record(profile: PersonaProfile, state: Dict) -> Dict:
         "item_scores_pred": item_scores_pred,
         "turns": int(state.get("turn_index", 0)),
     }
+
+
+def _new_run_metadata() -> tuple[str, str]:
+    return uuid4().hex[:12], datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _short_text(value: Any, limit: int = 220) -> str:
+    text = " ".join(str(value or "").split()).strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _extract_event_kind(
+    *,
+    source: str,
+    json_parse_ok: bool,
+    parse_fail_stage: str,
+    parse_error_kind: str,
+    genuine_no_signal_turn: bool,
+    opportunistic_shortlist_called: bool,
+    opportunistic_shortlist_parse_ok: bool,
+    opportunistic_has_strong_offtarget_signal: bool,
+) -> str:
+    if source in {"llm_extractor_error", "llm_opportunistic_error"}:
+        return "extractor_call_failure"
+    if (not json_parse_ok) or bool(parse_fail_stage) or bool(parse_error_kind):
+        return "json_parse_failure"
+    if genuine_no_signal_turn:
+        return "non_failure_informational"
+    if (
+        opportunistic_shortlist_called
+        and opportunistic_shortlist_parse_ok
+        and not opportunistic_has_strong_offtarget_signal
+    ):
+        return "opportunistic_no_candidate"
+    return "empty_or_unsupported"
 
 
 def run_eval(
@@ -104,6 +144,8 @@ def run_eval(
     trace_level_effective = requested_trace_level if effective_debug_outputs else "off"
     save_diagnostics_effective = requested_save_diagnostics if effective_debug_outputs else False
     run_profile = "debug" if effective_debug_outputs else "lean"
+    run_id, generated_at = _new_run_metadata()
+    detector_backend = resolve_detector_backend()
 
     if verbose_console and effective_debug_outputs:
         print(f"--- Synthetic Eval | personas={persona_count} | seed={seed} ---")
@@ -230,6 +272,8 @@ def run_eval(
                     timeline=timeline,
                     style_stats=style_stats,
                     trace_level=trace_level_effective,
+                    run_id=run_id,
+                    generated_at=generated_at,
                 )
             )
         stop_history = list(final_state.get("stop_history", []))
@@ -323,6 +367,10 @@ def run_eval(
                         json_parse_ok = bool(extract_trace.get("json_parse_ok", False))
                         parse_error_kind = str(extract_trace.get("parse_error_kind", "") or "")
                         parse_error_message = str(extract_trace.get("parse_error_message", "") or "")
+                        parse_fail_stage = str(extract_trace.get("parse_fail_stage", "") or "")
+                        error_class = str(extract_trace.get("error_class", "") or "")
+                        error_message = str(extract_trace.get("error_message", "") or "")
+                        error_stage = str(extract_trace.get("error_stage", "") or "")
                         opportunistic_called = bool(extract_trace.get("opportunistic_called", False))
                         opportunistic_shortlist_called = bool(
                             extract_trace.get("opportunistic_shortlist_called", False)
@@ -386,22 +434,40 @@ def run_eval(
                             failure_reason = "invalid_intensity_or_confidence_range"
                         else:
                             failure_reason = "parsed_but_no_usable_evidence"
+                        entry_kind = _extract_event_kind(
+                            source=source,
+                            json_parse_ok=json_parse_ok,
+                            parse_fail_stage=parse_fail_stage,
+                            parse_error_kind=parse_error_kind,
+                            genuine_no_signal_turn=genuine_no_signal_turn,
+                            opportunistic_shortlist_called=opportunistic_shortlist_called,
+                            opportunistic_shortlist_parse_ok=opportunistic_shortlist_parse_ok,
+                            opportunistic_has_strong_offtarget_signal=opportunistic_has_strong_offtarget_signal,
+                        )
+                        latest_message_excerpt = _short_text(
+                            extract_trace.get("latest_message_excerpt", "") or extract_trace.get("latest_message", "")
+                        )
                         extract_parse_fail_log_entries.append(
                             {
                                 "llm": profile.persona_id,
+                                "entry_kind": entry_kind,
                                 "split": profile.split,
                                 "family": profile.family,
                                 "turn": int(entry.get("turn", extract_trace.get("turn", 0)) or 0),
                                 "source": source or "llm_extractor",
+                                "detector_backend": detector_backend,
                                 "failure_reason": failure_reason,
                                 "counts_as_failure": counts_as_failure,
                                 "json_parse_ok": json_parse_ok,
                                 "parse_error_kind": parse_error_kind,
                                 "parse_error_message": parse_error_message,
+                                "error_class": error_class or (parse_error_kind if entry_kind == "json_parse_failure" else ""),
+                                "error_message": error_message or parse_error_message,
+                                "error_stage": error_stage or parse_fail_stage,
                                 "parse_error_line": int(extract_trace.get("parse_error_line", 0) or 0),
                                 "parse_error_column": int(extract_trace.get("parse_error_column", 0) or 0),
                                 "parse_error_position": int(extract_trace.get("parse_error_position", 0) or 0),
-                                "parse_fail_stage": str(extract_trace.get("parse_fail_stage", "") or ""),
+                                "parse_fail_stage": parse_fail_stage,
                                 "parse_balance": extract_trace.get("parse_balance", {}),
                                 "raw_items_count": int(extract_trace.get("raw_items_count", 0) or 0),
                                 "kept_items_count": kept_items_count,
@@ -495,6 +561,7 @@ def run_eval(
                                 "fallback_used": bool(extract_trace.get("fallback_used", False)),
                                 "raw_extractor_payload": str(extract_trace.get("raw_extractor_payload", "") or ""),
                                 "latest_message": str(extract_trace.get("latest_message", "") or ""),
+                                "latest_message_excerpt": latest_message_excerpt,
                                 "route_node": (
                                     str(route_decision.get("chosen_node", "")).strip()
                                     if isinstance(route_decision, dict)
@@ -577,6 +644,8 @@ def run_eval(
             requested_trace_level=requested_trace_level,
             requested_debug_outputs=bool(debug_outputs),
             all_profiles=all_profiles,
+            run_id=run_id,
+            generated_at=generated_at,
         )
     )
 
@@ -602,6 +671,10 @@ def run_eval(
         if effective_debug_outputs:
             print(f" - {output_dir / 'error_report_run_local.json'}")
             print(f" - {output_dir / 'extract_parse_fail_log_run_local.json'}")
+            print(f" - {output_dir / 'extract_failure_log_run_local.json'}")
+            print(f" - {output_dir / 'extract_true_parse_fail_log_run_local.json'}")
+            print(f" - {output_dir / 'extract_runtime_error_log_run_local.json'}")
+            print(f" - {output_dir / 'extract_non_failure_log_run_local.json'}")
             print(f" - {output_dir / 'failure_report_run_local.json'}")
         print(f" - {output_dir / 'benchmark_integrity_run_local.json'}")
         if save_diagnostics_effective:

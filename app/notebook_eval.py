@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -74,6 +75,20 @@ SIM_STYLE_CALIBRATION_PROBES: List[Dict[str, object]] = [
     {"target_item_id": 21, "route": "somatic", "style": "gentle_probe", "mode": "normal", "directness": "direct", "priority": 0.7},
 ]
 
+NOTEBOOK_STABILITY_PERSONA_THRESHOLD = 10
+SELF_WORTH_CLUSTER_ITEM_IDS = (7, 8, 14)
+ARTIFACT_RUN_CONSISTENCY_FILES = (
+    "metrics_run_local.json",
+    "failure_report_run_local.json",
+    "benchmark_integrity_run_local.json",
+    "config_used.json",
+    "diagnostics_run_local.json",
+    "extract_failure_log_run_local.json",
+    "extract_true_parse_fail_log_run_local.json",
+    "extract_runtime_error_log_run_local.json",
+    "extract_parse_fail_log_run_local.json",
+)
+
 
 def _item_value_columns(prefix: str) -> List[str]:
     return [f"item_{item_id}_{prefix}" for item_id in range(1, 22)]
@@ -85,6 +100,13 @@ RECORD_COLUMNS = RECORD_BASE_COLUMNS + _item_value_columns("true") + _item_value
 def _load_json(path: Path) -> Any:
     if not path.exists():
         raise FileNotFoundError(f"Expected artifact file was not found: {path}")
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _load_json_if_exists(path: Path) -> Any:
+    if not path.exists():
+        return None
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
 
@@ -212,6 +234,421 @@ def load_benchmark_integrity(output_dir: str | Path) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         raise TypeError(f"Expected integrity payload to be a JSON object: {integrity_path}")
     return payload
+
+
+def load_failure_report(output_dir: str | Path) -> Dict[str, Any]:
+    artifact_dir = Path(output_dir)
+    failure_path = artifact_dir / "failure_report_run_local.json"
+    payload = _load_json(failure_path)
+    if not isinstance(payload, dict):
+        raise TypeError(f"Expected failure report payload to be a JSON object: {failure_path}")
+    return payload
+
+
+def load_config_used(output_dir: str | Path) -> Dict[str, Any]:
+    artifact_dir = Path(output_dir)
+    config_path = artifact_dir / "config_used.json"
+    payload = _load_json(config_path)
+    if not isinstance(payload, dict):
+        raise TypeError(f"Expected config payload to be a JSON object: {config_path}")
+    return payload
+
+
+def load_diagnostics(output_dir: str | Path) -> List[Dict[str, Any]]:
+    artifact_dir = Path(output_dir)
+    diagnostics_path = artifact_dir / "diagnostics_run_local.json"
+    payload = _load_json(diagnostics_path)
+    if not isinstance(payload, list):
+        raise TypeError(f"Expected diagnostics payload to be a JSON array: {diagnostics_path}")
+    return [row for row in payload if isinstance(row, dict)]
+
+
+def _artifact_dict(path: Path) -> Dict[str, Any]:
+    payload = _load_json_if_exists(path)
+    if isinstance(payload, dict):
+        return payload
+    return {}
+
+
+def _artifact_list(path: Path) -> List[Dict[str, Any]]:
+    payload = _load_json_if_exists(path)
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    return []
+
+
+def _artifact_run_id(payload: Any) -> str:
+    if isinstance(payload, dict):
+        return str(payload.get("artifact_run_id", "") or "").strip()
+    if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+        return str(payload[0].get("artifact_run_id", "") or "").strip()
+    return ""
+
+
+def _artifact_generated_at(payload: Any) -> str:
+    if isinstance(payload, dict):
+        return str(payload.get("generated_at", "") or "").strip()
+    if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+        return str(payload[0].get("generated_at", "") or "").strip()
+    return ""
+
+
+def inspect_artifact_run_consistency(output_dir: str | Path) -> Dict[str, Any]:
+    artifact_dir = Path(output_dir)
+    artifact_rows: List[Dict[str, Any]] = []
+    run_ids: List[str] = []
+    for filename in ARTIFACT_RUN_CONSISTENCY_FILES:
+        path = artifact_dir / filename
+        payload = _load_json_if_exists(path)
+        if payload is None:
+            continue
+        run_id = _artifact_run_id(payload)
+        generated_at = _artifact_generated_at(payload)
+        if run_id:
+            run_ids.append(run_id)
+        artifact_rows.append(
+            {
+                "artifact": filename,
+                "artifact_run_id": run_id,
+                "generated_at": generated_at,
+            }
+        )
+
+    run_id_counts = Counter(run_ids)
+    unique_run_ids = sorted(run_id_counts.keys())
+    missing_run_id_artifacts = sorted(
+        row["artifact"] for row in artifact_rows if not str(row.get("artifact_run_id", "")).strip()
+    )
+    mixed_run_detected = len(unique_run_ids) > 1
+    if mixed_run_detected:
+        warning = (
+            "Mixed-run artifact set detected in outputs/: multiple artifact_run_id values are present. "
+            "Do not compare these files as if they came from one eval run."
+        )
+    elif missing_run_id_artifacts and artifact_rows:
+        warning = (
+            "Some artifacts are missing artifact_run_id metadata, so run consistency could not be fully verified."
+        )
+    else:
+        warning = ""
+
+    return {
+        "mixed_run_detected": bool(mixed_run_detected),
+        "artifact_count_checked": len(artifact_rows),
+        "artifact_run_rows": artifact_rows,
+        "unique_run_ids": unique_run_ids,
+        "missing_run_id_artifacts": missing_run_id_artifacts,
+        "warning": warning,
+    }
+
+
+def _coerce_item_ids(raw_values: Any) -> List[int]:
+    if not isinstance(raw_values, list):
+        return []
+    item_ids: List[int] = []
+    for raw_value in raw_values:
+        try:
+            item_id = int(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= item_id <= 21 and item_id not in item_ids:
+            item_ids.append(item_id)
+    return item_ids
+
+
+def _turn_trace_extract(turn: Dict[str, Any]) -> Dict[str, Any]:
+    trace = dict(turn.get("turn_trace", {}) or {})
+    extract_trace = trace.get("extract_likelihoods")
+    if not isinstance(extract_trace, dict):
+        extract_trace = trace.get("extract_evidence")
+    if not isinstance(extract_trace, dict):
+        extract_trace = {}
+    return dict(extract_trace)
+
+
+def _turn_trace_belief(turn: Dict[str, Any]) -> Dict[str, Any]:
+    trace = dict(turn.get("turn_trace", {}) or {})
+    belief_trace = trace.get("belief_update")
+    if not isinstance(belief_trace, dict):
+        belief_trace = trace.get("update_beliefs")
+    if not isinstance(belief_trace, dict):
+        belief_trace = {}
+    return dict(belief_trace)
+
+
+def _iter_timeline_turns(diagnostics_payload: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    turns: List[Dict[str, Any]] = []
+    for record in diagnostics_payload:
+        timeline = record.get("timeline", [])
+        if not isinstance(timeline, list):
+            continue
+        for turn in timeline:
+            if isinstance(turn, dict):
+                turns.append(turn)
+    return turns
+
+
+def build_eval_stability_notice(
+    metrics: Dict[str, Any] | None = None,
+    *,
+    persona_count: int | None = None,
+    stable_threshold: int = NOTEBOOK_STABILITY_PERSONA_THRESHOLD,
+) -> Dict[str, Any]:
+    resolved_persona_count = int(persona_count or 0)
+    if resolved_persona_count <= 0 and isinstance(metrics, dict):
+        try:
+            resolved_persona_count = int(metrics.get("persona_count", 0) or 0)
+        except (TypeError, ValueError):
+            resolved_persona_count = 0
+
+    is_low_stability = resolved_persona_count > 0 and resolved_persona_count < int(stable_threshold)
+    if is_low_stability:
+        message = (
+            f"Low-stability read: this run only has {resolved_persona_count} personas. "
+            f"Keep it for quick debugging, but rerun with at least {stable_threshold} personas before treating "
+            "headline metrics as benchmark-quality."
+        )
+        level = "warning"
+    elif resolved_persona_count > 0:
+        message = (
+            f"Sample size is more stable for interpretation ({resolved_persona_count} personas, "
+            f"threshold {stable_threshold})."
+        )
+        level = "ok"
+    else:
+        message = "Persona count is unavailable, so stability could not be assessed."
+        level = "unknown"
+
+    return {
+        "persona_count": int(resolved_persona_count),
+        "stable_threshold": int(stable_threshold),
+        "is_low_stability": bool(is_low_stability),
+        "level": level,
+        "message": message,
+    }
+
+
+def resolve_runtime_artifact_metadata(output_dir: str | Path) -> Dict[str, Any]:
+    artifact_dir = Path(output_dir)
+    config_payload = _artifact_dict(artifact_dir / "config_used.json")
+    resolved = dict(config_payload.get("resolved_backends", {}) or {})
+    if resolved:
+        return {
+            "detector_backend": str(resolved.get("detector_backend", "") or ""),
+            "detector_target": str(resolved.get("detector_target", "") or ""),
+            "persona_runtime": str(resolved.get("persona_runtime", "") or ""),
+            "source": "config_used",
+        }
+
+    integrity_payload = _artifact_dict(artifact_dir / "benchmark_integrity_run_local.json")
+    detector = dict(integrity_payload.get("detector", {}) or {})
+    if detector:
+        return {
+            "detector_backend": str(detector.get("backend", "") or ""),
+            "detector_target": str(detector.get("target", "") or ""),
+            "persona_runtime": "deterministic_simulator",
+            "source": "benchmark_integrity",
+        }
+
+    return {
+        "detector_backend": "",
+        "detector_target": "",
+        "persona_runtime": "",
+        "source": "unavailable",
+    }
+
+
+def build_compact_diagnostics_summary(
+    output_dir: str | Path,
+    *,
+    item_error_df: pd.DataFrame | None = None,
+) -> Dict[str, Any]:
+    artifact_dir = Path(output_dir)
+    failure_report = _artifact_dict(artifact_dir / "failure_report_run_local.json")
+    diagnostics_payload = _artifact_list(artifact_dir / "diagnostics_run_local.json")
+    extract_failure_entries = _artifact_list(artifact_dir / "extract_failure_log_run_local.json")
+    true_parse_entries = _artifact_list(artifact_dir / "extract_true_parse_fail_log_run_local.json")
+    runtime_error_entries = _artifact_list(artifact_dir / "extract_runtime_error_log_run_local.json")
+    artifact_consistency = inspect_artifact_run_consistency(artifact_dir)
+    timeline_turns = _iter_timeline_turns(diagnostics_payload)
+
+    extract_turn_count = 0
+    llm_extractor_error_turns = 0
+    module3_target_coverage = {item_id: 0 for item_id in SELF_WORTH_CLUSTER_ITEM_IDS}
+    module3_target_mismatch_examples: List[Dict[str, Any]] = []
+    module3_targeted_turns = 0
+
+    for turn in timeline_turns:
+        route_decision = dict(turn.get("route_decision", {}) or {})
+        target_items = _coerce_item_ids(route_decision.get("target_items", []))
+        extract_trace = _turn_trace_extract(turn)
+        belief_trace = _turn_trace_belief(turn)
+        extract_source = str(extract_trace.get("source", "") or "").strip()
+        recovery_trigger = str(extract_trace.get("detail_module3_scoped_recovery_trigger", "") or "").strip()
+        if extract_source:
+            extract_turn_count += 1
+        if extract_source == "llm_extractor_error" or recovery_trigger == "llm_extractor_error":
+            llm_extractor_error_turns += 1
+
+        updated_item_ids = _coerce_item_ids(belief_trace.get("updated_item_ids", []))
+        for item_id in target_items:
+            if item_id not in module3_target_coverage:
+                continue
+            module3_target_coverage[item_id] += 1
+            module3_targeted_turns += 1
+            if updated_item_ids and item_id not in updated_item_ids and len(module3_target_mismatch_examples) < 5:
+                module3_target_mismatch_examples.append(
+                    {
+                        "turn": int(turn.get("turn", 0) or 0),
+                        "target_item_id": int(item_id),
+                        "updated_item_ids": list(updated_item_ids),
+                        "extract_source": extract_source,
+                    }
+                )
+
+    if extract_turn_count <= 0:
+        source_distribution = dict(failure_report.get("extract_source_distribution", {}) or {})
+        extract_turn_count = sum(
+            int(value or 0)
+            for value in source_distribution.values()
+            if isinstance(value, (int, float))
+        )
+        llm_extractor_error_turns = int(source_distribution.get("llm_extractor_error", 0) or 0)
+
+    llm_extractor_error_rate = (
+        round(float(llm_extractor_error_turns) / float(extract_turn_count), 4)
+        if extract_turn_count > 0
+        else 0.0
+    )
+
+    failure_kind_distribution = dict(failure_report.get("extract_failure_kind_distribution", {}) or {})
+    if not failure_kind_distribution and extract_failure_entries:
+        failure_kind_distribution = dict(
+            Counter(str(entry.get("entry_kind", "") or "") for entry in extract_failure_entries if str(entry.get("entry_kind", "") or ""))
+        )
+    failure_reason_distribution = dict(failure_report.get("extract_failure_reason_distribution", {}) or {})
+    if not failure_reason_distribution and extract_failure_entries:
+        failure_reason_distribution = dict(
+            Counter(
+                str(entry.get("failure_reason", "") or "")
+                for entry in extract_failure_entries
+                if str(entry.get("failure_reason", "") or "")
+            )
+        )
+
+    extract_failure_log_count = int(
+        failure_report.get(
+            "extract_failure_log_count",
+            len(extract_failure_entries) or int(failure_report.get("extract_parse_fail_log_count", 0) or 0),
+        )
+        or 0
+    )
+    true_parse_fail_count = int(
+        failure_report.get("extract_true_parse_fail_log_count", len(true_parse_entries)) or 0
+    )
+    runtime_error_count = int(
+        failure_report.get("extract_runtime_error_log_count", len(runtime_error_entries)) or 0
+    )
+    non_failure_info_count = int(failure_report.get("extract_non_failure_log_count", 0) or 0)
+    opportunistic_no_candidate_count = int(
+        failure_kind_distribution.get(
+            "opportunistic_no_candidate",
+            failure_reason_distribution.get("opportunistic_shortlist_no_candidates", 0),
+        )
+        or 0
+    )
+    empty_or_unsupported_count = int(
+        failure_kind_distribution.get(
+            "empty_or_unsupported",
+            max(0, extract_failure_log_count - true_parse_fail_count - runtime_error_count - opportunistic_no_candidate_count),
+        )
+        or 0
+    )
+    top_failure_reasons = [
+        {"failure_reason": reason, "count": int(count)}
+        for reason, count in sorted(
+            failure_reason_distribution.items(),
+            key=lambda item: (-int(item[1]), str(item[0])),
+        )[:5]
+    ]
+
+    dominant_issue = "No extraction failure dominant issue detected."
+    if artifact_consistency["mixed_run_detected"]:
+        dominant_issue = "Mixed-run artifact set detected; clean outputs or rerun before interpreting the failure mix."
+    else:
+        dominant_candidates = {
+            "malformed JSON": int(true_parse_fail_count),
+            "backend/runtime exception": int(runtime_error_count),
+            "valid-but-empty extraction": int(empty_or_unsupported_count),
+            "opportunistic shortlist no-candidate": int(opportunistic_no_candidate_count),
+        }
+        dominant_label, dominant_count = max(
+            dominant_candidates.items(),
+            key=lambda item: (int(item[1]), item[0]),
+        )
+        if dominant_count > 0:
+            dominant_issue = f"Dominant extraction issue: {dominant_label} ({dominant_count} turns)."
+
+    if item_error_df is None:
+        records_df = load_eval_records(artifact_dir)
+        item_error_df = build_item_error_table(records_df)
+
+    worst_under_predicted_items: List[Dict[str, Any]] = []
+    if item_error_df is not None and not item_error_df.empty:
+        under_predicted = (
+            item_error_df[item_error_df["mean_error"] < 0]
+            .sort_values(["mean_error", "item_id"], ascending=[True, True])
+            .head(3)
+        )
+        for _, row in under_predicted.iterrows():
+            worst_under_predicted_items.append(
+                {
+                    "item_id": int(row["item_id"]),
+                    "symptom_name": str(row["symptom_name"]),
+                    "mean_error": round(float(row["mean_error"]), 4),
+                }
+            )
+
+    item7_count = int(module3_target_coverage.get(7, 0) or 0)
+    item8_count = int(module3_target_coverage.get(8, 0) or 0)
+    item14_count = int(module3_target_coverage.get(14, 0) or 0)
+    if module3_targeted_turns <= 0:
+        coverage_message = "Module-3 self-worth items were not targeted in the saved diagnostics."
+    elif item7_count > 0 and item8_count == 0 and item14_count == 0:
+        coverage_message = (
+            f"Module-3 self-worth coverage is collapsed onto item 7 ({item7_count} turns); "
+            "items 8 and 14 were never directly targeted."
+        )
+    else:
+        coverage_message = (
+            f"Module-3 self-worth target coverage: item 7 -> {item7_count}, "
+            f"item 8 -> {item8_count}, item 14 -> {item14_count}."
+        )
+
+    return {
+        "extract_empty_rate": round(float(failure_report.get("extract_empty_rate", 0.0) or 0.0), 4),
+        "evidence_nonempty_rate": round(float(failure_report.get("evidence_nonempty_rate", 0.0) or 0.0), 4),
+        "extract_turn_count": int(extract_turn_count),
+        "llm_extractor_error_turns": int(llm_extractor_error_turns),
+        "llm_extractor_error_rate": round(float(llm_extractor_error_rate), 4),
+        "extract_failure_log_count": int(extract_failure_log_count),
+        "true_parse_fail_count": int(true_parse_fail_count),
+        "runtime_error_count": int(runtime_error_count),
+        "empty_or_unsupported_count": int(empty_or_unsupported_count),
+        "opportunistic_no_candidate_count": int(opportunistic_no_candidate_count),
+        "non_failure_info_count": int(non_failure_info_count),
+        "failure_kind_distribution": failure_kind_distribution,
+        "failure_reason_distribution": failure_reason_distribution,
+        "top_failure_reasons": top_failure_reasons,
+        "dominant_issue": dominant_issue,
+        "worst_under_predicted_items": worst_under_predicted_items,
+        "module3_target_coverage": module3_target_coverage,
+        "module3_targeted_turns": int(module3_targeted_turns),
+        "module3_target_mismatch_examples": module3_target_mismatch_examples,
+        "coverage_message": coverage_message,
+        "artifact_consistency": artifact_consistency,
+        "artifact_warning": str(artifact_consistency.get("warning", "") or ""),
+    }
 
 
 def load_eval_records(output_dir: str | Path) -> pd.DataFrame:
@@ -418,14 +855,22 @@ def split_item_error_table(item_error_df: pd.DataFrame) -> Dict[str, pd.DataFram
 
 __all__ = [
     "ITEM_ERROR_COLUMNS",
+    "NOTEBOOK_STABILITY_PERSONA_THRESHOLD",
     "PERSONA_ERROR_COLUMNS",
     "SIM_STYLE_CALIBRATION_PROBES",
+    "build_compact_diagnostics_summary",
+    "build_eval_stability_notice",
     "build_persona_error_table",
     "RECORD_COLUMNS",
     "build_item_error_table",
     "compare_style_summaries",
+    "inspect_artifact_run_consistency",
+    "load_config_used",
+    "load_diagnostics",
     "load_eval_records",
+    "load_failure_report",
     "load_eval_metrics",
+    "resolve_runtime_artifact_metadata",
     "run_eval_notebook",
     "summarize_simulated_style",
     "summarize_transcript_style",

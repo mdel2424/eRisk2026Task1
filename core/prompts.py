@@ -33,6 +33,7 @@ Hard constraints:
 - For same_module_followup, stay anchored to the last answer rather than asking a cold new symptom screen.
 - For contrastive_pivot, ask the persona to compare the two experiences directly.
 - For risk_check, keep the question direct and clinically clear, but avoid boilerplate repetition.
+- Use target_focus_hint when it is specific; for self-worth items, prefer explicit self-evaluation wording over generic functional-impact wording.
 - Return only the question text.
 
 Target module:
@@ -42,6 +43,7 @@ Target module:
 - module_items={target_module_items}
 - target_item_id={target_item_id}
 - target_item_name={target_item_name}
+- target_focus_hint={target_focus_hint}
 - question_kind={question_kind}
 - timeframe_mode={timeframe_mode}
 - thread_turn_index={thread_turn_index}

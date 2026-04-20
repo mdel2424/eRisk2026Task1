@@ -62,6 +62,13 @@ CONTRASTIVE_REPLY_PATTERNS = (
     "more as",
 )
 
+SELF_WORTH_CLUSTER_ITEM_IDS = (7, 8, 14)
+SELF_WORTH_ROTATION_ORDER = {
+    7: (8, 14),
+    8: (14, 7),
+    14: (8, 7),
+}
+
 
 def _priority_from_gain(expected_gain: float) -> float:
     gain = max(0.0, float(expected_gain))
@@ -496,6 +503,92 @@ def _risk_signal_recent(state: AgentState, *, item_beliefs: Dict[int, Any], prod
     return dropped_by_item9 > 0
 
 
+def _ever_targeted_item(route_history: Sequence[Any], item_id: int) -> bool:
+    for row in route_history:
+        if int(item_id) in _route_history_target_items(row):
+            return True
+    return False
+
+
+def _module3_self_worth_recovery_candidate(
+    state: AgentState,
+    *,
+    item_beliefs: Dict[int, Any],
+    route_history: Sequence[Any],
+    recent_item_counts: Dict[int, int],
+    recent_module_counts: Dict[int, int],
+    ig_estimates: Dict[int, float],
+) -> Tuple[int, float, str, int, List[Dict[str, Any]], int, int] | None:
+    context = _latest_productive_context(state, item_beliefs)
+    if bool(context["productive_turn"]) or str(context["route"]) == "risk":
+        return None
+
+    source_item_id = int(context["target_item_id"] or 0)
+    source_module_id = int(context["target_module_id"] or 0)
+    if source_module_id != 3 or source_item_id not in SELF_WORTH_CLUSTER_ITEM_IDS:
+        return None
+
+    extract_trace = _latest_extract_trace(state)
+    supported_item_ids = _coerce_trace_int_list(extract_trace.get("detail_supported_item_ids", []))
+    supported_item_ids.extend(
+        item_id
+        for item_id in _coerce_trace_int_list(extract_trace.get("opportunistic_supported_item_ids", []))
+        if item_id not in supported_item_ids
+    )
+    if any(item_id in SELF_WORTH_CLUSTER_ITEM_IDS for item_id in supported_item_ids):
+        return None
+
+    ordered_candidates = list(SELF_WORTH_ROTATION_ORDER.get(source_item_id, (8, 14)))
+    candidate_rows: List[Tuple[int, int, float, float, bool]] = []
+    for item_id in ordered_candidates:
+        if _belief_support(item_beliefs, item_id) > 0:
+            continue
+        recent_count = int(recent_item_counts.get(item_id, 0))
+        entropy = float(_belief_entropy(item_beliefs, item_id))
+        ig_estimate = float(ig_estimates.get(item_id, entropy))
+        never_targeted = not _ever_targeted_item(route_history, item_id)
+        candidate_rows.append((item_id, recent_count, entropy, ig_estimate, never_targeted))
+
+    if not candidate_rows:
+        return None
+
+    candidate_rows.sort(
+        key=lambda row: (
+            not bool(row[4]),
+            row[1],
+            -row[2],
+            -row[3],
+            ordered_candidates.index(int(row[0])),
+        )
+    )
+    target_item_id, recent_count, entropy, ig_estimate, never_targeted = candidate_rows[0]
+    score = float(ig_estimate) + float(entropy) + (0.45 if never_targeted else 0.20) - (0.10 * float(recent_count))
+    ranking = [
+        _candidate_entry(
+            item_id=item_id,
+            route="cognitive",
+            module_id=3,
+            score=(candidate_ig + candidate_entropy + (0.45 if candidate_never_targeted else 0.20) - (0.10 * candidate_recent_count)),
+            item_beliefs=item_beliefs,
+            ig_estimates=ig_estimates,
+            recent_item_counts=recent_item_counts,
+            recent_module_counts=recent_module_counts,
+            score_components={
+                "ig_estimate": candidate_ig,
+                "entropy": candidate_entropy,
+                "self_worth_recovery_bonus": 0.45 if candidate_never_targeted else 0.20,
+                "recent_item_penalty": 0.10 * float(candidate_recent_count),
+            },
+        )
+        for item_id, candidate_recent_count, candidate_entropy, candidate_ig, candidate_never_targeted in candidate_rows
+    ]
+    rationale = (
+        f"module-3 self-worth recovery after unproductive item {source_item_id} turn; "
+        f"rotate to uncovered sibling item {target_item_id}"
+    )
+    return int(target_item_id), float(score), rationale, 3, ranking, int(source_item_id), 3
+
+
 def _mandatory_coverage_candidate(
     *,
     turn_index: int,
@@ -876,6 +969,9 @@ def target_selector(state: AgentState) -> Dict:
     thread_exit_reason = ""
     thread_source_item_id = 0
     forced_risk_interrupt = False
+    module3_self_worth_recovery_applied = False
+    module3_self_worth_recovery_eligible = False
+    module3_self_worth_source_item_id = 0
 
     if turn_index == 0 and not has_new_persona_input:
         target_item_id = 2
@@ -918,6 +1014,7 @@ def target_selector(state: AgentState) -> Dict:
         risk_recent_attempted = bool(base_risk_recent_attempted)
         same_module_candidate = None
         same_item_candidate = None
+        module3_self_worth_candidate = None
         same_module_followup_eligible = False
         same_item_followup_eligible = False
 
@@ -938,8 +1035,17 @@ def target_selector(state: AgentState) -> Dict:
                 recent_module_counts=recent_module_counts,
                 ig_estimates=ig_estimates,
             )
+            module3_self_worth_candidate = _module3_self_worth_recovery_candidate(
+                state,
+                item_beliefs=item_beliefs,
+                route_history=route_history,
+                recent_item_counts=recent_item_counts,
+                recent_module_counts=recent_module_counts,
+                ig_estimates=ig_estimates,
+            )
         same_module_followup_eligible = same_module_candidate is not None
         same_item_followup_eligible = same_item_candidate is not None
+        module3_self_worth_recovery_eligible = module3_self_worth_candidate is not None
 
         active_thread = bool(current_thread["active"])
         thread_denial_streak = int(current_thread["denial_streak"])
@@ -1085,6 +1191,26 @@ def target_selector(state: AgentState) -> Dict:
                         score_components={"thread_start": expected_gain},
                     )
                 ]
+            elif module3_self_worth_candidate is not None:
+                (
+                    target_item_id,
+                    expected_gain,
+                    rationale,
+                    selected_module_id,
+                    ranking_top_candidates,
+                    followup_source_item_id,
+                    followup_source_module_id,
+                ) = module3_self_worth_candidate
+                route = "cognitive"
+                policy = "module3_self_worth_recovery"
+                question_kind = "topic_open"
+                timeframe_mode = "introduce"
+                style = "gentle_probe"
+                thread_turn_index = 1
+                thread_source_item_id = int(target_item_id)
+                anchor_text = thread_seed["anchor_text"] or _anchor_text_for_item(state, int(target_item_id))
+                module3_self_worth_recovery_applied = True
+                module3_self_worth_source_item_id = int(followup_source_item_id or 0)
             else:
                 mandatory_candidate = _mandatory_coverage_candidate(
                     turn_index=turn_index,
@@ -1201,6 +1327,9 @@ def target_selector(state: AgentState) -> Dict:
         "updated_item_ids": list(productive_context["updated_item_ids"]),
         "same_module_followup_eligible": bool(same_module_followup_eligible),
         "same_item_followup_eligible": bool(same_item_followup_eligible),
+        "module3_self_worth_recovery_eligible": bool(module3_self_worth_recovery_eligible),
+        "module3_self_worth_recovery_applied": bool(module3_self_worth_recovery_applied),
+        "module3_self_worth_source_item_id": int(module3_self_worth_source_item_id),
         "followup_source_item_id": int(followup_source_item_id),
         "followup_source_module_id": int(followup_source_module_id),
         "recent_item_target_count": selected_item_recent_count,

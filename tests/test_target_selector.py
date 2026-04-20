@@ -158,6 +158,57 @@ class TargetSelectorTests(unittest.TestCase):
         self.assertEqual(int(result["turn_trace"]["target_selector"]["followup_source_item_id"]), 7)
         self.assertEqual(int(result["turn_trace"]["target_selector"]["followup_source_module_id"]), 3)
 
+    def test_unproductive_self_worth_turn_rotates_to_uncovered_sibling(self) -> None:
+        state = build_initial_state(persona_id="selector-test")
+        state["turn_index"] = 7
+        state["messages"] = [
+            {"role": "user", "content": "What has that been like lately?"},
+            {"role": "assistant", "content": "I don't really know how to explain it."},
+        ]
+        state["conversation_thread"] = ConversationThreadState(
+            active=True,
+            route="cognitive",
+            module_id=3,
+            source_item_id=7,
+            question_count=1,
+            timeframe_introduced=True,
+            anchor_text="not sure how I see myself",
+        )
+        _deprioritize_other_items(state, keep_item_ids={7, 8, 14})
+        _set_belief(state, 7, support_count=0, expected_score=0.0, entropy=1.1)
+        _set_belief(state, 8, support_count=0, expected_score=0.0, entropy=1.9)
+        _set_belief(state, 14, support_count=0, expected_score=0.0, entropy=1.7)
+        _set_metrics(state, ig_estimates={7: 1.0, 8: 1.8, 14: 1.6})
+        _set_productive_trace(
+            state,
+            route="cognitive",
+            target_item_id=7,
+            target_module_id=3,
+            updated_item_ids=[],
+            support_increments_count=0,
+        )
+        state["turn_trace"]["extract_likelihoods"] = {
+            "source": "llm_extractor_error",
+            "detail_supported_item_ids": [],
+        }
+        state["route_history"] = [
+            RouteDecision(
+                turn=6,
+                chosen_node="cognitive",
+                policy="conversation_topic_open",
+                reason="self-worth start",
+                target_items=[7],
+                expected_gain=1.1,
+            )
+        ]
+
+        result = target_selector(state)
+
+        self.assertEqual(str(result["route_history"][0].policy), "module3_self_worth_recovery")
+        self.assertEqual(int(result["next_action"].target_item_id), 8)
+        self.assertTrue(bool(result["turn_trace"]["target_selector"]["module3_self_worth_recovery_applied"]))
+        self.assertEqual(int(result["turn_trace"]["target_selector"]["module3_self_worth_source_item_id"]), 7)
+
     def test_two_consecutive_denials_exit_thread_and_redirect(self) -> None:
         state = build_initial_state(persona_id="selector-test")
         state["turn_index"] = 8

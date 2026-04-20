@@ -183,3 +183,57 @@ class QuestionGeneratorTests(unittest.TestCase):
         asked = result["messages"][0]["content"]
         self.assertTrue(bool(result["turn_trace"]["question_generator"]["used_fallback"]))
         self.assertFalse(asked.startswith("You mentioned"))
+
+    def test_module3_self_critical_item_uses_explicit_self_evaluation_fallback(self) -> None:
+        state = {
+            "turn_index": 2,
+            "messages": [
+                {"role": "user", "content": "What has that looked like lately?"},
+                {"role": "assistant", "content": "I keep replaying what I did wrong."},
+            ],
+            "next_action": {
+                "target_item_id": 8,
+                "route": "cognitive",
+                "style": "gentle_probe",
+                "question_kind": "topic_open",
+                "timeframe_mode": "introduce",
+                "thread_turn_index": 1,
+                "anchor_text": "what I did wrong",
+                "rationale": "module-3 follow-up",
+            },
+            "item_beliefs": {},
+        }
+
+        with patch("agents.question_generator.get_llm", return_value=_FakeLLM("   ")):
+            result = question_generator(state)
+
+        asked = result["messages"][0]["content"].lower()
+        self.assertIn("hard", asked)
+        self.assertIn("yourself", asked)
+        self.assertNotIn("routine or responsibilities", asked)
+
+    def test_module3_worth_item_uses_burden_or_mattering_wording(self) -> None:
+        state = {
+            "turn_index": 2,
+            "messages": [
+                {"role": "user", "content": "What has that looked like lately?"},
+                {"role": "assistant", "content": "I keep feeling like I let people down."},
+            ],
+            "next_action": {
+                "target_item_id": 14,
+                "route": "cognitive",
+                "style": "gentle_probe",
+                "question_kind": "topic_open",
+                "timeframe_mode": "introduce",
+                "thread_turn_index": 1,
+                "anchor_text": "let people down",
+                "rationale": "module-3 follow-up",
+            },
+            "item_beliefs": {},
+        }
+
+        with patch("agents.question_generator.get_llm", return_value=_FakeLLM("   ")):
+            result = question_generator(state)
+
+        asked = result["messages"][0]["content"].lower()
+        self.assertTrue("burden" in asked or "matters" in asked)

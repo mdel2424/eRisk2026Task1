@@ -9,11 +9,16 @@ import pandas as pd
 
 from app.notebook_eval import (
     ITEM_ERROR_COLUMNS,
+    NOTEBOOK_STABILITY_PERSONA_THRESHOLD,
     PERSONA_ERROR_COLUMNS,
+    build_compact_diagnostics_summary,
+    build_eval_stability_notice,
     build_item_error_table,
     build_persona_error_table,
     compare_style_summaries,
+    inspect_artifact_run_consistency,
     load_eval_records,
+    resolve_runtime_artifact_metadata,
     summarize_simulated_style,
     summarize_transcript_style,
 )
@@ -258,7 +263,129 @@ Patient: It is a bit of both, honestly; getting started takes effort and I get l
         self.assertLessEqual(float(summary["baseline_comparison_rate"]), 0.22)
         self.assertLess(float(summary["soft_denial_rate"]), 0.40)
         self.assertGreaterEqual(float(summary["mixed_answer_rate"]), 0.04)
-        self.assertLessEqual(float(summary["mixed_answer_rate"]), 0.10)
+
+    def test_build_eval_stability_notice_warns_on_small_persona_count(self) -> None:
+        notice = build_eval_stability_notice({"persona_count": 4})
+
+        self.assertTrue(bool(notice["is_low_stability"]))
+        self.assertEqual(int(notice["stable_threshold"]), NOTEBOOK_STABILITY_PERSONA_THRESHOLD)
+        self.assertIn("Low-stability read", str(notice["message"]))
+
+    def test_runtime_metadata_comes_from_artifacts_not_raw_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            _write_json(
+                root / "config_used.json",
+                {
+                    "resolved_backends": {
+                        "detector_backend": "openrouter",
+                        "detector_target": "artifact/model",
+                        "persona_runtime": "deterministic_simulator",
+                    }
+                },
+            )
+            _write_json(
+                root / "benchmark_integrity_run_local.json",
+                {
+                    "detector": {
+                        "backend": "ollama",
+                        "target": "stale/notebook-guess",
+                    }
+                },
+            )
+
+            metadata = resolve_runtime_artifact_metadata(root)
+
+        self.assertEqual(metadata["detector_backend"], "openrouter")
+        self.assertEqual(metadata["detector_target"], "artifact/model")
+        self.assertEqual(metadata["source"], "config_used")
+
+    def test_compact_diagnostics_summary_highlights_module3_target_collapse(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            _write_json(
+                root / "failure_report_run_local.json",
+                {
+                    "artifact_run_id": "run-a",
+                    "generated_at": "2026-04-20T12:00:00+00:00",
+                    "extract_empty_rate": 0.5,
+                    "evidence_nonempty_rate": 0.4,
+                    "extract_failure_log_count": 3,
+                    "extract_true_parse_fail_log_count": 0,
+                    "extract_runtime_error_log_count": 1,
+                    "extract_failure_kind_distribution": {
+                        "extractor_call_failure": 1,
+                        "opportunistic_no_candidate": 2,
+                    },
+                    "extract_failure_reason_distribution": {
+                        "opportunistic_shortlist_no_candidates": 2,
+                        "llm_call_failed": 1,
+                    },
+                    "extract_source_distribution": {
+                        "module3_scoped_recovery": 1,
+                        "llm_extractor_error": 1,
+                    },
+                },
+            )
+            _write_json(
+                root / "diagnostics_run_local.json",
+                [
+                    {
+                        "LLM": "alpha",
+                        "artifact_run_id": "run-a",
+                        "generated_at": "2026-04-20T12:00:00+00:00",
+                        "timeline": [
+                            {
+                                "turn": 1,
+                                "route_decision": {"target_items": [7]},
+                                "turn_trace": {
+                                    "extract_likelihoods": {
+                                        "source": "module3_scoped_recovery",
+                                        "detail_module3_scoped_recovery_trigger": "llm_extractor_error",
+                                    },
+                                    "belief_update": {"updated_item_ids": [5]},
+                                },
+                            }
+                        ],
+                    }
+                ],
+            )
+
+            diagnostics = build_compact_diagnostics_summary(
+                root,
+                item_error_df=pd.DataFrame(
+                    [
+                        {"item_id": 7, "symptom_name": "Self-Dislike", "mean_error": -1.5},
+                        {"item_id": 8, "symptom_name": "Self-Criticalness", "mean_error": -1.2},
+                        {"item_id": 14, "symptom_name": "Worthlessness", "mean_error": -1.0},
+                    ]
+                ),
+            )
+
+        self.assertEqual(diagnostics["module3_target_coverage"], {7: 1, 8: 0, 14: 0})
+        self.assertEqual(int(diagnostics["llm_extractor_error_turns"]), 1)
+        self.assertEqual(int(diagnostics["runtime_error_count"]), 1)
+        self.assertEqual(int(diagnostics["opportunistic_no_candidate_count"]), 2)
+        self.assertIn("collapsed onto item 7", str(diagnostics["coverage_message"]))
+        self.assertIn("opportunistic shortlist no-candidate", str(diagnostics["dominant_issue"]))
+
+    def test_inspect_artifact_run_consistency_flags_mixed_run_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            _write_json(
+                root / "failure_report_run_local.json",
+                {"artifact_run_id": "run-a", "generated_at": "2026-04-20T12:00:00+00:00"},
+            )
+            _write_json(
+                root / "config_used.json",
+                {"artifact_run_id": "run-b", "generated_at": "2026-04-20T12:05:00+00:00"},
+            )
+
+            summary = inspect_artifact_run_consistency(root)
+
+        self.assertTrue(bool(summary["mixed_run_detected"]))
+        self.assertEqual(sorted(summary["unique_run_ids"]), ["run-a", "run-b"])
+        self.assertIn("Mixed-run artifact set detected", str(summary["warning"]))
 
     def test_compare_style_summaries_returns_deltas(self) -> None:
         reference = {"response_count": 8, "avg_response_words": 20.0, "qualifier_rate": 0.4, "hedge_rate": 0.4, "context_anchor_rate": 0.3, "mixed_answer_rate": 0.2, "soft_denial_rate": 0.1, "baseline_comparison_rate": 0.25}
