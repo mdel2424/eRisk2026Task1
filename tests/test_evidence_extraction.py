@@ -1613,8 +1613,61 @@ class EvidenceExtractionV2Tests(unittest.TestCase):
             current_detector_question="In the past two weeks, how often has concentration been harder than usual?",
         )
 
-        self.assertEqual([int(record.item_id) for record in records], [13])
-        self.assertEqual(int(stats["detail_generic_shift_with_symptom_kept_count"]), 1)
+        self.assertEqual({int(record.item_id) for record in records}, {13, 19})
+        self.assertTrue(any(int(record.item_id) == 19 and float(record.confidence) >= 0.6 for record in records))
+        self.assertEqual(int(stats["detail_generic_shift_with_symptom_kept_count"]), 2)
+
+    def test_concentration_phrase_without_llm_support_recovers_item19(self) -> None:
+        records, stats = _records_from_scored_items(
+            [],
+            allowed_item_ids=[13, 19],
+            node_name="cognitive",
+            turn=1,
+            latest_message="I keep rereading the same page and zoning out halfway through.",
+            key_aliases_enabled=True,
+            strict_schema_coerce=True,
+            item1_strict_gate=False,
+            item1_weak_max_conf=0.55,
+            item1_weak_max_intensity=1.5,
+            method_override="llm_extractor",
+            stats_prefix="detail",
+            current_detector_question="In the past two weeks, how often has concentration been harder than usual?",
+        )
+
+        self.assertEqual([int(record.item_id) for record in records], [19])
+        self.assertGreaterEqual(float(records[0].confidence), 0.6)
+
+    def test_concentration_phrase_can_add_item19_alongside_indecisiveness(self) -> None:
+        records, stats = _records_from_scored_items(
+            json.loads(
+                _scored_payload(
+                    [13, 19],
+                    supported={
+                        13: {
+                            "confidence": 0.50,
+                            "intensity": 1.2,
+                            "anchor_quote": "hard to decide anything",
+                            "reason": "indecisiveness",
+                        }
+                    },
+                )
+            )["scores"],
+            allowed_item_ids=[13, 19],
+            node_name="cognitive",
+            turn=1,
+            latest_message="I keep rereading the same page and zoning out halfway through.",
+            key_aliases_enabled=True,
+            strict_schema_coerce=True,
+            item1_strict_gate=False,
+            item1_weak_max_conf=0.55,
+            item1_weak_max_intensity=1.5,
+            method_override="llm_extractor",
+            stats_prefix="detail",
+            current_detector_question="In the past two weeks, how often has concentration been harder than usual?",
+        )
+
+        self.assertEqual({int(record.item_id) for record in records}, {13, 19})
+        self.assertTrue(any(int(record.item_id) == 19 and float(record.confidence) >= 0.6 for record in records))
 
     def test_generic_ambiguous_shift_does_not_support_module_three_without_self_evaluation_language(self) -> None:
         records, stats = _records_from_scored_items(

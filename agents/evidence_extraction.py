@@ -429,6 +429,25 @@ MODULE4_WEAK_PATTERNS = (
     re.compile(r"\b(?:zoning\s+out|mind\s+is\s+always\s+elsewhere)\b"),
 )
 
+ITEM19_RECOVERY_PATTERNS = (
+    re.compile(r"\bkeep\s+reread(?:ing)?\s+the\s+same\s+(?:page|line)\b"),
+    re.compile(r"\breread(?:ing)?\s+the\s+same\s+(?:page|line)\b"),
+    re.compile(r"\bforget\s+what\s+i\s+just\s+read\b"),
+    re.compile(r"\blose\s+track\s+(?:mid(?:-| )sentence|of\s+what\s+i'?m\s+doing)\b"),
+    re.compile(r"\bbrain\s+fog\b"),
+    re.compile(r"\bzoning\s+out\b"),
+    re.compile(r"\bcan'?t\s+keep\s+track\b"),
+    re.compile(r"\bcan'?t\s+focus\b"),
+    re.compile(r"\bhard\s+to\s+follow\s+a\s+conversation\b"),
+)
+
+ITEM19_QUESTION_PATTERNS = (
+    re.compile(r"\bconcentration\b"),
+    re.compile(r"\bfocus\b"),
+    re.compile(r"\bfollow\s+a\s+conversation\b"),
+    re.compile(r"\bdecid(?:e|ing|ed|s)?\b"),
+)
+
 CLEAR_NO_SYMPTOM_PATTERNS = (
     re.compile(
         r"\b(?:not\s+really|nothing(?:'s|\s+is)?\s+(?:different|changed|new|unusual)|"
@@ -1211,6 +1230,10 @@ def _is_item18_detector_question(question: str) -> bool:
     return _has_any_pattern(question, ITEM18_APPETITE_QUESTION_PATTERNS)
 
 
+def _is_item19_detector_question(question: str) -> bool:
+    return _has_any_pattern(question, ITEM19_QUESTION_PATTERNS)
+
+
 def _has_item18_variability_signal(text: str) -> bool:
     return _has_any_pattern(text, ITEM18_APPETITE_VARIABILITY_PATTERNS)
 
@@ -1221,6 +1244,10 @@ def _has_item7_soft_self_evaluation(text: str) -> bool:
 
 def _has_item8_soft_self_criticism(text: str) -> bool:
     return _has_any_pattern(text, ITEM8_SOFT_SELF_CRITICISM_PATTERNS)
+
+
+def _has_item19_concentration_signal(text: str) -> bool:
+    return _has_any_pattern(text, ITEM19_RECOVERY_PATTERNS)
 
 
 def _self_evaluation_item_ids(text: str) -> List[int]:
@@ -1327,6 +1354,37 @@ def _module3_scoped_recovery_records(
     return records
 
 
+def _module4_scoped_recovery_records(
+    *,
+    node_name: str,
+    turn: int,
+    latest_message: str,
+    allowed_item_ids: Sequence[int],
+) -> List[EvidenceRecord]:
+    allowed = {int(item_id) for item_id in allowed_item_ids}
+    if 19 not in allowed:
+        return []
+
+    cue, sentence = _first_matching_phrase(latest_message, ITEM19_RECOVERY_PATTERNS)
+    if not cue:
+        return []
+
+    return [
+        EvidenceRecord(
+            turn=turn,
+            node=node_name if node_name in {"somatic", "cognitive", "risk"} else "cognitive",
+            item_id=19,
+            symptom_name=BDI_ITEM_NAMES.get(19, "Item 19"),
+            direction="increase",
+            intensity=1.35,
+            confidence=0.60,
+            evidence_text=sentence or cue,
+            reason=f"module-4 scoped recovery from concentration phrasing: {cue}",
+            method="module4_scoped_recovery",
+        )
+    ]
+
+
 def _is_sadness_detector_question(question: str) -> bool:
     return _has_any_pattern(question, ITEM1_SADNESS_QUESTION_PATTERNS)
 
@@ -1427,6 +1485,8 @@ def _has_scoped_symptom_or_example_signal(
     ):
         return True
     if 18 in allowed and _item18_has_direct_change_signal(text, previous_question=previous_question):
+        return True
+    if 19 in allowed and _is_item19_detector_question(previous_question) and _has_item19_concentration_signal(text):
         return True
     if 21 in allowed and (_has_item21_mild_direct_signal(text) or _has_item21_direct_denial(text)):
         return True
@@ -2066,6 +2126,7 @@ def _records_from_scored_items(
         previous_question=current_detector_question,
     )
     item18_variability_match = _has_item18_variability_signal(latest_message)
+    item19_concentration_signal = 19 in allowed and _is_item19_detector_question(current_detector_question) and _has_item19_concentration_signal(latest_message)
     generic_ambiguous_shift = False
     generic_shift_has_scoped_signal = False
     item7_soft_self_evaluation = False
@@ -2103,6 +2164,8 @@ def _records_from_scored_items(
         )
         item7_soft_self_evaluation = 7 in allowed and _has_item7_soft_self_evaluation(latest_message)
         item8_soft_self_criticism = 8 in allowed and _has_item8_soft_self_criticism(latest_message)
+        if item19_concentration_signal:
+            generic_shift_has_scoped_signal = True
         contrastive_sibling_item_ids = set(
             _contrastive_sibling_support_item_ids(
                 allowed_item_ids=allowed,
@@ -2181,6 +2244,9 @@ def _records_from_scored_items(
             supported = True
             assertion_label = "present"
             item8_soft_self_criticism_applied = True
+        if not supported and int(resolved_item_id) == 19 and item19_concentration_signal:
+            supported = True
+            assertion_label = "conditional"
         if (
             not supported
             and int(resolved_item_id) in PRECISION_GUARD_MODULE3
@@ -2284,6 +2350,14 @@ def _records_from_scored_items(
             stats[_key("item8_soft_self_criticism_applied")] = int(
                 stats[_key("item8_soft_self_criticism_applied")]
             ) + 1
+        if int(resolved_item_id) == 19 and item19_concentration_signal:
+            normalized_item["intensity"] = max(float(normalized_item.get("intensity", 0.0) or 0.0), 1.0)
+            normalized_item["confidence"] = max(float(normalized_item.get("confidence", 0.0) or 0.0), 0.60)
+            normalized_item["reason"] = (
+                str(normalized_item.get("reason", "") or "").strip()
+                if str(normalized_item.get("reason", "") or "").strip().lower() not in {"", "unsupported"}
+                else "item19 concentration support from explicit focus or rereading phrasing"
+            )
         if contrastive_sibling_support_applied:
             normalized_item["intensity"] = max(float(normalized_item.get("intensity", 0.0) or 0.0), 1.0)
             normalized_item["confidence"] = max(float(normalized_item.get("confidence", 0.0) or 0.0), 0.40)
@@ -2445,6 +2519,26 @@ def _records_from_scored_items(
         )
 
     seen_supported_item_ids = {int(item["item_id"]) for item in supported_items}
+    if (
+        19 in allowed
+        and item19_concentration_signal
+        and 19 not in seen_supported_item_ids
+    ):
+        supported_items.append(
+            {
+                "item_id": 19,
+                "symptom_name": BDI_ITEM_NAMES.get(19, "Concentration Difficulty"),
+                "direction": "increase",
+                "assertion_label": "conditional",
+                "binding_status": "normalized_exact",
+                "intensity": 1.35,
+                "confidence": 0.60,
+                "evidence_text": latest_message[:220],
+                "reason": "item19 concentration recovery from explicit focus or rereading phrasing",
+                "method": "module4_scoped_recovery",
+            }
+        )
+        seen_supported_item_ids.add(19)
     for retarget_item_id, payload in pending_self_evaluation_retargets.items():
         if int(retarget_item_id) in seen_supported_item_ids:
             continue
@@ -2982,6 +3076,18 @@ def _extract_likelihoods_impl(
             detail_module3_scoped_recovery_trigger = str(source or "empty_recovery")
             source = "module3_scoped_recovery"
             counters = bump_failure_counter(counters, "extract_module3_scoped_recovery")
+
+    if not evidence_records and latest_message.strip() and not clear_no_symptom_skip:
+        module4_scoped_recovery_records = _module4_scoped_recovery_records(
+            node_name=target_spec["route"],
+            turn=turn,
+            latest_message=latest_message,
+            allowed_item_ids=allowed_item_ids,
+        )
+        if module4_scoped_recovery_records:
+            evidence_records = module4_scoped_recovery_records
+            source = "module4_scoped_recovery"
+            counters = bump_failure_counter(counters, "extract_module4_scoped_recovery")
 
     if not evidence_records and latest_message.strip() and not clear_no_symptom_skip:
         fallback_records = _fallback_evidence_from_text(node_name, turn, latest_message)
